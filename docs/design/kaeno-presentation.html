@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kaeno: local Durable assistant</title>
+<style>body{background:#121521;color:#eee;font:18px/1.6 system-ui;margin:auto;padding:3rem 1.5rem;max-width:850px}h1{font-size:2.7rem}h2{margin-top:2.5rem;color:#a6c5ff}code,pre{background:#252c3d;padding:.2rem .4rem;border-radius:.3rem}pre{padding:1rem;overflow:auto}a{color:#a6c5ff}.muted{color:#a8acb8}</style>
+<h1>Kaeno</h1><p>One continuing personal-assistant conversation. Trusted read-only specialists work in the background; saved results return as cards and one follow-up attempt.</p>
+<h2>Try it</h2><pre>npm install
+npm start</pre><p>On first run, type an OpenAI API key into the terminal prompt. It is visible so you can check it; Ctrl+R hides or reveals it. Visible input can be recorded by your terminal. The key is saved locally in a private, unencrypted file. No demo mode or environment-variable setup.</p>
+<h2>One owner</h2><pre>custom pi-tui chat → one Durable Harness → one SQLite store
+                          ├─ continuing contact
+                          └─ native background Job → fresh private child</pre>
+<p>The TUI shows committed messages and jobs. Commands: <code>/jobs</code>, <code>/job ID</code>, <code>/cancel ID</code>, <code>/stop</code>, <code>/key</code>. Ctrl+C stops the local process; restart restores saved state.</p>
+<h2>Honest boundaries</h2><p>The read tool rejects paths outside approved workspaces and Kaeno state, but the process is not sandboxed. Notice admission is not human delivery. Offline application tests pass; a live OpenAI provider call has not been verified with a user key. This is not Pi's stock chat screen or a remote worker system.</p>
+<p class="muted">Details: <a href="minimal-kaeno.md">implementation</a> · <a href="kaeno-rationale.md">rationale</a> · <a href="native-arena/synthesis.md">native design evidence</a>.</p></html>

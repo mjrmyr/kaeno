@@ -1,0 +1,4 @@
+node_modules/
+.kaeno/
+.DS_Store
+.playwright-mcp/
