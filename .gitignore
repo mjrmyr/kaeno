@@ -1,4 +1,5 @@
 node_modules/
 .kaeno/
+.kaeno-next/
 .DS_Store
 .playwright-mcp/

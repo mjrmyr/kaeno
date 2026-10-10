@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node --experimental-strip-types src/tui.ts",
+    "start": "node --experimental-strip-types src/service.ts",
+    "client": "node --experimental-strip-types src/client.ts",
     "check": "tsc --noEmit",
     "test": "node --test test/*.test.mjs"
   },

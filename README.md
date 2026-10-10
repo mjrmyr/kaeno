@@ -1,33 +1,25 @@
-# Kaeno
+# Kaeno — isolated-assignment prototype
 
-Kaeno is a local personal assistant with **one continuing contact conversation** and configurable background read-only specialists. It uses one Pi Durable Harness and SQLite store, and a custom terminal chat built with `@earendil-works/pi-tui`—not Pi's stock coding-agent screen. No web server, pod workers or demo mode.
+**Prototype, not the finished [Kaeno next architecture](docs/design/kaeno-next.html).** A long-lived local HTTP service owns a SQLite assignment ledger, authenticated API, versioned agent roster and browser client. Each assignment starts a **separate macOS Seatbelt process**, Pi Durable Harness, SQLite store, and writable workspace. The UI and API never open the agent's store. Two clients can observe the same saved state; leaving the page does not stop work.
 
-## Run
-
-Requires Node.js 24+ and an interactive terminal.
+## Run (macOS, Node 24+)
 
 ```sh
 npm install
 npm start
 ```
 
-On first launch, enter an **OpenAI API key in the TUI**. You can paste it with Cmd+V in a macOS terminal. It is visible while you type so you can check it; Ctrl+R hides or reveals it. Visible input can be captured by terminal recordings or scrollback. It is stored locally in `.kaeno/credentials.json` (mode `0600`, **plaintext**; not an OS keychain). `.kaeno/` is gitignored. `/key` replaces it later. Don't share this file or your process environment. Kaeno uses OpenAI `gpt-4o-mini` for the contact and the starter specialist. No `KAENO_DEMO` or `OPENAI_API_KEY` setting is needed; there is no simulated response mode in the application. This project has **not been tested against the live OpenAI API** without a user-provided key.
+Open `http://127.0.0.1:4318/` and enter the bearer token from `.kaeno-next/token` (mode 0600). A separate terminal client uses `npm run client -- agents`, `npm run client -- assign researcher "Investigate …"`, `npm run client -- list`, `npm run client -- watch ID`, or `npm run client -- steer ID "New guidance"`. It uses the same API and detaches without stopping work. Remote CLI connections require `KAENO_URL` and `KAENO_TOKEN`, with HTTPS provided by a trusted reverse proxy. `/api/agents`, `/api/assignments`, `/api/assignments/:id`, `/api/assignments/:id/steer`, and `/api/events?after=N` expose the same functionality to other clients. POST requires a unique `requestId`; retries with the same assignment text and agent return its saved ID. Poll events with their increasing `seq` cursor. Do **not** expose this HTTP port directly on the internet: it binds to loopback, has no TLS or per-user identity, and the static browser page is not itself authenticated. An authenticated HTTPS reverse proxy / remote enrollment is still needed for access from everywhere.
 
-Type a message and press Enter; Shift+Enter inserts a newline. Commands:
+By default, an **offline scripted provider** exercises Pi Durable and the architecture without making real model calls. It returns visibly labeled prototype responses; it is not a useful intelligent assistant. To test live OpenAI, start with `KAENO_OPENAI_API_KEY=... npm start` (the key is delivered to the worker process as an environment variable, not stored by the application). This live path has **not been verified** against OpenAI; the prototype's live Seatbelt profile currently permits outbound network traffic, not only OpenAI. Never use an untrusted profile or sensitive secrets in this mode.
 
-- The TUI shows running jobs automatically, not completed or failed ones. `/jobs` toggles recent job history on demand; `/job ID` shows a specific saved result. `/jobs` also dismisses a selected card.
-- `/stop`: stop the contact's current answer; `/cancel ID`: request cancellation of a specialist job.
-- `/key`: update the API key in the TUI; Ctrl+R toggles visibility while entering it.
-- Ctrl+C: close the TUI and local Harness. Restarting from the same directory restores the contact and saved jobs.
+The reviewed roster is created at `.kaeno-next/agents.json` on first startup. Stop the service before editing. Each entry specifies name, instructions, text skill/knowledge labels, and `[]` or `["read"]` tools. The service validates at startup and pins a SHA-256 revision and complete profile into each assignment. Editing the file changes **future** assignments after restart; it does not mutate running jobs. Workspaces start empty at `.kaeno-next/cells/ID/workspace`. The optional read tool can read only this workspace. There is no agent-controlled environment/key grant interface yet.
 
-The initial `reader` specialist is created at `.kaeno/agents/reader.json` on first launch. Edit that trusted JSON **while Kaeno is stopped** to change its instructions or absolute workspace, or add another JSON file with a unique `name`. Allowed `tools` are `[]` or `["read"]`; `"read"` also gives the specialist a workspace-scoped `list` tool for finding files in directories. The model must currently be `gpt-4o-mini`. **If the path you ask it to inspect is outside `workspace`, stop Kaeno, set `workspace` to that directory's absolute path in `reader.json`, then restart.** For example, to inspect `~/docs/daily`, set `workspace` to `/Users/km/docs/daily` (not the literal `~`). Relative paths start at the workspace; user-supplied `~/...` paths expand to your home directory but still require approval. Out-of-workspace reads are refused rather than silently granted. The read and list tools refuse Kaeno's private state, but this is **not an OS sandbox**: all jobs run in the same process with your permissions. Files read by a specialist may be sent to OpenAI. Do not configure untrusted specialist code. Only one Kaeno instance can run locally: a loopback port (`127.0.0.1:4317`) gates startup but serves no HTTP traffic.
+## What is proved and what is not
 
-The contact can delegate autonomously using its `delegate` tool. Each assignment gets a native background Job and private child conversation. A result card is saved before one stable-ID follow-up is attempted. The contact stays available while a job runs. Native tasks can resume after a restart; **an in-flight OpenAI request may be repeated**, and a follow-up attempt is not proof the user read it. Cards and native status remain inspectable. Use `npm test` for offline scripted-provider integration checks and `npm run check` for TypeScript. The live-provider path, crash windows during actual provider calls, terminal owner-lock limitations and physical-loss SQLite durability still require production verification.
+- Node SQLite commits assignments and events together; retries of a request ID converge to one assignment. Commands are saved before IPC delivery and replayed on worker startup with stable Pi request IDs.
+- Each worker has its own Pi Durable store and separate process. Seatbelt restricts access to other files in the user's home directory, except approved application code/runtime and its own cell; it restricts writes in the home directory to that cell. Offline workers cannot use the network. **This is a prototype guard, not a hardened microVM/container sandbox:** paths outside home can remain accessible; live mode has outbound network; runtime/host administrators are trusted.
+- On service restart, jobs formerly marked running become **blocked**, not automatically duplicated. An uncertain lost worker requires operator recovery; there is no migration/fencing proof, checkpoint restore, automatic resumption, or sandbox replacement yet. User data in the old `.kaeno/` is untouched and not imported.
+- The persistent Pi Durable supervisor, bounded automatic reviews, skill bundles, brokered secrets, per-job grants, placement across cloud/self-hosted hardware, real remote authentication, and TLS are **next milestones**, not implemented here. The `/steer` endpoint is currently a human control-plane command, not autonomous supervision.
 
-## Design and evidence
-
-- [Current implementation and boundaries](docs/design/minimal-kaeno.md)
-- [Tradeoffs](docs/design/kaeno-rationale.md)
-- [Original native-job arena and primitive probes](docs/design/native-arena/synthesis.md)
-- [Historical typed job sketch (superseded by `src/jobs.ts`)](docs/design/kaeno.sketch.ts)
-- [Withdrawn distributed/stock-frontend arena](docs/design/host-arena/synthesis.md)
+`npm run check` typechecks; `npm test` runs scripted-provider integration and OS-boundary checks on macOS. See [synthesis and gates](docs/design/kaeno-next-decision.md) for why the implementation is intentionally staged. Earlier design documents under `docs/design/` are historical evidence, not alternate live implementations.
