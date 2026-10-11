@@ -9,7 +9,7 @@ SSH to GitHub.
 pi (extension) ─┐                                 kaeno pod (Deployment, ns kaeno)
 Telegram bot ───┘─ HTTP/API · long polling ─▶  pi-durable Harness ── SQLite on PVC (every thread, sub-agent, tool call)
                                                   │ thread conversation (template "kaeno", e.g. Claude)
-                                                  │ CHAT → start_work → background WORK conversation (same model)
+                                                  │ CHAT → start_work → background WORK (selected template)
                                                   │                        └─ optional delegate → WORKER (e.g. GPT)
                                                   │                             └─ read/write/edit/bash via RemoteExecutionEnv
                                                   ▼
@@ -27,7 +27,8 @@ Telegram bot ───┘─ HTTP/API · long polling ─▶  pi-durable Harness
 - **Conversational work**: CHAT answers ordinary conversation and acknowledges substantial requests immediately.
   Each request gets a fresh background WORK conversation for reasoning, planning, review and retries. WORK may finish
   without workers; shell/files/Git execution uses disposable WORKERs. New workers are execution leaves; WORK owns fanout.
-  Models/templates remain configured as before. At most 32 active work requests per chat and four sandbox pods globally.
+  CHAT stays on `config.agent`; each `start_work` explicitly selects an eligible configured template for a distinct
+  WORK conversation. At most 32 active work requests per chat and four sandbox pods globally.
   Durable FIFO admission and confirmed deletion govern capacity; no warm worker fleet or persistent task workspace.
 - **Threads**: one durable conversation per channel key: `pi:<pi session id>`, `telegram:<chat id>`.
 - **Agents**: `config.json` (ConfigMap `kaeno-config`) defines templates: `model`, `thinkingLevel`, `instructions`,
@@ -37,6 +38,79 @@ Telegram bot ───┘─ HTTP/API · long polling ─▶  pi-durable Harness
   `NodeExecutionEnv` behind a small HTTP protocol (`src/remote-env.ts`, passes pi-durable's env conformance suite).
   Own emptyDir workspace, read-only root, non-root, no ServiceAccount token. NetworkPolicy: public internet only.
   Deleted when the delegation ends; a sweeper removes any a crash left behind.
+
+## WORK template selection
+
+CHAT's primary is always `config.agent` (currently `kaeno` in tracked homelab config). `start_work` takes
+`{agent, title, brief}`: its dynamically built string enum offers the primary plus its **direct** configured
+`delegates`, deduplicated in configuration order, with names/descriptions. Unrelated or transitively reachable
+only templates are not selectable WORK roots. There is no implicit/default selection. For example:
+
+```json
+{
+  "agent": "kaeno",
+  "templates": {
+    "kaeno": {
+      "description": "Conversational front desk and general coordinator",
+      "model": "anthropic/your-chat-model",
+      "instructions": "Answer the user and coordinate substantial requests.",
+      "delegates": ["swe"]
+    },
+    "swe": {
+      "description": "Software engineering profile",
+      "model": "openai/your-engineering-model",
+      "thinkingLevel": "high",
+      "instructions": "Plan engineering tasks and verify concrete results.",
+      "sandbox": true,
+      "tools": ["read", "write", "edit", "bash"],
+      "delegates": ["worker"]
+    },
+    "worker": {
+      "description": "Execution worker",
+      "model": "openai/your-worker-model",
+      "instructions": "Execute the supplied task and report verified results.",
+      "sandbox": true,
+      "tools": ["read", "write", "edit", "bash"]
+    }
+  }
+}
+```
+
+This is an illustrative config, **not** a homelab change. CHAT can select `kaeno` or `swe`, not `worker`.
+Selection freezes the root in `WorkBlueprint.agent`, its template/model/thinking/profile and skill binding,
+reachable templates, execution image and skill-cache claim. WORK keeps the selected base instructions/skills
+plus WORK lifecycle instructions, but gets **no CHAT controls, coding tools or sandbox**, even when the selected
+profile is sandboxed. WORK can reason/draft itself and delegate only its selected root's frozen `delegates`.
+WORKERs get their execution profile/tools, but never work controls or delegation, even on legacy replay without
+a blueprint. A missing frozen delegate fails rather than using current config.
+
+A selected profile with no delegates is **reasoning-only WORK**. In the currently tracked homelab config,
+`swe` has coding tools/skills but no delegates: choosing it as WORK does not let it execute those tools.
+Choosing `kaeno` as WORK still allows its configured `swe` WORKER. Supporting execution under a selected `swe`
+WORK would require a separate, reviewed configuration change to give it an execution target; this implementation
+does not change live/tracked homelab config, secrets or deployment.
+
+### Durable replay and upgrade policy
+
+Admission checks the existing request receipt **before** selecting/capturing against current config. Same
+request ID/title/brief returns the same work ID and frozen template; a different explicit template or changed
+brief/title conflicts. Each new request must select explicitly. Already queued/active tasks with valid frozen
+blueprints retain their choice even when current config removes or changes that template.
+
+The durable SDK validates new tool calls, but does not revalidate stored execute-phase arguments on recovery:
+- An old `start_work` execute intent without `agent` returns its already-admitted task only when title/brief
+  match and its frozen blueprint root is valid.
+- An old call without `agent` that never admitted work fails clearly. It does **not** silently choose `kaeno`.
+  Submit a new user request with a new request ID and explicit selection.
+- Old tasks missing a blueprint or with an invalid/missing frozen root cannot resume safely. They fail visibly
+  in durable task status (`/jobs` / work API) rather than guessing a root. Cancel/inspect and submit a fresh request;
+  there is no automatic data migration or fabricated blueprint.
+
+Before upgrading, inspect/drain or cancel incompatible old work and nested workers. Legacy WORKER delegations
+are now blocked, rather than preserving nested fanout on replay. Back up SQLite through the existing operations
+process; retain frozen execution images and skill-cache trees for valid active tasks. Rollout refreshes idle CHAT
+catalogues; busy conversations keep their current durable agent surface until idle. No deployment is performed
+by this change. The primary name/config need not change.
 
 ## Use it
 

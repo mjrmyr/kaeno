@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { Type } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, defineExtension, Harness, type ConversationId } from "@earendil-works/pi-durable";
@@ -27,13 +28,14 @@ const reply = (text: string) => fauxAssistantMessage([fauxText(text)]);
 const call = (name: string, args: any, id = name) => fauxAssistantMessage([fauxToolCall(name, args, { id })], { stopReason: "toolUse" });
 const text = (message: any) => typeof message.content === "string" ? message.content : message.content.map((c: any) => c.text ?? "").join("");
 
-async function setup(route: (system: string, last: any, options: any) => Promise<any> | any, send?: (notify: any, text: string) => Promise<void>) {
+async function setup(route: (system: string, last: any, options: any) => Promise<any> | any, send?: (notify: any, text: string) => Promise<void>, options: { configure?: (config: ReturnType<typeof parseConfig>) => void; install?: (work: ReturnType<typeof createWork>, opening: number) => void } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "kaeno-work-"));
   cleanup.push(() => rm(dir, { recursive: true, force: true }));
   const config = parseConfig({ agent: "kaeno", templates: {
     kaeno: { description: "chat", model: "anthropic/test", instructions: "VERSION-ONE", delegates: ["worker"] },
     worker: { description: "execution", model: "openai/test", instructions: "WORKER", sandbox: true, tools: ["bash"] },
   } });
+  options.configure?.(config);
   // Faux models are selected at the test boundary; production provider/model preferences stay unchanged.
   for (const t of Object.values(config.templates)) t.model = { provider: "faux" as any, modelId: "faux-1" };
   const faux = fauxProvider(), models = createModels(); models.setProvider(faux.provider);
@@ -48,8 +50,10 @@ async function setup(route: (system: string, last: any, options: any) => Promise
   } }));
   let harness!: Harness, agents!: ReturnType<typeof createAgents>, work!: ReturnType<typeof createWork>;
   const Control = defineControl(() => harness, (id, workId) => work.cancel(id, workId));
+  let opening = 0;
   const open = async () => {
-    work = createWork({ harness: () => harness, Turn, Control, capture: () => agents.captureWork(), configure: (tx, id, b, workId) => agents.configureWork(tx, id, b, workId), clean: id => agents.workClean(id) });
+    work = createWork({ harness: () => harness, Turn, Control, config, capture: agent => agents.captureWork(agent), configure: (tx, id, b, workId) => agents.configureWork(tx, id, b, workId), clean: id => agents.workClean(id) });
+    options.install?.(work, ++opening);
     agents = createAgents({ config, harness: () => harness, work, skills: { bind: () => [] }, images: { execution: "execution-v1" }, skillCacheClaim: "cache-v1" });
     const registry = createRegistry(); registry.install(CodingTools); registry.install(agents.Kaeno); registry.install(work.extension);
     registry.install(defineExtension({ name: "channels", tasks: [Turn, Control] }));
@@ -77,7 +81,7 @@ it("acknowledges work, answers a second request while WORK is reasoning, and rep
     }
     if (last.role === "toolResult") return reply("Plan: analyze the supplied text. Work started.");
     if (text(last).startsWith("Work #")) return reply("Finished: verified reasoning result.");
-    if (text(last) === "first") return call("start_work", { title: "Analyze", brief: "Reason about supplied text" });
+    if (text(last) === "first") return call("start_work", { agent: "kaeno", title: "Analyze", brief: "Reason about supplied text" });
     return reply("Second request answered immediately");
   });
   await s.submit("first", "request-first"); await s.waitReply("request-first");
@@ -101,7 +105,7 @@ it("holds an instant result behind actual acknowledgement delivery and captures 
     if (system.includes("Kaeno WORK")) return reply("Instant result");
     if (last.role === "toolResult") return reply("ACK");
     if (text(last).startsWith("Work #")) return reply("DONE");
-    return call("start_work", { title: "Instant", brief: "Easy reasoning" });
+    return call("start_work", { agent: "kaeno", title: "Instant", brief: "Easy reasoning" });
   }, async (notify, message) => { routes.push(notify.telegram); if (message === "ACK") await ackGate; });
   await s.submit("first", "request-instant", { telegram: 321 });
   await until(async () => (await s.work.list(s.id))[0]?.status === "completed");
@@ -122,12 +126,15 @@ it("resumes background reasoning after SQLite reopen, preserves its blueprint, a
     }
     if (last.role === "toolResult") return reply("ACK");
     if (text(last).startsWith("Work #")) return reply("RECOVERED");
-    return call("start_work", { title: "Durable", brief: "Long reasoning" });
-  });
+    return call("start_work", { agent: "worker", title: "Durable", brief: "Long reasoning" });
+  }, undefined, { configure: config => { config.templates.worker!.instructions = "VERSION-ONE"; } });
   await s.submit("first", "request-restart"); await s.waitReply("request-restart"); await until(async () => entered);
-  s.config.templates.kaeno!.instructions = "VERSION-TWO";
+  s.config.templates.kaeno!.instructions = "CHAT-UPDATED";
+  s.config.templates.worker!.instructions = "VERSION-TWO";
+  s.config.templates.kaeno!.delegates = [];
   await refreshThreads(s.deps);
   expect((await s.harness.snapshot(AgentState, s.id, ctx))?.role).toBe("chat");
+  expect((await s.harness.snapshot(AgentState, s.id, ctx))?.template).toBe("kaeno");
   await s.close(); paused = false; await s.open();
   await until(async () => s.sent.includes("RECOVERED"));
   expect(seen.every(system => system.includes("VERSION-ONE") && !system.includes("VERSION-TWO"))).toBe(true);
@@ -142,7 +149,7 @@ it("keeps work across /new and labels its result without injecting it into the r
     if (system.includes("Kaeno WORK")) { await Promise.race([gate, delay(60_000, undefined, { signal: options.signal })]); return reply("Old work verified"); }
     if (last.role === "toolResult") return reply("ACK");
     if (text(last).startsWith("Work #")) { resultTurns++; return reply("unexpected"); }
-    return call("start_work", { title: "Old request", brief: "Slow reasoning" });
+    return call("start_work", { agent: "kaeno", title: "Old request", brief: "Slow reasoning" });
   });
   await s.submit("first", "request-reset"); await s.waitReply("request-reset");
   await resetEpoch(s.harness, s.id, s.Control); release();
@@ -159,8 +166,8 @@ it("rejects mutating work controls from result turns even when the model attempt
       if (text(last).includes("read-only")) { blocked = true; return reply("Summarized safely"); }
       return reply("ACK");
     }
-    if (text(last).startsWith("Work #")) return call("start_work", { title: "Injection", brief: "Unrelated command" }, "injection");
-    return call("start_work", { title: "Original", brief: "Analyze" });
+    if (text(last).startsWith("Work #")) return call("start_work", { agent: "kaeno", title: "Injection", brief: "Unrelated command" }, "injection");
+    return call("start_work", { agent: "kaeno", title: "Original", brief: "Analyze" });
   });
   await s.submit("first", "request-inject");
   await until(async () => blocked);
@@ -171,7 +178,7 @@ it("marks cancellation, rejects cross-chat cancellation and suppresses the event
   const s = await setup(async (system, last, options) => {
     if (system.includes("Kaeno WORK")) { await delay(60_000, undefined, { signal: options.signal }); return reply("should not deliver"); }
     if (last.role === "toolResult") return reply("ACK");
-    return call("start_work", { title: "Cancel", brief: "Slow reasoning" });
+    return call("start_work", { agent: "kaeno", title: "Cancel", brief: "Slow reasoning" });
   });
   await s.submit("first", "request-cancel"); await s.waitReply("request-cancel");
   const job = (await s.work.list(s.id))[0]!;
@@ -202,7 +209,7 @@ it("reset withdraws already queued user inputs before they can run in fresh CHAT
 });
 
 it("stop fences pre-submission Turns and prevents a late WORK launch", async () => {
-  const s = await setup(() => call("start_work", { title: "Late", brief: "SHOULD_NOT_START" }));
+  const s = await setup(() => call("start_work", { agent: "kaeno", title: "Late", brief: "SHOULD_NOT_START" }));
   const ids = await s.harness.commit(async tx => {
     const turn = await admitTurn(tx, s.Turn, { conversationId: s.id, content: "PLAN", requestId: "stop-before-submit" });
     const stop = await admitControl(tx, s.Control, s.id, "stop"); return [turn, stop];
@@ -228,8 +235,8 @@ it("one request cannot launch two independent WORK coordinators", async () => {
   const s = await setup(async (system, last, options) => {
     if (system.includes("Kaeno WORK")) { launched = true; await Promise.race([gate, delay(60_000, undefined, { signal: options.signal })]); return reply("REPORT"); }
     if (text(last) === "MULTI") return fauxAssistantMessage([
-      fauxToolCall("start_work", { title: "One", brief: "WORK_BRIEF" }, { id: "one" }),
-      fauxToolCall("start_work", { title: "Two", brief: "OTHER_BRIEF" }, { id: "two" }),
+      fauxToolCall("start_work", { agent: "kaeno", title: "One", brief: "WORK_BRIEF" }, { id: "one" }),
+      fauxToolCall("start_work", { agent: "kaeno", title: "Two", brief: "OTHER_BRIEF" }, { id: "two" }),
     ], { stopReason: "toolUse" });
     return reply("ACK");
   });
@@ -245,7 +252,7 @@ it("user cancel_work admits a durable cancellation command and aborts the owned 
     if (system.includes("Kaeno WORK")) { await delay(60_000, undefined, { signal: options.signal }); return reply("UNSENT"); }
     if (last.role === "toolResult") return reply("ACK");
     if (text(last) === "cancel") return call("cancel_work", { id });
-    return call("start_work", { title: "Cancelable", brief: "Long reasoning" });
+    return call("start_work", { agent: "kaeno", title: "Cancelable", brief: "Long reasoning" });
   });
   await s.submit("start", "start-cancelable"); await s.waitReply("start-cancelable");
   id = (await s.work.list(s.id))[0]!.id;
@@ -262,7 +269,7 @@ it("disconnect disposes only the HTTP observation, not the admitted turn/work", 
     if (system.includes("Kaeno WORK")) return reply("RESULT");
     if (last.role === "toolResult") { await Promise.race([gate, delay(60_000, undefined, { signal: options.signal })]); return reply("ACK"); }
     if (text(last).startsWith("Work #")) return reply("DONE");
-    return call("start_work", { title: "API", brief: "task" });
+    return call("start_work", { agent: "kaeno", title: "API", brief: "task" });
   });
   const token = "x".repeat(32), server = createApi({ ...s.deps, Turn: s.Turn, Control: s.Control, work: s.work, token });
   await new Promise<void>(ok => server.listen(0, "127.0.0.1", ok));
@@ -286,7 +293,7 @@ it("serves short API replies and replayable later replies independently of the P
     if (system.includes("Kaeno WORK")) return reply("Easy result");
     if (last.role === "toolResult") return reply("ACK");
     if (text(last).startsWith("Work #")) return reply("DONE");
-    return call("start_work", { title: "API", brief: "Easy task" });
+    return call("start_work", { agent: "kaeno", title: "API", brief: "Easy task" });
   });
   const token = "x".repeat(32);
   const server = createApi({ ...s.deps, Turn: s.Turn, Control: s.Control, work: s.work, token });
@@ -303,4 +310,172 @@ it("serves short API replies and replayable later replies independently of the P
   expect(replies.replies.map((r: any) => r.text)).toEqual(["ACK", "DONE"]);
   const tail: any = await (await fetch(`${base}/replies?after=1`, { headers })).json();
   expect(tail.replies.map((r: any) => r.text)).toEqual(["DONE"]);
+});
+
+it("offers only primary/direct templates, requires explicit selection, and keeps CHAT primary across two WORK roots", async () => {
+  const systems: string[] = [];
+  const pods = vi.spyOn(k8s, "createPod");
+  const s = await setup((system, last) => {
+    if (system.includes("Kaeno WORK")) { systems.push(system); return reply("RESULT"); }
+    if (last.role === "toolResult") return reply(text(last));
+    if (text(last).startsWith("Work #")) return reply("DONE");
+    const agent = text(last);
+    return call("start_work", { ...(agent === "missing" ? {} : { agent }), title: agent, brief: "Reason only" });
+  }, undefined, { configure: config => {
+    config.templates.worker!.delegates = ["hidden"];
+    config.templates.hidden = { ...config.templates.kaeno!, name: "hidden", description: "not direct", delegates: [] };
+  } });
+  const schema = s.work.tools[0]!.parameters as any;
+  expect(schema.properties.agent.type).toBe("string");
+  expect(schema.properties.agent.enum).toEqual(["kaeno", "worker"]);
+  expect(schema.properties.agent.description).toContain("worker: execution");
+  expect(schema.required).toContain("agent");
+  for (const agent of ["missing", "hidden", "arbitrary", "kaeno", "worker"]) {
+    await s.submit(agent, `select-${agent}`); await s.waitReply(`select-${agent}`);
+  }
+  await until(async () => (await s.work.list(s.id)).filter(j => j.status === "completed").length === 2);
+  const jobs = await s.work.list(s.id);
+  expect(jobs).toHaveLength(2);
+  const roots = await Promise.all(jobs.map(async j => (await s.harness.getTask(j.id, ctx))!.input as any));
+  expect(roots.map(r => r.blueprint.agent)).toEqual(["kaeno", "worker"]);
+  expect(systems.some(s => s.includes("WORKER") && s.includes("Kaeno WORK"))).toBe(true);
+  expect((await s.harness.snapshot(AgentState, s.id, ctx))?.template).toBe("kaeno");
+  expect(pods).not.toHaveBeenCalled();
+});
+
+it.each([true, false])("replays old durable missing-agent execute intent safely (already admitted=%s)", async admitted => {
+  let interrupted = false, replayResult = "";
+  const s = await setup((system, last) => {
+    if (system.includes("Kaeno WORK")) return reply("FROZEN RESULT");
+    if (last.role === "toolResult") { replayResult = text(last); return reply("ACK"); }
+    if (text(last).startsWith("Work #")) return reply("DONE");
+    return call("start_work", { title: "Old call", brief: "Old brief" });
+  }, undefined, { install: (work, opening) => {
+    if (opening !== 1) return;
+    const start = work.tools[0]!;
+    // Simulate the old schema/implementation, not a newly invalid model call. SDK stores execute intent.
+    start.parameters = Type.Object({ title: Type.String(), brief: Type.String() }) as any;
+    const execute = start.execute;
+    start.execute = async (args, api, context) => {
+      if (admitted) await execute({ ...args, agent: "worker" } as any, api, context);
+      interrupted = true;
+      await delay(60_000, undefined, { signal: context.abortSignal });
+      throw new Error("unreachable");
+    };
+  } });
+  await s.submit("old", "old-request"); await until(async () => interrupted);
+  await s.close();
+  delete s.config.templates.worker; s.config.templates.kaeno!.delegates = [];
+  await s.open(); await s.waitReply("old-request");
+  if (admitted) {
+    expect(replayResult).toContain("template worker");
+    expect(await s.work.list(s.id)).toHaveLength(1);
+    expect(((await s.harness.getTask((await s.work.list(s.id))[0]!.id, ctx))!.input as any).blueprint.agent).toBe("worker");
+  } else {
+    expect(replayResult).toContain("requires an explicit eligible agent");
+    expect(await s.work.list(s.id)).toHaveLength(0);
+  }
+});
+
+it("receipt-first admission returns frozen choice before capture and conflicts on changed template or identity", async () => {
+  let result = "", phase = 0;
+  const s = await setup((system, last) => {
+    if (system.includes("Kaeno WORK")) return reply("RESULT");
+    if (last.role === "toolResult") { result = text(last); return reply("ACK"); }
+    if (text(last).startsWith("Work #")) return reply("DONE");
+    return call("start_work", { agent: "worker", title: "Same", brief: "Same brief" });
+  }, undefined, { install: (work, opening) => {
+    if (opening !== 1) return;
+    const start = work.tools[0]!, execute = start.execute;
+    start.execute = async (args, api, context) => {
+      const prior = await execute(args as any, api, context);
+      expect((prior.details as any).agent).toBe("worker");
+      // Receipt wins even if current config no longer offers or can capture this template.
+      s.config.templates.kaeno!.delegates = [];
+      delete s.config.templates.worker;
+      expect((await execute(args as any, api, context)).details).toEqual(prior.details);
+      await expect(execute({ ...args, agent: "kaeno" } as any, api, context)).rejects.toThrow(/different WORK template/);
+      await expect(execute({ ...args, brief: "changed" } as any, api, context)).rejects.toThrow(/One WORK/);
+      phase++; return prior;
+    };
+  } });
+  await s.submit("first", "receipt-first"); await s.waitReply("receipt-first");
+  expect(phase).toBe(1); expect(result).toContain("template worker");
+});
+
+it.each([undefined, { agent: "missing", templates: {} }, { agent: "worker", templates: { worker: {} } }])(
+  "fails old queued WORK with missing/bad blueprint visibly instead of choosing current primary (%j)", async blueprint => {
+    const s = await setup(() => reply("should not run"));
+    const task = s.work.extension.tasks![0]!;
+    const id = await s.harness.commit(tx => tx.createTask(task as any, { title: "broken", brief: "broken", blueprint,
+      origin: { conversationId: s.id, requestId: "broken", epoch: 0 } } as any,
+      { ownership: { kind: "conversation" }, conversationId: s.id, background: true }), ctx);
+    await until(async () => (await s.harness.getTask(id, ctx))!.state.status === "terminal");
+    const record = (await s.harness.getTask(id, ctx))!;
+    expect(JSON.stringify(record.state)).toContain("no valid frozen blueprint root");
+    expect((await s.harness.commit(tx => tx.scanConversations({ ownerTaskId: id }, 10), ctx)).items).toHaveLength(0);
+  });
+
+it("selected sandboxed WORK has no execution surface and delegates only frozen targets to leaf WORKERs", async () => {
+  let verified = false;
+  const pods = vi.spyOn(k8s, "createPod");
+  const s = await setup((system, last) => {
+    if (system.includes("Kaeno WORK")) {
+      if (last.role === "user") {
+        // Remove/change current targets before delegation: only the admitted blueprint is authoritative.
+        delete s.config.templates.leaf;
+        s.config.templates.worker!.delegates = ["kaeno"];
+        return call("bash", { command: "should-not-run" });
+      }
+      if (last.toolName === "bash") {
+        expect(text(last)).toContain("not available");
+        return call("delegate", { agent: "kaeno", task: "Not allowlisted" }, "denied");
+      }
+      if (last.toolCallId === "denied") {
+        expect(text(last)).toContain("Available: leaf");
+        return call("delegate", { agent: "leaf", task: "Allowed" }, "allowed");
+      }
+      expect(text(last)).toContain("LEAF VERIFIED"); verified = true; return reply("WORK VERIFIED");
+    }
+    if (system.includes("LEAF-PROFILE")) {
+      if (last.role === "user") return call("delegate", { agent: "kaeno", task: "No grandchildren" });
+      expect(text(last)).toContain("not available"); return reply("LEAF VERIFIED");
+    }
+    if (last.role === "toolResult") return reply("ACK");
+    if (text(last).startsWith("Work #")) return reply("DONE");
+    return call("start_work", { agent: "worker", title: "Engineering", brief: "Coordinate" });
+  }, undefined, { configure: config => {
+    config.templates.worker!.delegates = ["leaf"];
+    config.templates.leaf = { ...config.templates.kaeno!, name: "leaf", instructions: "LEAF-PROFILE", delegates: ["kaeno"] };
+  } });
+  await s.submit("first", "frozen-delegation"); await s.waitReply("frozen-delegation");
+  await until(async () => verified);
+  expect(pods).not.toHaveBeenCalled();
+  const job = (await s.work.list(s.id))[0]!;
+  const child = (await s.harness.commit(tx => tx.scanConversations({ ownerTaskId: job.id }, 1), ctx)).items[0]!;
+  const state = (await s.harness.snapshot(AgentState, child.id, ctx))!;
+  expect(state.template).toBe("worker"); expect(state.role).toBe("work"); expect(state.sandbox).toBeUndefined();
+  expect(state.blueprint!.templates.worker!.template.tools).toEqual(["bash"]);
+  expect(state.blueprint!.templates.worker!.template.delegates).toEqual(["leaf"]);
+});
+
+it("starts a queued valid frozen selection even after current config removes its root", async () => {
+  const seen: string[] = [];
+  const s = await setup((system) => { seen.push(system); return reply("QUEUED FROZEN RESULT"); });
+  const blueprint = s.agents.captureWork("worker");
+  const task = s.work.extension.tasks![0]!;
+  const id = await s.harness.commit(async tx => {
+    const id = await tx.createTask(task as any, { title: "queued", brief: "queued frozen work", blueprint,
+      origin: { conversationId: s.id, requestId: "queued", epoch: 0 } },
+      { ownership: { kind: "conversation" }, conversationId: s.id, background: true });
+    delete s.config.templates.worker; s.config.templates.kaeno!.delegates = [];
+    return id;
+  }, ctx);
+  await s.harness.waitForTask(id, ctx);
+  const record = (await s.harness.getTask(id, ctx))!;
+  expect(record.state.status).toBe("terminal");
+  expect(JSON.stringify(record.state)).toContain("QUEUED FROZEN RESULT");
+  expect(seen.some(system => system.includes("WORKER") && system.includes("Kaeno WORK"))).toBe(true);
+  const child = (await s.harness.commit(tx => tx.scanConversations({ ownerTaskId: id }, 1), ctx)).items[0]!;
+  expect((await s.harness.snapshot(AgentState, child.id, ctx))?.template).toBe("worker");
 });
