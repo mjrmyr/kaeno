@@ -128,9 +128,9 @@ See [the architecture](architecture/skills.md) for lifecycle and verification de
 
 ## Develop and deploy
 
-**Upgrading from a version with schedules:** remove `schedules` from the live ConfigMap while still on the old
-image, then let already-admitted turns, work and Telegram deliveries finish before upgrading. To stop unwanted
-work, use `POST /v1/threads/:key/abort` for each affected thread (the old default was `schedule:<name>`; custom keys
+**Upgrading from a version with schedules:** remove `schedules` from the live ConfigMap, then restart/roll out
+the **old image** with that config (live ConfigMap edits do not reload the running process). Only then let
+already-admitted turns, work and Telegram deliveries finish before upgrading. To stop unwanted work, use `POST /v1/threads/:key/abort` for each affected thread (the old default was `schedule:<name>`; custom keys
 may differ), then wait for cancellation and delivery to settle. The upgrade stops new firings but still resumes
 unfinished durable work, which can message Telegram. Old threads/history and `kaeno.schedules` records remain in
 SQLite; the slot records are no longer read. A leftover config key is silently ignored by this version, but rolling
