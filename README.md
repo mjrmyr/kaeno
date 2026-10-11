@@ -124,6 +124,12 @@ Tests use local Git fixtures and faux models; runtime preparation tests invoke t
 checks every layer of both images, creates runtime Git fixtures in temporary volumes, runs the real installer as
 UID10001 with a read-only root, and verifies assigned-only mounting/script execution. It never pushes or deploys.
 
+**Schedule-removal upgrade/rollback:** Before deploying, back up SQLite, record the previous image digest, and remove
+`schedules` from the live config (a leftover key is silently ignored). Drain or cancel unwanted in-flight scheduled
+turns: startup still calls `harness.resume()`, so durable turns can run after upgrade and send stored Telegram
+notifications; deleting thread keys alone does not cancel them. Before rolling back to the previous image, check
+the config: leaving `schedules` configured re-enables cron.
+
 First activation of runtime skills requires deploying this application version and the new cache PVC/mounts together.
 Thereafter, skill changes are config-only: commit/push `apps/kaeno/config.json` in homelab; watch rollout/logs for
 `skills: … (runtime)`, then test a fresh task. Image rebuilding is only for application/toolchain changes.
