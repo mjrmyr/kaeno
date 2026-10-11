@@ -1,25 +1,64 @@
-# Kaeno — isolated-assignment prototype
+# Kaeno
 
-**Prototype, not the finished [Kaeno next architecture](docs/design/kaeno-next.html).** A long-lived local HTTP service owns a SQLite assignment ledger, authenticated API, versioned agent roster and browser client. Each assignment starts a **separate macOS Seatbelt process**, Pi Durable Harness, SQLite store, and writable workspace. The UI and API never open the agent's store. Two clients can observe the same saved state; leaving the page does not stop work.
+An always-on, durable orchestrator agent on the homelab. You talk to it from **pi**, **Telegram**, or let it run
+**scheduled tasks**. Kaeno is a real agent (built on `@earendil-works/pi-durable`): it reasons, delegates work to
+sub-agents, checks their reports, and answers. Sub-agents are created from **agent templates** (model per template,
+Anthropic or OpenAI) and, when sandboxed, run all their tools in a **dedicated pod** with internet access and git over
+SSH to GitHub.
 
-## Run (macOS, Node 24+)
-
-```sh
-npm install
-npm start
+```
+pi (extension) ─┐                                 kaeno pod (Deployment, ns kaeno)
+Telegram bot ───┼─ HTTP/API · long polling ─▶  pi-durable Harness ── SQLite on PVC (every thread, sub-agent, tool call)
+schedules ──────┘                                 │ thread conversation (template "kaeno", e.g. Claude)
+                                                  │   └─ delegate tool → child conversation (template "worker", e.g. GPT)
+                                                  │         └─ its read/write/edit/bash run via RemoteExecutionEnv
+                                                  ▼
+                                        sandbox pod kaeno-sb-… (one per delegation) — envd: files + shell in /workspace
+                                        internet + GitHub SSH · no cluster/LAN/tailnet access · no credentials but the deploy key
 ```
 
-Open `http://127.0.0.1:4318/` and enter the bearer token from `.kaeno-next/token` (mode 0600). A separate terminal client uses `npm run client -- agents`, `npm run client -- assign researcher "Investigate …"`, `npm run client -- list`, `npm run client -- watch ID`, or `npm run client -- steer ID "New guidance"`. It uses the same API and detaches without stopping work. Remote CLI connections require `KAENO_URL` and `KAENO_TOKEN`, with HTTPS provided by a trusted reverse proxy. `/api/agents`, `/api/assignments`, `/api/assignments/:id`, `/api/assignments/:id/steer`, and `/api/events?after=N` expose the same functionality to other clients. POST requires a unique `requestId`; retries with the same assignment text and agent return its saved ID. Poll events with their increasing `seq` cursor. Do **not** expose this HTTP port directly on the internet: it binds to loopback, has no TLS or per-user identity, and the static browser page is not itself authenticated. An authenticated HTTPS reverse proxy / remote enrollment is still needed for access from everywhere.
+## How it works
 
-By default, an **offline scripted provider** exercises Pi Durable and the architecture without making real model calls. It returns visibly labeled prototype responses; it is not a useful intelligent assistant. To test live OpenAI, start with `KAENO_OPENAI_API_KEY=... npm start` (the key is delivered to the worker process as an environment variable, not stored by the application). This live path has **not been verified** against OpenAI; the prototype's live Seatbelt profile currently permits outbound network traffic, not only OpenAI. Never use an untrusted profile or sensitive secrets in this mode.
+- **Durable**: a message is admitted to a thread's conversation before anything runs. If kaeno restarts, every run,
+  delegation and Telegram/scheduled turn resumes where it stopped; paused delegations keep their sandbox. A tool call
+  the restart cut off is reported to the model as interrupted, never silently rerun. Clients only watch: closing pi
+  or losing the connection never stops work, and re-asking with the same request ID returns the result.
+- **Threads**: one durable conversation per channel key: `pi:<pi session id>`, `telegram:<chat id>`, `schedule:<name>`.
+- **Agents**: `config.json` (ConfigMap `kaeno-config`) defines templates: `model`, `thinkingLevel`, `instructions`,
+  `sandbox`, `tools` (`read`, `write`, `edit`, `bash`), and `delegates` (templates it may start sub-agents from).
+  Threads re-read their template on every start; sub-agents use the current template when created.
+- **Sandbox** (`src/k8s.ts` → `sandboxPod`): per delegation, a pod running `envd` (`src/envd.ts`), pi-durable's
+  `NodeExecutionEnv` behind a small HTTP protocol (`src/remote-env.ts`, passes pi-durable's env conformance suite).
+  Own emptyDir workspace, read-only root, non-root, no ServiceAccount token. NetworkPolicy: public internet only.
+  Deleted when the delegation ends; a sweeper removes any a crash left behind.
 
-The reviewed roster is created at `.kaeno-next/agents.json` on first startup. Stop the service before editing. Each entry specifies name, instructions, text skill/knowledge labels, and `[]` or `["read"]` tools. The service validates at startup and pins a SHA-256 revision and complete profile into each assignment. Editing the file changes **future** assignments after restart; it does not mutate running jobs. Workspaces start empty at `.kaeno-next/cells/ID/workspace`. The optional read tool can read only this workspace. There is no agent-controlled environment/key grant interface yet.
+## Use it
 
-## What is proved and what is not
+**pi**: the extension in `pi-extension/kaeno` (symlinked into `~/.pi/agent/extensions/kaeno`) registers the model
+`kaeno/kaeno`. Run `pi --model kaeno/kaeno`. Kaeno's live trace, including the sub-agents' commands, appears as
+thinking; its answer is the reply. The token is read from `~/.config/kaeno/token`.
 
-- Node SQLite commits assignments and events together; retries of a request ID converge to one assignment. Commands are saved before IPC delivery and replayed on worker startup with stable Pi request IDs.
-- Each worker has its own Pi Durable store and separate process. Seatbelt restricts access to other files in the user's home directory, except approved application code/runtime and its own cell; it restricts writes in the home directory to that cell. Offline workers cannot use the network. **This is a prototype guard, not a hardened microVM/container sandbox:** paths outside home can remain accessible; live mode has outbound network; runtime/host administrators are trusted.
-- On service restart, jobs formerly marked running become **blocked**, not automatically duplicated. An uncertain lost worker requires operator recovery; there is no migration/fencing proof, checkpoint restore, automatic resumption, or sandbox replacement yet. User data in the old `.kaeno/` is untouched and not imported.
-- The persistent Pi Durable supervisor, bounded automatic reviews, skill bundles, brokered secrets, per-job grants, placement across cloud/self-hosted hardware, real remote authentication, and TLS are **next milestones**, not implemented here. The `/steer` endpoint is currently a human control-plane command, not autonomous supervision.
+**Telegram**: create a bot with @BotFather, add its token to the `kaeno` Secret as `telegram-bot-token`, message the
+bot once (it replies with your chat id), and add that id to `telegram.allowedChatIds` in `config.json`.
+`/stop` aborts the current work, `/new` starts a fresh context.
 
-`npm run check` typechecks; `npm test` runs scripted-provider integration and OS-boundary checks on macOS. See [synthesis and gates](docs/design/kaeno-next-decision.md) for why the implementation is intentionally staged. Earlier design documents under `docs/design/` are historical evidence, not alternate live implementations.
+**Schedules**: in `config.json`:
+`{"name": "morning", "cron": "0 7 * * 1-5", "timezone": "Europe/Berlin", "prompt": "…", "notify": {"telegram": <chat id>}}`.
+Each slot fires once (even across restarts); slots missed while kaeno was down are skipped.
+
+**GitHub**: sandboxes use the deploy key in Secret `kaeno-github-ssh`; add its public half
+(`~/.config/kaeno/github_deploy_key.pub`) to GitHub (account key or per-repo deploy key).
+
+**API** (`homelab-kaeno:8080`, bearer token): `POST /v1/threads/:key/turn {text, requestId}` streams NDJSON
+(`trace` lines, then `done`/`error`); `POST /v1/threads/:key/abort`; `GET /v1/threads`.
+
+## Develop and deploy
+
+```sh
+npm test          # env conformance (24 cases), durable delegation with a restart mid-command, channels, config, cron
+npm run check     # typecheck (erasableSyntaxOnly: the image runs TypeScript with Node's type stripping)
+npm run deploy    # build on the node, push to localhost:5000, pin the digest in ../homelab/apps/kaeno
+cd ../homelab && git commit -am "kaeno: new image" && git push   # Flux rolls it out
+```
+
+See [ROADMAP.md](ROADMAP.md) for what comes next.

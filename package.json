@@ -3,20 +3,22 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node --experimental-strip-types src/service.ts",
-    "client": "node --experimental-strip-types src/client.ts",
+    "start": "node src/kaeno.ts",
     "check": "tsc --noEmit",
-    "test": "node --test test/*.test.mjs"
+    "test": "vitest run",
+    "deploy": "scripts/deploy.sh"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  },
+  "engines": {
+    "node": ">=24"
   },
   "dependencies": {
     "@earendil-works/chord": "1.1.0",
     "@earendil-works/pi-ai": "1.1.0",
-    "@earendil-works/pi-durable": "1.1.0",
-    "@earendil-works/pi-tui": "1.1.0"
-  },
-  "devDependencies": {
-    "@types/node": "24.19.1",
-    "typescript": "5.9.3"
-  },
-  "engines": { "node": ">=24" }
+    "@earendil-works/pi-durable": "1.1.0"
+  }
 }
