@@ -93,6 +93,8 @@ jobs:
     if: github.ref == 'refs/heads/main'
     needs: publish
     runs-on: ubuntu-latest
+    outputs:
+      promoted: ${{ steps.promotion.outputs.promoted }}
     permissions:
       contents: read
       packages: write
@@ -114,6 +116,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Promote completed image pair only for current main HEAD
+        id: promotion
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SANDBOX_DIGEST: ${{ needs.publish.outputs.sandbox-digest }}
@@ -139,3 +142,107 @@ jobs:
             --tag ghcr.io/mjrmyr/kaeno:main \
             --tag ghcr.io/mjrmyr/kaeno:latest \
             "ghcr.io/mjrmyr/kaeno@$KAENO_DIGEST"
+          echo 'promoted=true' >> "$GITHUB_OUTPUT"
+
+  homelab-pr:
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      needs.publish.result == 'success' && needs.promote-main.result == 'success' &&
+      needs.promote-main.outputs.promoted == 'true'
+    needs: [publish, promote-main]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    concurrency:
+      group: homelab-kaeno-image-pr
+      cancel-in-progress: false
+    steps:
+      - name: Check homelab credential
+        id: credential
+        env:
+          HOMELAB_PR_TOKEN: ${{ secrets.HOMELAB_PR_TOKEN }}
+        run: |
+          if [[ -z "$HOMELAB_PR_TOKEN" ]]; then
+            echo '::notice::Skipping homelab PR: HOMELAB_PR_TOKEN is not configured.'
+          else
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out homelab main
+        if: steps.credential.outputs.ready == 'true'
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: mjrmyr/homelab
+          ref: main
+          path: homelab
+          token: ${{ secrets.HOMELAB_PR_TOKEN }}
+          persist-credentials: false
+
+      - name: Pin the published Kaeno digest
+        if: steps.credential.outputs.ready == 'true'
+        id: image
+        env:
+          KAENO_DIGEST: ${{ needs.publish.outputs.kaeno-digest }}
+        run: |
+          python3 -c 'import yaml' || python3 -m pip install --disable-pip-version-check PyYAML==6.0.3
+          python3 - <<'PY'
+          import copy, os, re
+          from pathlib import Path
+          import yaml
+
+          class UniqueLoader(yaml.SafeLoader):
+              pass
+
+          def unique_mapping(loader, node):
+              pairs = [(loader.construct_object(k), loader.construct_object(v)) for k, v in node.value]
+              if len(dict(pairs)) != len(pairs):
+                  raise ValueError("Duplicate manifest keys; refusing ambiguous YAML")
+              return dict(pairs)
+
+          UniqueLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, unique_mapping)
+          digest = os.environ["KAENO_DIGEST"]
+          if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+              raise ValueError("Missing or invalid published Kaeno digest")
+          path = Path("homelab/apps/kaeno/kustomization.yaml")
+          original = path.read_text()
+          document = yaml.load(original, Loader=UniqueLoader)
+          if (not isinstance(document, dict) or document.get("kind") != "Kustomization"
+              or document.get("apiVersion") != "kustomize.config.k8s.io/v1beta1"):
+              raise ValueError("Unexpected Kustomization document")
+          images = document.get("images")
+          if not isinstance(images, list) or not all(isinstance(i, dict) for i in images):
+              raise ValueError("Expected an images mapping list")
+          targets = [i for i in images if i.get("name") == "kaeno"]
+          if (len(targets) != 1 or set(targets[0]) != {"name", "newName", "digest"}
+              or targets[0]["newName"] not in ("localhost:5000/kaeno", "ghcr.io/mjrmyr/kaeno")):
+              raise ValueError("Expected exactly one recognized images[name=kaeno] mapping with name/newName/digest")
+          expected = copy.deepcopy(document)
+          next(i for i in expected["images"] if i.get("name") == "kaeno").update(newName="ghcr.io/mjrmyr/kaeno", digest=digest)
+          pattern = r"(^  - name: kaeno\n    newName: )[^\n]+(\n    digest: )sha256:[0-9a-f]{64}(?=\n|$)"
+          updated, count = re.subn(pattern, lambda m: m[1] + "ghcr.io/mjrmyr/kaeno" + m[2] + digest, original, flags=re.MULTILINE)
+          if count != 1 or yaml.load(updated, Loader=UniqueLoader) != expected:
+              raise ValueError("Unexpected image layout or changes outside the target image")
+          if updated != original:
+              path.write_text(updated)
+          else:
+              print("::notice::Homelab main already pins this image; no PR needed.")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"changed={str(updated != original).lower()}\n")
+          PY
+
+      - name: Create or update review-only homelab PR
+        if: steps.image.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v8.1.1
+        with:
+          path: homelab
+          token: ${{ secrets.HOMELAB_PR_TOKEN }}
+          add-paths: apps/kaeno/kustomization.yaml
+          base: main
+          branch: chore/kaeno-image
+          draft: false
+          commit-message: 'chore(kaeno): update published orchestrator digest'
+          title: 'chore(kaeno): update published orchestrator digest'
+          body: |
+            Pin `images[name=kaeno]` to `ghcr.io/mjrmyr/kaeno@${{ needs.publish.outputs.kaeno-digest }}`.
+            Source: https://github.com/mjrmyr/kaeno/commit/${{ github.sha }}
+            Build: https://github.com/mjrmyr/kaeno/actions/runs/${{ github.run_id }}
