@@ -14,7 +14,7 @@ import { createRegistry, defineExtension, Harness, LiveDoc } from "@earendil-wor
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import type { Config } from "../src/config.ts";
-import { inspectSkill, INSTALLER, materializeSkillSelection, openSkillCatalog, type SkillManifest } from "../src/skills.ts";
+import { copySkillTree, inspectSkill, INSTALLER, materializeSkillSelection, openSkillCatalog, type SkillManifest } from "../src/skills.ts";
 
 const listen = (server: ReturnType<typeof createServer>) =>
   new Promise<string>(ok => server.listen(0, "127.0.0.1", () => ok(`http://127.0.0.1:${(server.address() as AddressInfo).port}`)));
@@ -23,7 +23,8 @@ describe("kaeno durable delegation", () => {
   it.each([false, true])("loads assigned skills, resumes frozen images after upgrade (recreate=%s), and cleans up", async recreate => {
     const dir = await mkdtemp(join(tmpdir(), "kaeno-durable-"));
     const workspace = await mkdtemp(join(tmpdir(), "kaeno-pod-"));
-    const store = join(dir, "store-v1");
+    const store = join(dir, "catalogue");
+    const cache = join(dir, "persistent-skill-cache");
     const rootSkill = join(store, "demo/root/guide");
     const workerSkill = join(store, "demo/worker/probe");
     await mkdir(rootSkill, { recursive: true }); await mkdir(join(workerSkill, "references"), { recursive: true }); await mkdir(join(workerSkill, "scripts"));
@@ -36,6 +37,7 @@ describe("kaeno durable delegation", () => {
       repositories: [{ id: "demo/root", commit: "a".repeat(40) }, { id: "demo/worker", commit: "b".repeat(40) }],
       entries: [{ id: "demo/root:guide", treeHash: (await inspectSkill(rootSkill)).treeHash }, { id: "demo/worker:probe", treeHash: (await inspectSkill(workerSkill)).treeHash }] };
     await writeFile(join(store, "manifest.json"), JSON.stringify(manifest));
+    for (const entry of manifest.entries) await copySkillTree(join(store, entry.id.replace(":", "/")), join(cache, "trees", entry.treeHash));
     // A fake Kubernetes API: pods are created, always Ready, and deleted.
     const calls: string[] = [];
     const pods = new Map<string, unknown>();
@@ -49,9 +51,10 @@ describe("kaeno durable delegation", () => {
         if (pods.has(pod.metadata.name)) { res.writeHead(409).end("{}"); return; }
         podToken = pod.spec.containers[0].env.find((e: any) => e.name === "KAENO_ENV_TOKEN").value; // as the pod would get it
         expect(pod.spec.containers[0].image).toBe("execution-v1");
-        expect(pod.spec.initContainers[0].image).toBe("source-v1");
+        expect(pod.spec.initContainers[0].image).toBe("execution-v1");
+        expect(pod.spec.volumes.find((v: any) => v.name === "skill-cache").persistentVolumeClaim.claimName).toBe("skill-cache-v1");
         const plan = JSON.parse(pod.spec.initContainers[0].env[0].value);
-        await materializeSkillSelection(store, plan, join(workspace, ".agents/skills"));
+        await materializeSkillSelection(cache, plan, join(workspace, ".agents/skills"));
         expect(await readdir(join(workspace, ".agents/skills/demo"))).toEqual(["worker"]);
         pods.set(pod.metadata.name, pod); res.writeHead(201).end(raw); return;
       }
@@ -71,8 +74,8 @@ describe("kaeno durable delegation", () => {
     const config: Config = {
       agent: "kaeno", skillRepositories: [{ id: "demo/root" }, { id: "demo/worker" }],
       templates: {
-        kaeno: { name: "kaeno", description: "orchestrator", model: { provider: "faux" as any, modelId: "faux-1" }, instructions: "ORCHESTRATOR", sandbox: false, tools: [], delegates: ["worker"], skills: ["demo/root:guide"] },
-        worker: { name: "worker", description: "worker", model: { provider: "faux" as any, modelId: "faux-1" }, instructions: "WORKER", sandbox: true, tools: ["read", "write", "edit", "bash"], delegates: [], skills: ["demo/worker:probe"] },
+        kaeno: { name: "kaeno", description: "orchestrator", model: { provider: "faux" as any, modelId: "faux-1" }, instructions: "ORCHESTRATOR", sandbox: false, tools: [], delegates: ["worker"], skills: [recreate ? "demo/root:*" : "demo/root:guide"] },
+        worker: { name: "worker", description: "worker", model: { provider: "faux" as any, modelId: "faux-1" }, instructions: "WORKER", sandbox: true, tools: ["read", "write", "edit", "bash"], delegates: [], skills: [recreate ? "demo/worker:*" : "demo/worker:probe"] },
       },
       telegram: { allowedChatIds: [] }, schedules: [],
     };
@@ -126,7 +129,7 @@ describe("kaeno durable delegation", () => {
     const open = async () => { // a fresh process: new agents, same storage; different current images on reopen
       version++;
       const catalog = await openSkillCatalog(store, config.skillRepositories, {});
-      agents = createAgents({ config, images: { execution: `execution-v${version}`, skillSource: `source-v${version}` }, skills: catalog, harness: () => harness, sandboxUrl: () => envdUrl, sandboxCwd: workspace });
+      agents = createAgents({ config, images: { execution: `execution-v${version}` }, skillCacheClaim: `skill-cache-v${version}`, skills: catalog, harness: () => harness, sandboxUrl: () => envdUrl, sandboxCwd: workspace });
       const registry = createRegistry();
       registry.install(CodingTools); registry.install(agents.Kaeno); registry.install(defineExtension({ name: "kaeno-channels", tasks: [Turn] }));
       harness = await Harness.open(await openNodeSqliteStorage(join(dir, "kaeno.sqlite")), {
@@ -160,6 +163,9 @@ describe("kaeno durable delegation", () => {
     }
     config.templates.worker!.skills = []; // current selections changed; active conversations keep bindings
     config.templates.kaeno!.skills = [];
+    // The current catalogue no longer even contains these skills. Only immutable retained cache + SQLite bindings do.
+    await rm(store, { recursive: true, force: true }); await mkdir(store);
+    await writeFile(join(store, "manifest.json"), JSON.stringify({ ...manifest, entries: [] }));
     await open();                                   // new process, same storage
     await refreshThreads(deps);                      // busy root must keep its binding too
     expect((await harness.snapshot(AgentState, id, BACKGROUND_CONTEXT))?.skills?.map(s => s.id)).toEqual(["demo/root:guide"]);

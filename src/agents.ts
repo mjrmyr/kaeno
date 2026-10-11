@@ -16,7 +16,7 @@ import { RemoteExecutionEnv } from "./remote-env.ts";
 import { readSkillDocument, skillPrompt, type SkillBinding, type SkillCatalog, type SandboxImages } from "./skills.ts";
 
 /** Which template a conversation runs, and its sandbox pod if it has one. */
-export const AgentState = defineDoc<{ template?: string; skills?: SkillBinding; sandbox?: { pod: string; token: string; images?: SandboxImages } }>({
+export const AgentState = defineDoc<{ template?: string; skills?: SkillBinding; sandbox?: { pod: string; token: string; images?: SandboxImages; skillCacheClaim?: string } }>({
   kind: "kaeno.agent", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({}),
 });
 
@@ -34,9 +34,9 @@ const sumUsage = (models: Record<string, any>): Usage => {
 
 export const podName = (conversationId: ConversationId) => `kaeno-sb-${createHash("sha256").update(String(conversationId)).digest("hex").slice(0, 12)}`;
 
-export type AgentsDeps = { config: Config; images: SandboxImages; skills: SkillCatalog; harness: () => Harness; sandboxUrl?: (pod: string) => string; sandboxCwd?: string };
+export type AgentsDeps = { config: Config; images: SandboxImages; skillCacheClaim: string; skills: SkillCatalog; harness: () => Harness; sandboxUrl?: (pod: string) => string; sandboxCwd?: string };
 
-export function createAgents({ config, images, skills, harness, sandboxCwd = "/workspace", sandboxUrl = pod => `http://${pod}.kaeno-sandbox.${k8s.namespace}.svc.cluster.local:7070` }: AgentsDeps) {
+export function createAgents({ config, images, skillCacheClaim, skills, harness, sandboxCwd = "/workspace", sandboxUrl = pod => `http://${pod}.kaeno-sandbox.${k8s.namespace}.svc.cluster.local:7070` }: AgentsDeps) {
   const coding = new Map(CodingTools.tools!.map(t => [t.name, t as ToolRegistration]));
   const envs = new Map<string, RemoteExecutionEnv>();
   // While the process shuts down, running delegations are paused, not over: they keep their sandbox and are resumed
@@ -100,8 +100,8 @@ export function createAgents({ config, images, skills, harness, sandboxCwd = "/w
         const state = await tx.doc(AgentState, created.id);
         state.template = agent;
         state.skills = skills.bind(template.skills);
-        if (template.sandbox) state.sandbox = { pod: podName(created.id), token: randomBytes(24).toString("hex"), images: { ...images } };
-        return { id: created.id, sandbox: state.sandbox ? { ...state.sandbox, images: { ...images } } : undefined,
+        if (template.sandbox) state.sandbox = { pod: podName(created.id), token: randomBytes(24).toString("hex"), images: { execution: images.execution }, skillCacheClaim };
+        return { id: created.id, sandbox: state.sandbox ? { ...state.sandbox, images: { execution: images.execution } } : undefined,
           selection: state.skills.map(s => ({ id: s.id, treeHash: s.treeHash })) };
       }, context);
       const details = { conversationId: child.id, agent, ...(child.sandbox ? { pod: child.sandbox.pod } : {}) };
@@ -112,11 +112,12 @@ export function createAgents({ config, images, skills, harness, sandboxCwd = "/w
           if (!child.sandbox.images) {
             // Legacy child has no skills. Adopt a surviving old image, otherwise use the new bundle-free runtime.
             const existing = await k8s.getPod(child.sandbox.pod);
-            child.sandbox.images = { execution: existing?.spec?.containers?.[0]?.image ?? images.execution, skillSource: images.skillSource };
+            child.sandbox.images = { execution: existing?.spec?.containers?.[0]?.image ?? images.execution };
             await api.commit(async tx => { (await tx.doc(AgentState, child.id)).sandbox!.images = child.sandbox!.images!; }, context);
           }
           await k8s.createPod(k8s.sandboxPod({
-            name: child.sandbox.pod, images: child.sandbox.images, skills: child.selection, token: child.sandbox.token,
+            name: child.sandbox.pod, images: child.sandbox.images, skillCacheClaim: child.sandbox.skillCacheClaim ?? skillCacheClaim,
+            skills: child.selection, token: child.sandbox.token,
             conversationId: String(child.id), taskId: String(api.taskId), template: agent,
           }));
           await waitForSandbox(child.sandbox.pod, context);

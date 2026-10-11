@@ -31,7 +31,6 @@ export const listSandboxPods = async () => ((await call("GET", `${pods}?labelSel
 
 export const isReady = (pod: any) => pod?.status?.conditions?.some((c: any) => c.type === "Ready" && c.status === "True") ?? false;
 export const failedReason = (pod: any): string | undefined => {
-  if (pod?.status?.phase === "Failed" || pod?.status?.phase === "Succeeded") return `pod ${pod.status.phase}: ${pod.status.reason ?? ""}`;
   for (const status of [...(pod?.status?.initContainerStatuses ?? []), ...(pod?.status?.containerStatuses ?? [])]) {
     const ended = status.state?.terminated;
     if (ended?.exitCode && status.name === "skills") return `skills init exited ${ended.exitCode}: ${ended.message ?? ended.reason ?? "copy failed"}`;
@@ -39,10 +38,11 @@ export const failedReason = (pod: any): string | undefined => {
     if (["ErrImagePull", "ImagePullBackOff", "CreateContainerConfigError", "InvalidImageName", "CrashLoopBackOff"].includes(waiting?.reason))
       return `${status.name}: ${waiting.reason}: ${waiting.message ?? ""}`;
   }
+  if (pod?.status?.phase === "Failed" || pod?.status?.phase === "Succeeded") return `pod ${pod.status.phase}: ${pod.status.reason ?? ""}`;
   return undefined;
 };
 
-export type SandboxInput = { name: string; images: SandboxImages; skills: SkillCopySelection; token: string; conversationId: string; taskId: string; template: string };
+export type SandboxInput = { name: string; images: SandboxImages; skillCacheClaim: string; skills: SkillCopySelection; token: string; conversationId: string; taskId: string; template: string };
 
 // The model never shapes this spec. A sandbox is an isolated pod: own emptyDir workspace and home, no Kubernetes
 // credentials, read-only root filesystem, non-root, internet egress only (see NetworkPolicy), and the GitHub deploy key.
@@ -66,12 +66,13 @@ export function sandboxPod(o: SandboxInput) {
       enableServiceLinks: false,
       securityContext: { runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: { type: "RuntimeDefault" } },
       ...(o.skills.length ? { initContainers: [{
-        name: "skills", image: o.images.skillSource, imagePullPolicy: "IfNotPresent",
+        name: "skills", image: o.images.skillSource ?? o.images.execution, imagePullPolicy: "IfNotPresent",
         command: ["node", "/app/src/materialize-skills.ts"],
         env: [{ name: "KAENO_SKILL_PLAN", value: JSON.stringify(o.skills) }],
         securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } },
         resources: { requests: { cpu: "50m", memory: "64Mi" }, limits: { cpu: "500m", memory: "256Mi" } },
-        volumeMounts: [{ name: "skills", mountPath: "/skills-out" }],
+        volumeMounts: [{ name: "skills", mountPath: "/skills-out" },
+          ...(!o.images.skillSource ? [{ name: "skill-cache", mountPath: "/skill-cache", readOnly: true }] : [])],
         terminationMessagePolicy: "FallbackToLogsOnError",
       }] } : {}),
       containers: [{
@@ -102,6 +103,7 @@ export function sandboxPod(o: SandboxInput) {
       volumes: [
         { name: "workspace", emptyDir: { sizeLimit: "5Gi" } },
         { name: "skills", emptyDir: { sizeLimit: "256Mi" } },
+        ...(o.skills.length && !o.images.skillSource ? [{ name: "skill-cache", persistentVolumeClaim: { claimName: o.skillCacheClaim, readOnly: true } }] : []),
         { name: "home", emptyDir: { sizeLimit: "1Gi" } },
         { name: "tmp", emptyDir: { sizeLimit: "2Gi" } },
         { name: "github-ssh", secret: { secretName: "kaeno-github-ssh", optional: true, defaultMode: 0o440 } },

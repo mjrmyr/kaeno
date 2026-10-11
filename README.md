@@ -67,24 +67,48 @@ Declare source repositories in homelab's `apps/kaeno/config.json`, then select s
 ```
 
 Other existing config fields are omitted above. Repository versions are optional Git refs (tag, branch or commit).
-Without a ref, **every build fetches the current default-branch HEAD**, not the latest release. Missing refs/skills
-fail the build. Repository IDs are case-insensitive; skill names are the `name` in SKILL.md frontmatter.
+Without a ref, **each kaeno startup fetches the current default-branch HEAD**, not the latest release. Missing refs,
+skills or inaccessible sources fail startup before any agent resumes or accepts turns. Repository IDs are
+case-insensitive; skill names are the `name` in SKILL.md frontmatter.
 
-`npm run deploy` snapshots the config, resolves sources, and runs **`npx skills@1.7.2 add`** on selected local skill
-trees. You do not install anything manually. Resolved commits are recorded as provenance, not a lockfile. The CLI
-needs npm network access on first use; private sources use your build machine's normal Git authentication, never
-sandbox credentials. Unsupported source links, ambiguous names or omitted/changed installer files fail explicitly.
+To assign every discovered skill from a declared repository, use `"mjrmyr/myriad:*"` in a template's `skills` array.
+The wildcard is scoped to that repository, expanded at startup against the resolved commit, and sorted by skill ID.
+It can be mixed with explicit selections; overlaps are deduplicated while preserving selector order. Empty wildcard
+repositories, ambiguous names and invalid trees fail startup. Limits apply to the expanded binding. Wildcards do
+not bypass validation, grant tools or propagate assignments to other templates. Existing tasks retain concrete
+skill IDs/hashes; new upstream skills appear only after a refresh for new agents/idle threads.
+
+Kaeno fetches sources and runs **`npx skills@1.7.2 add` at runtime**, with validation before/after installation.
+You do not install anything manually. Selected skill trees are published by content hash to the dedicated
+`kaeno-skills` PVC; Git checkouts/installer lockfiles are temporary and removed. npm's package cache is persistent,
+but never constrains Git refs. Commits/tree hashes are provenance, not a next-startup lock.
+
+**Images are generic: builds neither read your agent config nor contain skill content.** After this application
+version is deployed, add/change repositories, refs or assignments in homelab config and push it; Flux's generated
+ConfigMap rolls kaeno, which resolves the new configuration. No kaeno image rebuild is needed. There is no periodic
+Git polling or in-process config watcher; restart kaeno to refresh unpinned sources without a config change.
+
+**Only public GitHub skill repositories are supported.** Fetching is anonymous: Git does not inherit credentials,
+askpass, auth headers or global/system configuration. Private/inaccessible repositories fail startup rather than
+prompting for authentication. No extra GitHub Secret is needed; workers' existing SSH deploy keys are unchanged.
+Unsupported links, ambiguous names, nested skill/plugin discovery controls or omitted/changed installer assets
+fail explicitly.
 
 Agents see assigned skill descriptions and use **`read_skill`** to load instructions/references lazily. Kaeno can
 use it without a shell. Workers have **only their assigned skill files** at
 `/workspace/.agents/skills/<owner>/<repo>/<skill>` (read-only; use the writable workspace for output).
-A credential-free init container copies them before envd starts. The full store is absent from every layer of the
-worker image. Skills do not automatically install dependencies, grant tools or provide credentials.
+A credential-free, network-free init container mounts the cache PVC read-only and copies them before envd starts.
+**The worker never mounts the cache**—only its dedicated selected-output volume. SQLite is on a separate PVC and is
+never mounted by init. Neither image contains skills. Skills do not install dependencies, grant tools or credentials.
 
-A task freezes its skill binding and both source/execution image digests. A recreated pod recovers those skills,
-not its lost task workspace. Keep both images available while tasks depend on them. Config-only reassignment works
-for already-bundled skills with the same source refs; new skills or changed refs require rebuilding. Omitted skill
-configuration remains compatible and produces an empty bundle.
+A task freezes its skill binding, tree hashes, execution image digest and cache PVC claim. A recreated pod recovers
+those exact skills, not its lost task workspace. Busy root threads and existing children retain their selections;
+idle roots/new children use the newly resolved catalogue. Keep old execution images and cache trees available while
+tasks depend on them. Existing pre-runtime-cache children can replay their old source-image pins, but no new child
+uses image-backed skills. Omitted skill configuration remains compatible; old cache trees are still retained.
+
+The cache is 5Gi and currently has no garbage collection: do not prune/delete it while durable tasks may depend on
+it. local-path/RWO keeps kaeno and its workers on the same storage node (appropriate for this single-node homelab).
 
 Limits: 64 MiB/4096 files per tree, 256 KiB per text document, 2 MiB text per skill, 8 MiB text per agent binding,
 and at most 256 skills per agent. Binary assets stay in the sandbox, not in text tool responses.
@@ -96,12 +120,17 @@ See [the architecture](architecture/skills.md) for lifecycle and verification de
 ```sh
 npm test          # conformance, skills/Git/CLI fixtures, durable upgrades/recreation, channels, config, cron
 npm run check     # typecheck (erasableSyntaxOnly: the image runs TypeScript with Node's type stripping)
-npm run deploy    # resolve skills, build/push sibling images on the node, pin kaeno in ../homelab
-cd ../homelab && git commit -am "kaeno: new image" && git push   # Flux rolls it out
+npm run deploy    # build/push generic sibling images on the node, pin kaeno in ../homelab
+# Review/commit the relevant homelab apps/kaeno changes, then push; Flux rolls it out.
 ```
 
-Tests use local Git fixtures and faux models; the builder test invokes the actual pinned skills CLI (npm access
-may be needed if it is not cached). The optional `scripts/verify-skill-images.sh` checks Docker layers and selected-only
-mounting with a prepared fixture context; it never pushes or deploys images.
+Tests use local Git fixtures and faux models; runtime preparation tests invoke the actual pinned skills CLI
+(npm access may be needed). `sh scripts/verify-runtime-skills.sh` is an opt-in Docker smoke: it builds generic images,
+checks every layer of both images, creates runtime Git fixtures in temporary volumes, runs the real installer as
+UID10001 with a read-only root, and verifies assigned-only mounting/script execution. It never pushes or deploys.
+
+First activation of runtime skills requires deploying this application version and the new cache PVC/mounts together.
+Thereafter, skill changes are config-only: commit/push `apps/kaeno/config.json` in homelab; watch rollout/logs for
+`skills: … (runtime)`, then test a fresh task. Image rebuilding is only for application/toolchain changes.
 
 See [ROADMAP.md](ROADMAP.md) for what comes next.

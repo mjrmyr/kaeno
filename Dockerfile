@@ -1,4 +1,4 @@
-# Sibling targets: the central store NEVER enters the sandbox target or any of its layers.
+# Generic sibling targets: neither image contains skill content or depends on agent configuration.
 FROM node:24-bookworm-slim AS runtime-base
 RUN apt-get update \
  && apt-get install -y --no-install-recommends bash ca-certificates curl git openssh-client python3 ripgrep \
@@ -18,6 +18,5 @@ FROM runtime-base AS kaeno
 ARG SANDBOX_IMAGE
 USER root
 RUN node --input-type=module -e 'import {writeFileSync} from "node:fs"; const ref=process.env.SANDBOX_IMAGE; if (!/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[a-f0-9]{64}$/.test(ref ?? "")) throw Error("SANDBOX_IMAGE must be pinned by digest"); writeFileSync("/app/build-info.json", JSON.stringify({sandboxImage:ref}));'
-COPY skill-bundle /opt/kaeno/skills
 USER 10001:10001
 CMD ["node", "src/kaeno.ts"]

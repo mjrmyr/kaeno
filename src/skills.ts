@@ -1,4 +1,4 @@
-// Skill domain and artifact boundary. No harness/Kubernetes imports: build, init and runtime share these invariants.
+// Skill domain and artifact boundary. Runtime preparation and init share these invariants; no harness/Kubernetes imports.
 import { createHash } from "node:crypto";
 import { chmod, copyFile, lstat, mkdir, readFile, readdir, rename, rm } from "node:fs/promises";
 import { dirname, join, posix } from "node:path";
@@ -10,7 +10,7 @@ export type BoundSkill = {
   treeHash: string; sandboxRoot: string; documents: Record<string, string>;
 };
 export type SkillBinding = BoundSkill[];
-export type SandboxImages = { execution: string; skillSource: string };
+export type SandboxImages = { execution: string; /** Replay-only for pre-runtime-cache children. Never set on new children. */ skillSource?: string };
 export type SkillCopySelection = { id: string; treeHash: string }[];
 export type SkillManifest = {
   schema: 1; installer: "skills@1.7.2";
@@ -58,14 +58,33 @@ export function splitSkillId(raw: string): { repository: string; name: string; i
   return { repository, name, id: `${repository}:${name}` };
 }
 
+/** Config selectors may be wildcards; persisted skill IDs must still pass splitSkillId. */
+export function splitSkillSelector(raw: string): { repository: string; name: string; id: string } {
+  if (!raw.endsWith(":*")) return splitSkillId(raw);
+  const repository = repoId(raw.slice(0, -2));
+  return { repository, name: "*", id: `${repository}:*` };
+}
+
+/** Expand against discovered concrete IDs, preserving selector order and sorting wildcard matches. */
+export function expandSkillSelection(selectors: readonly string[], available: readonly string[]): string[] {
+  const selected = new Set<string>();
+  for (const selector of selectors) {
+    const { repository, name, id } = splitSkillSelector(selector);
+    const matches = name === "*" ? available.filter(id => id.startsWith(`${repository}:`)).sort() : [id];
+    if (!matches.length) fail(`${id}: no skills found in repository`);
+    for (const match of matches) selected.add(match);
+  }
+  return [...selected];
+}
+
 export function parseSkillSelection(raw: unknown, repositories: readonly RepositorySpec[]): string[] {
   if (raw === undefined) return [];
-  if (!Array.isArray(raw) || raw.length > 256 || raw.some(v => typeof v !== "string")) fail("template skills must be an array of at most 256 qualified IDs");
+  if (!Array.isArray(raw) || raw.length > 256 || raw.some(v => typeof v !== "string")) fail("template skills must be an array of at most 256 qualified selectors");
   const declared = new Set(repositories.map(r => r.id));
   const seen = new Set<string>();
   return raw.map(value => {
     if (typeof value !== "string") fail("skill IDs must be strings");
-    const { id, repository } = splitSkillId(value);
+    const { id, repository } = splitSkillSelector(value);
     if (!declared.has(repository)) fail(`undeclared repository ${repository} for ${id}`);
     if (seen.has(id)) fail(`duplicate selection ${id}`);
     seen.add(id);
@@ -146,8 +165,12 @@ async function manifestAt(root: string): Promise<SkillManifest> {
   if (m?.schema !== 1 || m.installer !== INSTALLER || !Array.isArray(m.repositories) || !Array.isArray(m.entries)) fail("unsupported skill manifest");
   const repositories = parseSkillRepositories(m.repositories.map((r: any) => `${r.id}${r.ref === undefined ? "" : `:${r.ref}`}`));
   m.repositories.forEach((r: any, i: number) => { if (r.id !== repositories[i]!.id || !COMMIT.test(r.commit)) fail("invalid repository provenance"); });
-  const ids = parseSkillSelection(m.entries.map((e: any) => e.id), repositories);
-  m.entries.forEach((e: any, i: number) => { if (e.id !== ids[i] || !HASH.test(e.treeHash)) fail("invalid skill manifest entry"); });
+  const declared = new Set(repositories.map(r => r.id)), seen = new Set<string>();
+  m.entries.forEach((e: any) => {
+    const { id, repository } = splitSkillId(e.id); // Never accept wildcard selectors in artifacts.
+    if (e.id !== id || !declared.has(repository) || seen.has(id) || !HASH.test(e.treeHash)) fail("invalid skill manifest entry");
+    seen.add(id);
+  });
   return m as SkillManifest;
 }
 
@@ -155,7 +178,7 @@ export async function openSkillCatalog(root: string, repositories: readonly Repo
   const manifest = await manifestAt(root);
   for (const repo of repositories) {
     const bundled = manifest.repositories.find(r => r.id === repo.id);
-    if (!bundled || bundled.ref !== repo.ref) fail(`${repo.id}: configured ref is not bundled; rebuild with npm run deploy`);
+    if (!bundled || bundled.ref !== repo.ref) fail(`${repo.id}: configured ref does not match the resolved catalogue`);
   }
   const entries = new Map<string, BoundSkill>();
   for (const entry of manifest.entries) {
@@ -169,12 +192,13 @@ export async function openSkillCatalog(root: string, repositories: readonly Repo
     });
   }
   const catalog: SkillCatalog = {
-    bind: ids => {
+    bind: selectors => {
+      const ids = expandSkillSelection(selectors, [...entries.keys()]);
       if (ids.length > 256) fail("too many skills in one agent binding");
       let bytes = 0;
       return ids.map(id => {
         const skill = entries.get(id);
-        if (!skill) fail(`${id}: skill not bundled; rebuild with npm run deploy`);
+        if (!skill) fail(`${id}: skill not present in the resolved catalogue`);
         bytes += Object.values(skill.documents).reduce((sum, text) => sum + Buffer.byteLength(text), 0);
         if (bytes > 8 * 1024 * 1024) fail("agent skill documents exceed 8 MiB binding limit");
         return structuredClone(skill);
@@ -204,20 +228,17 @@ export function readSkillDocument(binding: readonly BoundSkill[], request: { ski
 /** Validate image refs at startup; never accept tags for durable sandbox recreation. */
 export function parseSandboxImages(raw: unknown): SandboxImages {
   const value = raw as any;
-  for (const key of ["execution", "skillSource"]) if (typeof value?.[key] !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[a-f0-9]{64}$/.test(value[key])) fail(`sandbox ${key} must be a digest-qualified image reference`);
-  return { execution: value.execution, skillSource: value.skillSource };
+  if (typeof value?.execution !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[a-f0-9]{64}$/.test(value.execution)) fail("sandbox execution must be a digest-qualified image reference");
+  return { execution: value.execution }; // New bindings deliberately cannot freeze an image-baked skill source.
 }
 
-/** Init-only, no network: source image and derived plan are immutable; main starts only after success. */
-export async function materializeSkillSelection(sourceRoot: string, selection: SkillCopySelection, destination: string): Promise<void> {
-  const manifest = await manifestAt(sourceRoot);
+/** Init-only, no network: immutable cache trees + frozen selection; main starts only after success. */
+export async function materializeSkillSelection(cacheRoot: string, selection: SkillCopySelection, destination: string): Promise<void> {
   const seen = new Set<string>();
   for (const selected of selection) {
-    splitSkillId(selected.id);
-    if (seen.has(selected.id) || !HASH.test(selected.treeHash)) fail("invalid/duplicate materialization selection");
+    const parsed = splitSkillId(selected.id);
+    if (parsed.id !== selected.id || seen.has(selected.id) || !HASH.test(selected.treeHash)) fail("invalid/duplicate materialization selection");
     seen.add(selected.id);
-    const entry = manifest.entries.find(e => e.id === selected.id);
-    if (!entry || entry.treeHash !== selected.treeHash) fail(`${selected.id}: frozen skill unavailable in source image`);
   }
   // Dedicated output volume only. Never clear the task's workspace.
   await mkdir(destination, { recursive: true });
@@ -226,8 +247,11 @@ export async function materializeSkillSelection(sourceRoot: string, selection: S
   await mkdir(staging);
   for (const selected of selection) {
     const relative = skillRelativeRoot(selected.id);
-    const source = join(sourceRoot, relative), target = join(staging, relative);
-    if ((await inspectSkill(source)).treeHash !== selected.treeHash) fail(`${selected.id}: source integrity mismatch`);
+    const source = join(cacheRoot, "trees", selected.treeHash), target = join(staging, relative);
+    const inspected = await inspectSkill(source).catch(error => {
+      fail(`${selected.id}: retained tree ${selected.treeHash} unavailable or invalid: ${error.message}`);
+    });
+    if (inspected.treeHash !== selected.treeHash || inspected.metadata.name !== splitSkillId(selected.id).name) fail(`${selected.id}: source integrity mismatch`);
     await copySkillTree(source, target);
     if ((await inspectSkill(target)).treeHash !== selected.treeHash) fail(`${selected.id}: copy integrity mismatch`);
   }

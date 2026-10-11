@@ -1,11 +1,10 @@
 #!/bin/sh
-# Resolve skills fresh, build sibling targets on the node, push, then pin kaeno. No Git push/live apply.
+# Build generic sibling targets on the node, push, then pin kaeno. No config reads/skill resolution/Git push/live apply.
 set -eu
 HOST=${KAENO_BUILD_HOST:-mjrmyr@homelab}
 HOMELAB=${HOMELAB_REPO:-"$(dirname "$0")/../../homelab"}
 HOMELAB=$(cd "$HOMELAB" && pwd)
 cd "$(dirname "$0")/.."
-ROOT=$(pwd)
 tag=$(git rev-parse --short HEAD 2>/dev/null || echo dev)$(git diff --quiet HEAD -- src scripts Dockerfile package.json package-lock.json 2>/dev/null || echo -dirty)
 context=$(mktemp -d "${TMPDIR:-/tmp}/kaeno-build.XXXXXXXX")
 remote=
@@ -16,11 +15,8 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
-# Snapshot ONCE; the live homelab configuration is never copied into the image/context.
-cp "$HOMELAB/apps/kaeno/config.json" "$context/config.snapshot.json"
+# Release builds never read homelab config. Skill sources are runtime data on the dedicated PVC.
 COPYFILE_DISABLE=1 tar --no-xattrs -czf - --exclude-from=.dockerignore . | tar xzf - -C "$context"
-node "$ROOT/scripts/build-skills.ts" "$context/config.snapshot.json" "$context/skill-bundle"
-rm "$context/config.snapshot.json"
 remote=$(ssh "$HOST" 'mktemp -d kaeno-build.XXXXXXXX')
 # mktemp's fixed template only produces this safe path, not a shell command.
 case "$remote" in kaeno-build.????????) ;; *) echo 'Unexpected remote build path' >&2; remote=; exit 1 ;; esac

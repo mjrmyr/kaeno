@@ -16,7 +16,8 @@ import * as k8s from "./k8s.ts";
 import { startScheduler } from "./schedule.ts";
 import { pollTelegram, telegramClient, telegramNotifier } from "./telegram.ts";
 import { defineTurn, refreshThreads, type ThreadDeps } from "./threads.ts";
-import { openSkillCatalog, parseSandboxImages } from "./skills.ts";
+import { parseSandboxImages } from "./skills.ts";
+import { prepareSkills } from "./skill-repositories.ts";
 
 // ---- boundary: environment and config, validated once ----
 const env = (name: string) => process.env[name]?.trim() || undefined;
@@ -28,18 +29,22 @@ for (const [provider, key] of [["anthropic", "ANTHROPIC_API_KEY"], ["openai", "O
   if (needed.has(provider) && !env(key)) throw new Error(`${key} is required by a template using ${provider}`);
 const telegramToken = env("TELEGRAM_BOT_TOKEN");
 const self = env("POD_NAME") ? await k8s.getPod(env("POD_NAME")!) : undefined;
-const sourceImage = String(self?.spec?.containers?.[0]?.image ?? env("KAENO_IMAGE") ?? "");
 const executionImage = env("SANDBOX_IMAGE") ?? JSON.parse(await readFile(env("KAENO_BUILD_INFO") ?? "/app/build-info.json", "utf8")).sandboxImage;
-const images = parseSandboxImages({ execution: executionImage, skillSource: sourceImage });
-const skills = await openSkillCatalog(env("KAENO_SKILLS") ?? "/opt/kaeno/skills", config.skillRepositories,
-  Object.fromEntries(Object.values(config.templates).map(t => [t.name, t.skills])));
+const images = parseSandboxImages({ execution: executionImage });
+const skillCacheClaim = env("KAENO_SKILL_CACHE_CLAIM") ?? self?.spec?.volumes?.find((v: any) => v.name === "skill-cache")?.persistentVolumeClaim?.claimName ?? "kaeno-skills";
+console.log("skills: resolving runtime configuration before resuming agents");
+const skills = await prepareSkills({
+  repositories: config.skillRepositories,
+  selections: Object.fromEntries(Object.values(config.templates).map(t => [t.name, t.skills])),
+  cacheRoot: env("KAENO_SKILL_CACHE") ?? "/var/lib/kaeno/skills",
+});
 
 // ---- the durable core ----
 const models = createModels();
 models.setProvider(anthropicProvider()); // reads ANTHROPIC_API_KEY
 models.setProvider(openaiProvider());    // reads OPENAI_API_KEY
 let harness!: Harness;
-const agents = createAgents({ config, images, skills, harness: () => harness });
+const agents = createAgents({ config, images, skillCacheClaim, skills, harness: () => harness });
 const telegram = telegramToken ? telegramClient(telegramToken, env("TELEGRAM_API_BASE")) : undefined;
 const Turn = defineTurn(() => telegramNotifier(telegram));
 const registry = createRegistry();
