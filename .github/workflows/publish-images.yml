@@ -225,23 +225,8 @@ jobs:
               output.write(f"changed={str(updated != original).lower()}\n")
           PY
 
-      - name: Reject stale source or homelab base before writing
-        if: steps.image.outputs.changed == 'true'
-        id: current
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HOMELAB_PR_TOKEN: ${{ secrets.HOMELAB_PR_TOKEN }}
-        run: |
-          source=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --header 'Cache-Control: no-cache' --jq '.object.sha')
-          base=$(GH_TOKEN="$HOMELAB_PR_TOKEN" gh api repos/mjrmyr/homelab/git/ref/heads/main --header 'Cache-Control: no-cache' --jq '.object.sha')
-          if [[ "$source" == "$GITHUB_SHA" && "$base" == "$(git -C homelab rev-parse HEAD)" ]]; then
-            echo 'ready=true' >> "$GITHUB_OUTPUT"
-          else
-            echo '::notice::Skipping homelab PR: source or homelab main advanced; rerun against current main.'
-          fi
-
       - name: Create or update review-only homelab PR
-        if: steps.current.outputs.ready == 'true'
+        if: steps.image.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v8.1.1
         with:
           path: homelab
@@ -249,12 +234,10 @@ jobs:
           add-paths: apps/kaeno/kustomization.yaml
           base: main
           branch: chore/kaeno-image
-          draft: always-true
+          draft: false
           commit-message: 'chore(kaeno): update published orchestrator digest'
           title: 'chore(kaeno): update published orchestrator digest'
           body: |
             Pin `images[name=kaeno]` to `ghcr.io/mjrmyr/kaeno@${{ needs.publish.outputs.kaeno-digest }}`.
             Source: https://github.com/mjrmyr/kaeno/commit/${{ github.sha }}
             Build: https://github.com/mjrmyr/kaeno/actions/runs/${{ github.run_id }}
-            The orchestrator embeds its matching sandbox digest. No auto-merge or deployment.
-            Review pull access and both repositories before merging; checks and writes are not atomic.
