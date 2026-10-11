@@ -34,6 +34,10 @@ export type Config = {
   telegram: { allowedChatIds: number[] };
 };
 
+/** CHAT may select its primary or a direct configured delegate as a fresh WORK root. */
+export const eligibleWorkTemplates = (config: Config): Template[] =>
+  [...new Set([config.agent, ...config.templates[config.agent]!.delegates])].map(name => config.templates[name]!);
+
 const fail = (message: string): never => { throw new Error(`Invalid kaeno config: ${message}`); };
 const str = (v: unknown, at: string) => (typeof v === "string" && v.trim() ? v : fail(`${at} must be a non-empty string`));
 

@@ -98,7 +98,7 @@ describe("kaeno durable delegation", () => {
       if (system.includes("Kaeno CHAT")) {
         if (last.role === "toolResult") return fauxAssistantMessage([fauxText("ACK: work accepted")]);
         if (text.startsWith("Work #")) return fauxAssistantMessage([fauxText(text.split("\n\n").slice(1).join("\n\n"))]);
-        return fauxAssistantMessage([fauxToolCall("start_work", { title: "Write file", brief: "Please get hello.txt written." }, { id: "start" })], { stopReason: "toolUse" });
+        return fauxAssistantMessage([fauxToolCall("start_work", { agent: "kaeno", title: "Write file", brief: "Please get hello.txt written." }, { id: "start" })], { stopReason: "toolUse" });
       }
       if (system.includes("ORCHESTRATOR")) {
         expect(system).not.toContain("Run the assigned script, not unrelated skills.");
@@ -139,7 +139,7 @@ describe("kaeno durable delegation", () => {
     const open = async () => { // a fresh process: new agents, same storage; different current images on reopen
       version++;
       const catalog = await openSkillCatalog(store, config.skillRepositories, {});
-      const work = background ? createWork({ harness: () => harness, Turn, capture: () => agents.captureWork(), configure: (tx, child, b, workId) => agents.configureWork(tx, child, b, workId), clean: id => agents.workClean(id) }) : undefined;
+      const work = background ? createWork({ harness: () => harness, Turn, config, capture: agent => agents.captureWork(agent), configure: (tx, child, b, workId) => agents.configureWork(tx, child, b, workId), clean: id => agents.workClean(id) }) : undefined;
       agents = createAgents({ config, images: { execution: `execution-v${version}` }, skillCacheClaim: `skill-cache-v${version}`, skills: catalog, harness: () => harness, sandboxUrl: () => envdUrl, sandboxCwd: workspace, work });
       const registry = createRegistry();
       registry.install(CodingTools); registry.install(agents.Kaeno); registry.install(defineExtension({ name: "kaeno-channels", tasks: [Turn] }));

@@ -4,11 +4,23 @@ import type { Context } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
 import { AssistantEntry, defineDoc, defineExtension, defineTask, defineTool,
   type ConversationId, type Harness, type TaskId, type ToolExecutionApi, type Tx } from "@earendil-works/pi-durable";
-import type { Template } from "./config.ts";
+import { eligibleWorkTemplates, type Config, type Template } from "./config.ts";
 import type { SandboxImages, SkillBinding } from "./skills.ts";
 import { activeTurn, admitTurn, admitCancel, suppressReports, TurnLedger, type ControlTask, type Origin, type TurnTask } from "./turns.ts";
 
 export type WorkBlueprint = { agent: string; templates: Record<string, { template: Template; skills: SkillBinding }>; images: SandboxImages; skillCacheClaim: string };
+/** Persisted tasks are a boundary: never guess a missing/invalid frozen root from current config. */
+export function workRoot(blueprint: WorkBlueprint) {
+  const root = blueprint?.templates?.[blueprint.agent];
+  if (!blueprint?.agent || !root?.template || root.template.name !== blueprint.agent ||
+      !root.template.model?.provider || !root.template.model.modelId || typeof root.template.instructions !== "string" ||
+      !Array.isArray(root.template.tools) || !Array.isArray(root.template.delegates) ||
+      !Array.isArray(root.template.skills) || !Array.isArray(root.skills) ||
+      typeof blueprint.images?.execution !== "string" || !blueprint.images.execution ||
+      typeof blueprint.skillCacheClaim !== "string" || !blueprint.skillCacheClaim)
+    throw new Error("WORK has no valid frozen blueprint root; cannot resume safely (cancel and submit a new request)");
+  return root;
+}
 type WorkInput = { title: string; brief: string; origin: Origin; blueprint: WorkBlueprint };
 type WorkResult = { status: "completed" | "failed"; text: string };
 type WorkState = { phase: "start" } | { phase: "run"; child: ConversationId } | { phase: "report"; text: string; failed?: boolean };
@@ -16,14 +28,15 @@ export const WorkIndex = defineDoc<{ launches: Record<string, TaskId<WorkResult>
   kind: "kaeno.work-index", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ launches: {} }),
 });
 export type WorkView = { id: TaskId; title: string; status: string };
-type Deps = { harness: () => Harness; Turn: TurnTask; Control?: ControlTask; capture: () => WorkBlueprint;
+type Deps = { harness: () => Harness; Turn: TurnTask; Control?: ControlTask; config: Config; capture: (agent: string) => WorkBlueprint;
   configure: (tx: Tx, id: ConversationId, blueprint: WorkBlueprint, workId: TaskId) => Promise<void>; clean?: (id: TaskId) => Promise<boolean>; maxActive?: number };
 
-export function createWork({ harness, Turn, Control, capture, configure, clean, maxActive = 32 }: Deps) {
+export function createWork({ harness, Turn, Control, config, capture, configure, clean, maxActive = 32 }: Deps) {
   const Work = defineTask<WorkInput, WorkState, WorkResult>({
     name: "kaeno.work", version: 1, initial: () => ({ phase: "start" }),
     phases: {
       start: (task, runtime, context) => runtime.commit(async tx => {
+        workRoot(task.input.blueprint);
         const found = (await tx.scanConversations({ ownerTaskId: task.id }, 1)).items[0];
         const child = found ?? await tx.createConversation({ ownership: { kind: "task", taskId: task.id } });
         if (!found) await configure(tx, child.id, task.input.blueprint, task.id);
@@ -31,6 +44,7 @@ export function createWork({ harness, Turn, Control, capture, configure, clean, 
       }, context),
       run: async (task, runtime, context) => {
         try {
+          workRoot(task.input.blueprint);
           const child = (await runtime.conversation(task.state.checkpoint.child, context))!;
           const submission = await child.submit({ type: "input", content: task.input.brief, requestId: `work:${task.id}` }, context);
           const settled = await submission.wait(context);
@@ -97,11 +111,13 @@ export function createWork({ harness, Turn, Control, capture, configure, clean, 
     if (turn.source.kind === "work-result") throw new Error("Work-result turns are read-only; only a user can start/cancel work");
     return turn.origin;
   }
+  const choices = eligibleWorkTemplates(config);
   const start = defineTool({ name: "start_work", description: "Start a durable WORK conversation in the background. It can reason itself or delegate execution to workers. Returns immediately; then give the user a concise plan and end this chat turn.",
-    parameters: Type.Object({ title: Type.String({ minLength: 1, maxLength: 160 }), brief: Type.String({ minLength: 1, maxLength: 64_000 }) }), replay: "safe",
-    execute: async ({ title, brief }, api, context) => {
-      const origin = await authorized(api, context), blueprint = capture();
-      const id = await api.commit(async tx => {
+    parameters: Type.Object({ agent: Type.String({ enum: choices.map(t => t.name),
+      description: "WORK template to select explicitly: " + choices.map(t => `${t.name}: ${t.description}`).join("; ") }), title: Type.String({ minLength: 1, maxLength: 160 }), brief: Type.String({ minLength: 1, maxLength: 64_000 }) }), replay: "safe",
+    execute: async ({ agent, title, brief }, api, context) => {
+      const origin = await authorized(api, context);
+      const admitted = await api.commit(async tx => {
         const ledger = await tx.doc(TurnLedger, api.conversationId);
         if (ledger.control || ledger.epoch !== origin.epoch) throw new Error("This turn was fenced by stop/reset");
         const index = await tx.doc(WorkIndex, api.conversationId);
@@ -109,8 +125,16 @@ export function createWork({ harness, Turn, Control, capture, configure, clean, 
         if (existing) {
           const prior = (await tx.task(existing))!.input as WorkInput;
           if (prior.title !== title || prior.brief !== brief) throw new Error("One WORK conversation owns this request; put all subtasks in its brief");
-          return existing;
+          workRoot(prior.blueprint);
+          // pi-durable execute-phase replay bypasses schema validation. Old admitted calls had no agent.
+          if (agent !== undefined && agent !== prior.blueprint.agent) throw new Error("This request already selected a different WORK template");
+          return { id: existing, agent: prior.blueprint.agent };
         }
+        const eligible = eligibleWorkTemplates(config);
+        if (typeof agent !== "string" || !eligible.some(t => t.name === agent))
+          throw new Error(`start_work requires an explicit eligible agent template: ${eligible.map(t => t.name).join(", ")}; old unadmitted calls cannot be resumed without selection`);
+        const blueprint = capture(agent);
+        workRoot(blueprint);
         const live = [];
         for (const status of ["pending", "running", "waiting", "completing"] as const)
           live.push(...(await tx.scanTasks({ conversationId: api.conversationId, kind: "kaeno.work", status }, maxActive + 1)).items);
@@ -122,9 +146,10 @@ export function createWork({ harness, Turn, Control, capture, configure, clean, 
         for (const [key, id] of history.slice(0, Math.max(0, history.length - 511))) if (!activeIds.has(id)) delete index.launches[key];
         const created = await tx.createTask(Work, { title, brief, origin, blueprint }, { ownership: { kind: "conversation" }, conversationId: api.conversationId, background: true });
         index.launches[origin.requestId] = created;
-        return created;
+        return { id: created, agent: blueprint.agent };
       }, context);
-      return { content: [{ type: "text", text: `Accepted work #${id}: ${title}. It runs independently; do not wait for it. Explain your plan and answer the user now.` }], details: { workId: id } };
+      const { id, agent: selected } = admitted;
+      return { content: [{ type: "text", text: `Accepted work #${id}: ${title} (template ${selected}). It runs independently; do not wait for it. Explain your plan and answer the user now.` }], details: { workId: id, agent: selected } };
     },
   });
   const status = defineTool({ name: "list_work", description: "List work requests belonging to this chat and their durable status.", parameters: Type.Object({}), replay: "safe",

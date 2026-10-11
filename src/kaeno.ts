@@ -50,7 +50,7 @@ const telegram = telegramToken ? telegramClient(telegramToken, env("TELEGRAM_API
 const Turn = defineTurn(() => telegramNotifier(telegram));
 const Control = defineControl(() => harness, (id, workId) => work.cancel(id, workId));
 const work: ReturnType<typeof createWork> = createWork({ harness: () => harness, Turn, Control,
-  capture: () => agents.captureWork(), configure: (tx, id, blueprint, workId) => agents.configureWork(tx, id, blueprint, workId), clean: id => agents.workClean(id) });
+  config, capture: agent => agents.captureWork(agent), configure: (tx, id, blueprint, workId) => agents.configureWork(tx, id, blueprint, workId), clean: id => agents.workClean(id) });
 agents = createAgents({ config, images, skillCacheClaim, skills, harness: () => harness, work });
 const registry = createRegistry();
 registry.install(CodingTools);
