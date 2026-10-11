@@ -25,8 +25,8 @@ schedules ──────┘                                 │ thread conve
   or losing the connection never stops work, and re-asking with the same request ID returns the result.
 - **Threads**: one durable conversation per channel key: `pi:<pi session id>`, `telegram:<chat id>`, `schedule:<name>`.
 - **Agents**: `config.json` (ConfigMap `kaeno-config`) defines templates: `model`, `thinkingLevel`, `instructions`,
-  `sandbox`, `tools` (`read`, `write`, `edit`, `bash`), and `delegates` (templates it may start sub-agents from).
-  Threads re-read their template on every start; sub-agents use the current template when created.
+  `sandbox`, `tools` (`read`, `write`, `edit`, `bash`), `skills`, and `delegates` (templates it may start sub-agents from).
+  Idle threads refresh their template at startup/admission; busy threads and sub-agents retain their bound skills.
 - **Sandbox** (`src/k8s.ts` → `sandboxPod`): per delegation, a pod running `envd` (`src/envd.ts`), pi-durable's
   `NodeExecutionEnv` behind a small HTTP protocol (`src/remote-env.ts`, passes pi-durable's env conformance suite).
   Own emptyDir workspace, read-only root, non-root, no ServiceAccount token. NetworkPolicy: public internet only.
@@ -52,13 +52,56 @@ Each slot fires once (even across restarts); slots missed while kaeno was down a
 **API** (`homelab-kaeno:8080`, bearer token): `POST /v1/threads/:key/turn {text, requestId}` streams NDJSON
 (`trace` lines, then `done`/`error`); `POST /v1/threads/:key/abort`; `GET /v1/threads`.
 
+## Agent skills
+
+Declare source repositories in homelab's `apps/kaeno/config.json`, then select skills per template:
+
+```json
+{
+  "skillRepositories": ["poteto/p-stack:v0.2.4", "mattpocock/skills"],
+  "templates": {
+    "kaeno": { "skills": ["mattpocock/skills:grill-me"] },
+    "worker": { "skills": ["poteto/p-stack:poteto-mode"] }
+  }
+}
+```
+
+Other existing config fields are omitted above. Repository versions are optional Git refs (tag, branch or commit).
+Without a ref, **every build fetches the current default-branch HEAD**, not the latest release. Missing refs/skills
+fail the build. Repository IDs are case-insensitive; skill names are the `name` in SKILL.md frontmatter.
+
+`npm run deploy` snapshots the config, resolves sources, and runs **`npx skills@1.7.2 add`** on selected local skill
+trees. You do not install anything manually. Resolved commits are recorded as provenance, not a lockfile. The CLI
+needs npm network access on first use; private sources use your build machine's normal Git authentication, never
+sandbox credentials. Unsupported source links, ambiguous names or omitted/changed installer files fail explicitly.
+
+Agents see assigned skill descriptions and use **`read_skill`** to load instructions/references lazily. Kaeno can
+use it without a shell. Workers have **only their assigned skill files** at
+`/workspace/.agents/skills/<owner>/<repo>/<skill>` (read-only; use the writable workspace for output).
+A credential-free init container copies them before envd starts. The full store is absent from every layer of the
+worker image. Skills do not automatically install dependencies, grant tools or provide credentials.
+
+A task freezes its skill binding and both source/execution image digests. A recreated pod recovers those skills,
+not its lost task workspace. Keep both images available while tasks depend on them. Config-only reassignment works
+for already-bundled skills with the same source refs; new skills or changed refs require rebuilding. Omitted skill
+configuration remains compatible and produces an empty bundle.
+
+Limits: 64 MiB/4096 files per tree, 256 KiB per text document, 2 MiB text per skill, 8 MiB text per agent binding,
+and at most 256 skills per agent. Binary assets stay in the sandbox, not in text tool responses.
+
+See [the architecture](architecture/skills.md) for lifecycle and verification details.
+
 ## Develop and deploy
 
 ```sh
-npm test          # env conformance (24 cases), durable delegation with a restart mid-command, channels, config, cron
+npm test          # conformance, skills/Git/CLI fixtures, durable upgrades/recreation, channels, config, cron
 npm run check     # typecheck (erasableSyntaxOnly: the image runs TypeScript with Node's type stripping)
-npm run deploy    # build on the node, push to localhost:5000, pin the digest in ../homelab/apps/kaeno
+npm run deploy    # resolve skills, build/push sibling images on the node, pin kaeno in ../homelab
 cd ../homelab && git commit -am "kaeno: new image" && git push   # Flux rolls it out
 ```
+
+Tests use local Git fixtures and faux models; the builder test invokes the actual pinned skills CLI (npm access
+may be needed if it is not cached). The optional `scripts/verify-skill-images.sh` checks Docker layers and selected-only
+mounting with a prepared fixture context; it never pushes or deploys images.
 
 See [ROADMAP.md](ROADMAP.md) for what comes next.

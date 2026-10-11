@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config.ts";
-import { matches, parseCron, zoned } from "../src/schedule.ts";
+import { matches, parseCron, zoned } from "../src/cron.ts";
 
 const base = {
   agent: "kaeno",

@@ -1,14 +1,15 @@
 // Minimal in-cluster Kubernetes client (plain fetch + ServiceAccount token) and the sandbox pod spec.
 import { readFile } from "node:fs/promises";
+import { SKILL_ROOT, type SandboxImages, type SkillCopySelection } from "./skills.ts";
 
 const SA = "/var/run/secrets/kubernetes.io/serviceaccount";
-const API = process.env.KUBERNETES_API ?? "https://kubernetes.default.svc";
+const API = "https://kubernetes.default.svc";
 
 export const namespace = (await readFile(`${SA}/namespace`, "utf8").catch(() => "kaeno")).trim();
 
 async function call(method: string, path: string, body?: unknown) {
   const token = (await readFile(process.env.KUBERNETES_TOKEN_FILE ?? `${SA}/token`, "utf8")).trim(); // re-read: projected tokens rotate
-  const response = await fetch(API + path, {
+  const response = await fetch((process.env.KUBERNETES_API ?? API) + path, {
     method,
     headers: { authorization: `Bearer ${token}`, accept: "application/json", ...(body ? { "content-type": "application/json" } : {}) },
     body: body ? JSON.stringify(body) : undefined,
@@ -31,12 +32,17 @@ export const listSandboxPods = async () => ((await call("GET", `${pods}?labelSel
 export const isReady = (pod: any) => pod?.status?.conditions?.some((c: any) => c.type === "Ready" && c.status === "True") ?? false;
 export const failedReason = (pod: any): string | undefined => {
   if (pod?.status?.phase === "Failed" || pod?.status?.phase === "Succeeded") return `pod ${pod.status.phase}: ${pod.status.reason ?? ""}`;
-  const waiting = pod?.status?.containerStatuses?.[0]?.state?.waiting;
-  return ["ErrImagePull", "ImagePullBackOff", "CreateContainerConfigError", "InvalidImageName"].includes(waiting?.reason)
-    ? `${waiting.reason}: ${waiting.message ?? ""}` : undefined;
+  for (const status of [...(pod?.status?.initContainerStatuses ?? []), ...(pod?.status?.containerStatuses ?? [])]) {
+    const ended = status.state?.terminated;
+    if (ended?.exitCode && status.name === "skills") return `skills init exited ${ended.exitCode}: ${ended.message ?? ended.reason ?? "copy failed"}`;
+    const waiting = status.state?.waiting;
+    if (["ErrImagePull", "ImagePullBackOff", "CreateContainerConfigError", "InvalidImageName", "CrashLoopBackOff"].includes(waiting?.reason))
+      return `${status.name}: ${waiting.reason}: ${waiting.message ?? ""}`;
+  }
+  return undefined;
 };
 
-export type SandboxInput = { name: string; image: string; token: string; conversationId: string; taskId: string; template: string };
+export type SandboxInput = { name: string; images: SandboxImages; skills: SkillCopySelection; token: string; conversationId: string; taskId: string; template: string };
 
 // The model never shapes this spec. A sandbox is an isolated pod: own emptyDir workspace and home, no Kubernetes
 // credentials, read-only root filesystem, non-root, internet egress only (see NetworkPolicy), and the GitHub deploy key.
@@ -59,9 +65,18 @@ export function sandboxPod(o: SandboxInput) {
       automountServiceAccountToken: false,
       enableServiceLinks: false,
       securityContext: { runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: { type: "RuntimeDefault" } },
+      ...(o.skills.length ? { initContainers: [{
+        name: "skills", image: o.images.skillSource, imagePullPolicy: "IfNotPresent",
+        command: ["node", "/app/src/materialize-skills.ts"],
+        env: [{ name: "KAENO_SKILL_PLAN", value: JSON.stringify(o.skills) }],
+        securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } },
+        resources: { requests: { cpu: "50m", memory: "64Mi" }, limits: { cpu: "500m", memory: "256Mi" } },
+        volumeMounts: [{ name: "skills", mountPath: "/skills-out" }],
+        terminationMessagePolicy: "FallbackToLogsOnError",
+      }] } : {}),
       containers: [{
         name: "envd",
-        image: o.image,
+        image: o.images.execution,
         imagePullPolicy: "IfNotPresent",
         command: ["node", "/app/src/envd.ts"],
         workingDir: "/workspace",
@@ -78,6 +93,7 @@ export function sandboxPod(o: SandboxInput) {
         resources: { requests: { cpu: "250m", memory: "256Mi" }, limits: { cpu: "2", memory: "2Gi" } },
         volumeMounts: [
           { name: "workspace", mountPath: "/workspace" },
+          { name: "skills", mountPath: SKILL_ROOT, readOnly: true },
           { name: "home", mountPath: "/home/agent" },
           { name: "tmp", mountPath: "/tmp" },
           { name: "github-ssh", mountPath: "/etc/kaeno/ssh", readOnly: true },
@@ -85,6 +101,7 @@ export function sandboxPod(o: SandboxInput) {
       }],
       volumes: [
         { name: "workspace", emptyDir: { sizeLimit: "5Gi" } },
+        { name: "skills", emptyDir: { sizeLimit: "256Mi" } },
         { name: "home", emptyDir: { sizeLimit: "1Gi" } },
         { name: "tmp", emptyDir: { sizeLimit: "2Gi" } },
         { name: "github-ssh", secret: { secretName: "kaeno-github-ssh", optional: true, defaultMode: 0o440 } },

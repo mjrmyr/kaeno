@@ -16,6 +16,7 @@ const oneLine = (s: string, max = 200) => { const f = s.replace(/\s+/g, " ").tri
 export function describeTool(name: string, args: any): string {
   if (name === "bash") return `$ ${oneLine(String(args?.command ?? ""))}`;
   if (name === "delegate") return `▸ delegating to ${args?.agent}: ${oneLine(String(args?.task ?? ""), 300)}`;
+  if (name === "read_skill") return oneLine(`read_skill ${args?.skill ?? ""} ${args?.file ?? "SKILL.md"}`);
   return oneLine(`${name} ${String(args?.path ?? "")}`);
 }
 

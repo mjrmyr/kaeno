@@ -1,6 +1,7 @@
 // Kaeno: an always-on, durable orchestrator agent. One pi-durable Harness on a SQLite file holds every thread,
 // sub-agent, tool call and scheduled turn; a restart resumes them. Channels (HTTP API for pi, Telegram, schedules)
 // only submit and watch.
+import { readFile } from "node:fs/promises";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
@@ -15,6 +16,7 @@ import * as k8s from "./k8s.ts";
 import { startScheduler } from "./schedule.ts";
 import { pollTelegram, telegramClient, telegramNotifier } from "./telegram.ts";
 import { defineTurn, refreshThreads, type ThreadDeps } from "./threads.ts";
+import { openSkillCatalog, parseSandboxImages } from "./skills.ts";
 
 // ---- boundary: environment and config, validated once ----
 const env = (name: string) => process.env[name]?.trim() || undefined;
@@ -26,15 +28,18 @@ for (const [provider, key] of [["anthropic", "ANTHROPIC_API_KEY"], ["openai", "O
   if (needed.has(provider) && !env(key)) throw new Error(`${key} is required by a template using ${provider}`);
 const telegramToken = env("TELEGRAM_BOT_TOKEN");
 const self = env("POD_NAME") ? await k8s.getPod(env("POD_NAME")!) : undefined;
-const image = String(self?.spec?.containers?.[0]?.image ?? env("SANDBOX_IMAGE") ?? "");
-if (!image) throw new Error("Cannot determine the sandbox image (own pod spec or SANDBOX_IMAGE)");
+const sourceImage = String(self?.spec?.containers?.[0]?.image ?? env("KAENO_IMAGE") ?? "");
+const executionImage = env("SANDBOX_IMAGE") ?? JSON.parse(await readFile(env("KAENO_BUILD_INFO") ?? "/app/build-info.json", "utf8")).sandboxImage;
+const images = parseSandboxImages({ execution: executionImage, skillSource: sourceImage });
+const skills = await openSkillCatalog(env("KAENO_SKILLS") ?? "/opt/kaeno/skills", config.skillRepositories,
+  Object.fromEntries(Object.values(config.templates).map(t => [t.name, t.skills])));
 
 // ---- the durable core ----
 const models = createModels();
 models.setProvider(anthropicProvider()); // reads ANTHROPIC_API_KEY
 models.setProvider(openaiProvider());    // reads OPENAI_API_KEY
 let harness!: Harness;
-const agents = createAgents({ config, image: () => image, harness: () => harness });
+const agents = createAgents({ config, images, skills, harness: () => harness });
 const telegram = telegramToken ? telegramClient(telegramToken, env("TELEGRAM_API_BASE")) : undefined;
 const Turn = defineTurn(() => telegramNotifier(telegram));
 const registry = createRegistry();
@@ -47,7 +52,10 @@ harness = await Harness.open(await openNodeSqliteStorage(env("KAENO_DB") ?? "/da
   onReport: error => console.error("harness:", error),
 }, BACKGROUND_CONTEXT);
 
-const deps: ThreadDeps = { harness: () => harness, agent: { template: config.agent, change: () => agents.agentChange(config.templates[config.agent]!) } };
+const deps: ThreadDeps = { harness: () => harness, agent: {
+  template: config.agent, change: () => agents.agentChange(config.templates[config.agent]!),
+  skills: () => agents.bindSkills(config.templates[config.agent]!),
+} };
 await refreshThreads(deps);
 harness.resume(); // continue every run, delegation and turn the last process left unfinished
 
@@ -62,7 +70,7 @@ const sweeper = setInterval(sweep, 5 * 60_000);
 setTimeout(sweep, 30_000); // after resumed delegations had a chance to re-adopt their pods
 
 console.log(`kaeno listening on :${port} · agent ${config.agent} (${config.templates[config.agent]!.model.provider}/${config.templates[config.agent]!.model.modelId}) · ` +
-  `templates ${Object.keys(config.templates).join(", ")} · telegram ${telegram ? "on" : "off"} · schedules ${config.schedules.length} · sandbox image ${image}`);
+  `templates ${Object.keys(config.templates).join(", ")} · telegram ${telegram ? "on" : "off"} · schedules ${config.schedules.length} · sandbox image ${images.execution}`);
 
 for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, async () => {
   console.log(`${signal}: closing`);

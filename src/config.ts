@@ -1,7 +1,8 @@
 // Kaeno's configuration (a ConfigMap) is validated once here; everything else trusts the typed result.
 import { readFile } from "node:fs/promises";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import { parseCron } from "./schedule.ts";
+import { parseCron } from "./cron.ts";
+import { parseSkillRepositories, parseSkillSelection, type RepositorySpec } from "./skills.ts";
 
 export const PROVIDERS = ["anthropic", "openai"] as const;
 export const CODING_TOOLS = ["read", "write", "edit", "bash"] as const;
@@ -22,6 +23,8 @@ export type Template = {
   tools: CodingTool[];
   /** Templates this agent may delegate to with the `delegate` tool. */
   delegates: string[];
+  /** Repository-qualified skill IDs; metadata never grants tools or credentials. */
+  skills: string[];
 };
 
 export type Schedule = { name: string; cron: string; timezone: string; prompt: string; thread: string; notify?: { telegram: number } };
@@ -29,6 +32,7 @@ export type Schedule = { name: string; cron: string; timezone: string; prompt: s
 export type Config = {
   /** Template that user-facing threads (pi, Telegram, schedules) run with. */
   agent: string;
+  skillRepositories: RepositorySpec[];
   templates: Record<string, Template>;
   telegram: { allowedChatIds: number[] };
   schedules: Schedule[];
@@ -40,6 +44,7 @@ const str = (v: unknown, at: string) => (typeof v === "string" && v.trim() ? v :
 export function parseConfig(raw: unknown): Config {
   const c = raw as any;
   if (!c || typeof c !== "object") fail("not an object");
+  const skillRepositories = parseSkillRepositories(c.skillRepositories);
   const templates: Record<string, Template> = {};
   for (const [name, t] of Object.entries<any>(c.templates ?? {})) {
     if (!/^[a-z][a-z0-9-]{0,30}$/.test(name)) fail(`template name ${name}`);
@@ -55,6 +60,7 @@ export function parseConfig(raw: unknown): Config {
       model: { provider: provider as Provider, modelId: rest.join("/") },
       thinkingLevel: t.thinkingLevel, instructions: str(t.instructions, `${name}.instructions`),
       sandbox, tools: tools as CodingTool[], delegates: Array.isArray(t.delegates) ? t.delegates.map(String) : [],
+      skills: parseSkillSelection(t.skills, skillRepositories),
     };
   }
   for (const t of Object.values(templates)) for (const d of t.delegates) if (!templates[d]) fail(`${t.name}.delegates: unknown template ${d}`);
@@ -71,7 +77,7 @@ export function parseConfig(raw: unknown): Config {
     prompt: str(s.prompt, `schedules[${i}].prompt`), thread: s.thread ?? `schedule:${s.name}`,
     notify: s.notify?.telegram !== undefined ? { telegram: Number(s.notify.telegram) } : undefined,
   };});
-  return { agent, templates, telegram: { allowedChatIds }, schedules };
+  return { agent, skillRepositories, templates, telegram: { allowedChatIds }, schedules };
 }
 
 export const loadConfig = async (path: string) => parseConfig(JSON.parse(await readFile(path, "utf8")));
