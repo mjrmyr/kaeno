@@ -77,7 +77,7 @@ describe("kaeno durable delegation", () => {
         kaeno: { name: "kaeno", description: "orchestrator", model: { provider: "faux" as any, modelId: "faux-1" }, instructions: "ORCHESTRATOR", sandbox: false, tools: [], delegates: ["worker"], skills: [recreate ? "demo/root:*" : "demo/root:guide"] },
         worker: { name: "worker", description: "worker", model: { provider: "faux" as any, modelId: "faux-1" }, instructions: "WORKER", sandbox: true, tools: ["read", "write", "edit", "bash"], delegates: [], skills: [recreate ? "demo/worker:*" : "demo/worker:probe"] },
       },
-      telegram: { allowedChatIds: [] }, schedules: [],
+      telegram: { allowedChatIds: [] },
     };
 
     // One scripted model for both agents, routed by role (system prompt) and the latest message.

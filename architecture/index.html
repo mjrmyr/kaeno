@@ -63,11 +63,11 @@
   <p>This is what runs in the cluster now. <b>It supersedes the diagrams further down wherever they differ.</b> Those diagrams describe the earlier pipeline design and are kept only for reference. The current design is described in <code>README.md</code>.</p>
   <table>
     <tr><th>Part</th><th>Built</th></tr>
-    <tr><td>Kaeno</td><td>A real agent on <code>@earendil-works/pi-durable</code>. One Harness on SQLite (PVC) holds every thread, sub-agent, tool call and scheduled turn, and a restart resumes all of them.</td></tr>
+    <tr><td>Kaeno</td><td>A real agent on <code>@earendil-works/pi-durable</code>. One Harness on SQLite (PVC) holds every thread, sub-agent, tool call and Telegram turn, and a restart resumes all of them.</td></tr>
     <tr><td>Models</td><td>Anthropic and OpenAI through pi-ai, configured per <b>agent template</b> (<code>config.json</code>: model, thinking level, instructions, sandbox, tools, delegates).</td></tr>
     <tr><td>Sub-agents</td><td>The <code>delegate</code> tool creates one child conversation per task, owned by the tool call and replay-safe. During shutdown a delegation is paused and keeps its sandbox.</td></tr>
     <tr><td>Sandbox</td><td>One pod per sandboxed delegation, running <code>envd</code>, which is pi-durable's <code>NodeExecutionEnv</code> behind HTTP and passes the env conformance suite. Kaeno's <code>env</code> hook routes the child's tools there. The pod has public internet access (HTTPS, git over SSH with a deploy key), and nothing internal is reachable: no cluster, LAN or tailnet. It holds no other credentials and is deleted when the delegation ends.</td></tr>
-    <tr><td>Channels</td><td>The pi extension (<code>pi:&lt;session&gt;</code> threads), a Telegram bot using long polling and an allow-list, and cron schedules. Telegram and scheduled turns are durable tasks, so each message is answered once and each slot fires once.</td></tr>
+    <tr><td>Channels</td><td>The pi extension (<code>pi:&lt;session&gt;</code> threads) and a Telegram bot using long polling and an allow-list. Telegram turns are durable tasks, so each message is answered once.</td></tr>
     <tr><td>Next</td><td><code>ROADMAP.md</code>: files (second part), long-lived agents, a mobile/web app, budgets.</td></tr>
   </table>
 </section>

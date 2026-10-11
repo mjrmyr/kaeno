@@ -12,7 +12,7 @@ and their workspace is deleted with the sandbox. Open design points:
 - Likely needs a per-delegation "outbox" directory that kaeno collects before deleting the sandbox.
 
 ## Long-lived agents
-Multiple persistent agents similar to kaeno (own threads, own memory, own schedules) next to the one-per-task
+Multiple persistent agents similar to kaeno (own threads, own memory) next to the one-per-task
 sub-agents. pi-durable supports this directly (background subagents owned by an anchor task, messages delivered as
 follow-ups; see pi-durable example 23). Needs: naming/addressing agents from channels, their own sandbox lifetime.
 

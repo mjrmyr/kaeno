@@ -1,4 +1,4 @@
-// Telegram and schedules against a mock Telegram Bot API and a scripted model.
+// Telegram against a mock Telegram Bot API and a scripted model.
 import { describe, expect, it } from "vitest";
 import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -11,7 +11,6 @@ import { fauxAssistantMessage, fauxProvider, fauxText } from "@earendil-works/pi
 import { createRegistry, defineExtension, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { pollTelegram, telegramClient, telegramNotifier } from "../src/telegram.ts";
-import { tick } from "../src/schedule.ts";
 import { defineTurn } from "../src/threads.ts";
 
 const until = async (check: () => boolean, ms = 10000) => {
@@ -20,7 +19,7 @@ const until = async (check: () => boolean, ms = 10000) => {
 };
 
 describe("channels", () => {
-  it("serves allow-listed Telegram chats exactly once, refuses others, and fires schedules once per slot", async () => {
+  it("serves allow-listed Telegram chats exactly once and refuses others", async () => {
     const dir = await mkdtemp(join(tmpdir(), "kaeno-channels-"));
     // Mock Telegram: hands out updates by offset (re-delivering the first one once more), records sent messages.
     const updates = [
@@ -68,15 +67,6 @@ describe("channels", () => {
     expect(sent.filter(m => m.chat_id === 111).map(m => m.text)).toEqual(["echo: hello"]); // once, despite redelivery
     expect(sent.find(m => m.chat_id === 222)!.text).toMatch(/private.*222/);
     stop.abort();
-
-    // A schedule ticked twice in the same minute fires once and reports to Telegram.
-    const schedule = { name: "digest", cron: "* * * * *", timezone: "Europe/Berlin", prompt: "daily digest", thread: "schedule:digest", notify: { telegram: 111 } };
-    const now = new Date("2026-10-12T05:00:10Z");
-    await tick({ ...deps, schedules: [schedule], Turn }, now);
-    await tick({ ...deps, schedules: [schedule], Turn }, new Date(now.getTime() + 20_000));
-    await until(() => sent.some(m => m.text === "echo: daily digest"));
-    await new Promise(r => setTimeout(r, 300));
-    expect(sent.filter(m => m.text === "echo: daily digest")).toHaveLength(1);
 
     await harness.close(BACKGROUND_CONTEXT);
     await new Promise<void>(ok => telegram.close(() => ok()));

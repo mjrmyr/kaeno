@@ -1,5 +1,5 @@
 // Kaeno: an always-on, durable orchestrator agent. One pi-durable Harness on a SQLite file holds every thread,
-// sub-agent, tool call and scheduled turn; a restart resumes them. Channels (HTTP API for pi, Telegram, schedules)
+// sub-agent, tool call and Telegram turn; a restart resumes them. Channels (HTTP API for pi, Telegram)
 // only submit and watch.
 import { readFile } from "node:fs/promises";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -13,7 +13,6 @@ import { createAgents } from "./agents.ts";
 import { createApi } from "./api.ts";
 import { loadConfig } from "./config.ts";
 import * as k8s from "./k8s.ts";
-import { startScheduler } from "./schedule.ts";
 import { pollTelegram, telegramClient, telegramNotifier } from "./telegram.ts";
 import { defineTurn, refreshThreads, type ThreadDeps } from "./threads.ts";
 import { parseSandboxImages } from "./skills.ts";
@@ -69,13 +68,12 @@ const stopping = new AbortController();
 const port = Number(env("PORT") ?? 8080);
 const api = createApi({ ...deps, token }).listen(port);
 if (telegram) void pollTelegram({ ...deps, client: telegram, allowed: new Set(config.telegram.allowedChatIds), Turn, signal: stopping.signal });
-startScheduler({ ...deps, schedules: config.schedules, Turn }, stopping.signal);
 const sweep = () => agents.sweep().catch(e => console.error("sweeper:", e));
 const sweeper = setInterval(sweep, 5 * 60_000);
 setTimeout(sweep, 30_000); // after resumed delegations had a chance to re-adopt their pods
 
 console.log(`kaeno listening on :${port} · agent ${config.agent} (${config.templates[config.agent]!.model.provider}/${config.templates[config.agent]!.model.modelId}) · ` +
-  `templates ${Object.keys(config.templates).join(", ")} · telegram ${telegram ? "on" : "off"} · schedules ${config.schedules.length} · sandbox image ${images.execution}`);
+  `templates ${Object.keys(config.templates).join(", ")} · telegram ${telegram ? "on" : "off"} · sandbox image ${images.execution}`);
 
 for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, async () => {
   console.log(`${signal}: closing`);
