@@ -19,6 +19,20 @@ trap 'exit 143' TERM HUP
 docker build -q --target sandbox -t "$sandbox" "$context" >/dev/null
 config_digest=$(docker inspect --format '{{.Id}}' "$sandbox")
 docker build -q --target kaeno --build-arg "SANDBOX_IMAGE=verify/sandbox@$config_digest" -t "$kaeno" "$context" >/dev/null
+# gh is worker-only, works with an ephemeral home/read-only root, and consumes GH_TOKEN without login or network.
+docker run --rm --network none --read-only --tmpfs /home/agent:uid=10001,gid=10001 --entrypoint sh \
+  -e GH_TOKEN=smoke-fixture-not-a-real-token -e GH_PROMPT_DISABLED=1 "$sandbox" -ec '
+  test "$(id -u)" = 10001
+  gh --version
+  test "$(gh auth token --hostname github.com)" = "$GH_TOKEN"
+  test ! -e /home/agent/.config/gh/hosts.yml
+  echo "PASS: worker gh uses environment authentication without persistent login"
+'
+docker run --rm --network none --read-only --entrypoint sh "$kaeno" -ec '
+  ! command -v gh
+  test -z "${GH_TOKEN:-}"
+  echo "PASS: orchestrator image has no gh or baked GitHub token"
+'
 # Inspect ALL layers of BOTH images. Removing baked files later must not mask build coupling.
 for image in "$sandbox" "$kaeno"; do
   docker image save "$image" | python3 -c '

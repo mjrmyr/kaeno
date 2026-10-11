@@ -179,6 +179,8 @@ describe("catalogue and selected-only materialization", () => {
     expect(() => parseSandboxImages({ ...images, execution: "registry/sandbox:latest" })).toThrow(/digest/);
     const spec = sandboxPod({ name: "probe", images, skillCacheClaim: "kaeno-skills", skills: [{ id: "demo/one:probe", treeHash: "c".repeat(64) }], token: "t", conversationId: "1", taskId: "2", template: "worker" }).spec;
     expect(spec.containers[0]!.image).toBe(images.execution);
+    expect(spec.containers[0]!.env).toContainEqual({ name: "GH_PROMPT_DISABLED", value: "1" });
+    expect(spec.containers[0]!.env).toContainEqual({ name: "GH_TOKEN", valueFrom: { secretKeyRef: { name: "kaeno-github-api", key: "token", optional: true } } });
     expect(spec.initContainers![0]!.image).toBe(images.execution);
     expect(spec.containers[0]!.volumeMounts).toContainEqual({ name: "skills", mountPath: "/workspace/.agents/skills", readOnly: true });
     expect(spec.initContainers![0]!.volumeMounts).toEqual([{ name: "skills", mountPath: "/skills-out" }, { name: "skill-cache", mountPath: "/skill-cache", readOnly: true }]);
@@ -188,7 +190,7 @@ describe("catalogue and selected-only materialization", () => {
     expect(spec.automountServiceAccountToken).toBe(false);
     expect(failedReason({ status: { phase: "Failed", initContainerStatuses: [{ name: "skills", state: { terminated: { exitCode: 1, message: "hash mismatch" } } }] } })).toContain("hash mismatch");
     expect(sandboxPod({ name: "empty", images, skillCacheClaim: "kaeno-skills", skills: [], token: "t", conversationId: "1", taskId: "2", template: "worker" }).spec.initContainers).toBeUndefined();
-    // Existing image-backed children are replayed from their stored source, with no cache mount or new credentials.
+    // Existing image-backed children replay their stored source, with no cache mount or initializer credentials.
     const legacy = sandboxPod({ name: "legacy", images: { ...images, skillSource: "old-source" }, skillCacheClaim: "unused",
       skills: [{ id: "demo/one:probe", treeHash: "c".repeat(64) }], token: "t", conversationId: "1", taskId: "2", template: "worker" }).spec;
     expect(legacy.initContainers![0]!.image).toBe("old-source");
@@ -248,7 +250,7 @@ describe("runtime preparation", () => {
     const gitConfig = join(root, "gitconfig");
     await writeFile(gitConfig, "[credential]\n\thelper = !echo credential-helper-must-not-run >&2; exit 1\n");
     vi.stubEnv("GIT_CONFIG_GLOBAL", gitConfig);
-    for (const name of ["KAENO_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "TELEGRAM_BOT_TOKEN", "GITHUB_TOKEN", "GIT_ASKPASS", "GIT_CONFIG_VALUE_0"])
+    for (const name of ["KAENO_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "TELEGRAM_BOT_TOKEN", "GITHUB_TOKEN", "GH_TOKEN", "GIT_ASKPASS", "GIT_CONFIG_VALUE_0"])
       vi.stubEnv(name, "credential-secret-marker");
     vi.stubEnv("GIT_CONFIG_COUNT", "1"); vi.stubEnv("GIT_CONFIG_KEY_0", "http.extraheader");
     const cacheRoot = join(root, "cache");

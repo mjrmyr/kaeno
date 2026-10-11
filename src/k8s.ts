@@ -45,7 +45,7 @@ export const failedReason = (pod: any): string | undefined => {
 export type SandboxInput = { name: string; images: SandboxImages; skillCacheClaim: string; skills: SkillCopySelection; token: string; conversationId: string; taskId: string; template: string };
 
 // The model never shapes this spec. A sandbox is an isolated pod: own emptyDir workspace and home, no Kubernetes
-// credentials, read-only root filesystem, non-root, internet egress only (see NetworkPolicy), and the GitHub deploy key.
+// credentials, read-only root filesystem, non-root, internet egress only (see NetworkPolicy), and scoped GitHub credentials.
 export function sandboxPod(o: SandboxInput) {
   return {
     apiVersion: "v1",
@@ -85,6 +85,8 @@ export function sandboxPod(o: SandboxInput) {
           { name: "KAENO_ENV_TOKEN", value: o.token },
           { name: "HOME", value: "/home/agent" },
           { name: "TMPDIR", value: "/tmp" },
+          { name: "GH_PROMPT_DISABLED", value: "1" },
+          { name: "GH_TOKEN", valueFrom: { secretKeyRef: { name: "kaeno-github-api", key: "token", optional: true } } },
           { name: "GIT_AUTHOR_NAME", value: "kaeno" }, { name: "GIT_AUTHOR_EMAIL", value: "kaeno@homelab" },
           { name: "GIT_COMMITTER_NAME", value: "kaeno" }, { name: "GIT_COMMITTER_EMAIL", value: "kaeno@homelab" },
         ],

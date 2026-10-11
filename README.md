@@ -14,7 +14,7 @@ Telegram bot ───┘─ HTTP/API · long polling ─▶  pi-durable Harness
                                                   │                             └─ read/write/edit/bash via RemoteExecutionEnv
                                                   ▼
                                         sandbox pod kaeno-sb-… (one per delegation) — envd: files + shell in /workspace
-                                        internet + GitHub SSH · no cluster/LAN/tailnet access · no credentials but the deploy key
+                                        internet + GitHub SSH/API · no cluster/LAN/tailnet access · scoped GitHub credentials only
 ```
 
 ## How it works
@@ -55,6 +55,41 @@ be unsent; Telegram delivery is at-least-once (including possible repeated chunk
 
 **GitHub**: sandboxes use the deploy key in Secret `kaeno-github-ssh`; add its public half
 (`~/.config/kaeno/github_deploy_key.pub`) to GitHub (account key or per-repo deploy key).
+
+### GitHub CLI for workers
+
+The sandbox image includes `gh`. Worker pods optionally read `GH_TOKEN` from Secret **`kaeno-github-api`**, key
+**`token`**, and disable interactive prompts. Missing Secret/key does not prevent workers from starting; authenticated
+`gh` commands will require the token. Neither Kaeno nor skill initialization receives it. Keep using SSH remotes for
+Git clone/push; `gh` uses the PAT for API operations (PRs, issues, workflow inspection).
+
+Create a fine-grained PAT for selected repositories, with an expiry and only necessary permissions. Typical coding
+access: Contents read, Pull requests read/write, Issues read/write, Actions read. Organization approval may be required.
+**Every worker receives this token when configured and can read it through shell tools**; skills do not limit its scope.
+The existing SSH key independently controls Git write access.
+
+Prepare the encrypted Secret locally (requires `kubectl`, `sops`, `python3`; prompts for the PAT without echo):
+
+```sh
+bash scripts/configure-github-token.sh
+# Optional: bash scripts/configure-github-token.sh /path/to/homelab
+```
+
+This writes `apps/kaeno/github-api.secret.enc.yaml` in the homelab checkout using its SOPS creation rule, and adds the
+resource to its kustomization. It does **not** apply, commit or push. No plaintext token file, environment export or
+command-line token argument is used. Run it again to rotate the credential without duplicating the resource reference.
+Review the encrypted changes before pushing. Build/deploy the new images normally; a Secret-only rotation affects
+**new** worker pods, not existing pods' environment. No `gh auth login` or persistent credentials file is needed.
+
+Verify from a new running worker after rollout:
+
+```sh
+kubectl -n kaeno exec <worker-pod> -c envd -- gh --version
+kubectl -n kaeno exec <worker-pod> -c envd -- gh auth status
+kubectl -n kaeno exec <worker-pod> -c envd -- gh repo view OWNER/REPO
+```
+
+Never print `GH_TOKEN` or use `gh auth token` with the real credential in logs. Anonymous skill retrieval is unchanged.
 
 **API** (`homelab-kaeno:8080`, bearer token): `POST /v1/threads/:key/turn {text, requestId}` streams NDJSON
 (`trace` lines, then `done`/`error` for this CHAT reply); `POST /v1/threads/:key/abort`; `GET /v1/threads`.

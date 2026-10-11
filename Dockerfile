@@ -11,6 +11,12 @@ COPY src ./src
 USER 10001:10001
 
 FROM runtime-base AS sandbox
+# GitHub API access belongs to execution workers, not the orchestrator or skill resolver.
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends gh \
+ && rm -rf /var/lib/apt/lists/*
+USER 10001:10001
 CMD ["node", "src/envd.ts"]
 
 FROM runtime-base AS kaeno
