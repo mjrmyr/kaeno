@@ -1,0 +1,90 @@
+name: Publish GHCR images
+
+on:
+  push:
+    branches: [main]
+    tags: ['**']
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # Reject rather than normalize version tags or overwrite reserved aliases.
+      - name: Validate version tag
+        if: github.ref_type == 'tag'
+        env:
+          GIT_TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$GIT_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] ||
+             [[ "$GIT_TAG" == main || "$GIT_TAG" == latest || "$GIT_TAG" == sha-* ]]; then
+            echo 'Version tags must be valid Docker tags, excluding main, latest and sha-*.' >&2
+            exit 1
+          fi
+
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sandbox image metadata
+        id: sandbox-meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/mjrmyr/kaeno-sandbox
+          flavor: latest=false
+          tags: |
+            type=sha,format=short,prefix=sha-
+            type=ref,event=tag
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build and push sandbox
+        id: sandbox
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: sandbox
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.sandbox-meta.outputs.tags }}
+          labels: ${{ steps.sandbox-meta.outputs.labels }}
+
+      - name: Kaeno image metadata
+        id: kaeno-meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/mjrmyr/kaeno
+          flavor: latest=false
+          tags: |
+            type=sha,format=short,prefix=sha-
+            type=ref,event=tag
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build and push kaeno with pinned sandbox
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: kaeno
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            SANDBOX_IMAGE=ghcr.io/mjrmyr/kaeno-sandbox@${{ steps.sandbox.outputs.digest }}
+          tags: ${{ steps.kaeno-meta.outputs.tags }}
+          labels: ${{ steps.kaeno-meta.outputs.labels }}

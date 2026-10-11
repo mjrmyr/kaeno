@@ -161,6 +161,63 @@ and at most 256 skills per agent. Binary assets stay in the sandbox, not in text
 
 See [the architecture](architecture/skills.md) for lifecycle and verification details.
 
+## Published container images (GHCR)
+
+[Publish GHCR images](.github/workflows/publish-images.yml) builds and pushes two generic **linux/amd64** images
+on pushes to `main` and Git tag creation (tag pushes):
+
+| Image | Dockerfile target | Purpose |
+| --- | --- | --- |
+| `ghcr.io/mjrmyr/kaeno` | `kaeno` | Orchestrator |
+| `ghcr.io/mjrmyr/kaeno-sandbox` | `sandbox` | Execution workers and skill initialization |
+
+Both receive `sha-<7-character-commit-SHA>` tags (for example, `sha-f908b9e`). Main pushes also update `main` and
+`latest`; these are moving main-build aliases, **not** latest-release aliases. Git tags publish their exact name
+(for example, `v1.2.3`, with the `v` preserved), without updating `main`/`latest`. Version tags must be valid Docker
+tags (1–128 ASCII letters, digits, underscores, periods or hyphens; no leading period/hyphen). `main`, `latest` and
+`sha-*` are reserved; invalid/reserved Git tags fail before publishing rather than being silently renamed.
+
+Sandbox is pushed first; kaeno embeds its GHCR `@sha256:…` digest in `/app/build-info.json`. SHA tags are
+commit-specific, not moving aliases, but GHCR does not enforce tag immutability: a rebuild of the same commit can
+replace them. Use **digest references** for immutable deployment pins and retain old sandbox digests while durable
+tasks depend on them. Pulling kaeno alone does not make its pinned sandbox available to Kubernetes.
+
+```sh
+# After authenticating (see below), pull either main or a specific version/SHA tag:
+docker pull ghcr.io/mjrmyr/kaeno:main
+docker pull ghcr.io/mjrmyr/kaeno-sandbox:main
+# For deployments, use ghcr.io/mjrmyr/kaeno@sha256:<published-digest>.
+```
+
+The workflow uses only `GITHUB_TOKEN` with `contents: read` and `packages: write`; no publishing PAT is needed.
+It publishes images only: no deployment, homelab pin updates, package visibility changes or PR builds. The source
+repository stays private; newly created GHCR packages are private by default. Keep both packages private. If an
+existing package denies publication, its administrator must check repository linkage/Actions access; this workflow
+does not change those settings. The existing `npm run deploy` local-registry workflow is unchanged.
+
+### Pulling private GHCR images
+
+For local pulls, use a **separate personal access token (classic)** with `read:packages`, belonging to a GitHub user
+with read access to both packages. Authorize SSO if required. A worker's fine-grained GitHub API token described
+above is not a GHCR pull credential. To avoid putting the token in shell history or process arguments, in Bash:
+
+```bash
+read -r -p 'GitHub username: ' GHCR_USER
+read -r -s -p 'GHCR read:packages token: ' GHCR_PULL_TOKEN; printf '\n'
+printf '%s' "$GHCR_PULL_TOKEN" | docker login ghcr.io --username "$GHCR_USER" --password-stdin
+unset GHCR_PULL_TOKEN
+```
+
+Docker stores login credentials through its configured credential helper (or Docker config); protect that storage
+and use `docker logout ghcr.io` when finished. Never print tokens or commit Docker credentials.
+
+Kubernetes nodes must also authenticate to GHCR for **both** images, including sandbox/skill-init pods created
+dynamically by kaeno. Provision a `kubernetes.io/dockerconfigjson` image-pull Secret in namespace `kaeno` through
+your existing encrypted-secret process, and attach it via `imagePullSecrets` on the ServiceAccount used by all
+these pods (or their pod specs). Do not commit plaintext credentials. Worker `GH_TOKEN` is for API calls inside an
+already-running container and cannot authenticate a node's image pull. Cluster pull-auth setup and switching from
+the existing local registry are separate deployment work, not performed by this publishing workflow.
+
 ## Develop and deploy
 
 **Upgrading from a version with schedules:** remove `schedules` from the live ConfigMap, then restart/roll out
