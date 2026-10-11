@@ -104,7 +104,7 @@ Frontdesk has one dispatch path: substantial work goes through `work.start`; it 
 - **`src/work.ts`** owns admission, immutable job inputs, Work/Report task definitions, queries, and commands. Private implementation types stay unexported.
 - **`src/agents.ts`** retains worker execution and cleanup. Delegate resolution consumes the frozen work binding rather than current global configuration; sandbox admission occurs here.
 - **`src/threads.ts`** owns acknowledgement barriers and completion delivery. Refresh checks consider foreground activity, excluding background subtrees.
-- **`src/api.ts`**, **`src/telegram.ts`**, **`src/schedule.ts`** capture origin and expose channel behavior; task definitions register before resume in **`src/kaeno.ts`**.
+- **`src/api.ts`**, **`src/telegram.ts`** capture origin and expose channel behavior; task definitions register before resume in **`src/kaeno.ts`**.
 
 ### Load-bearing invariants
 

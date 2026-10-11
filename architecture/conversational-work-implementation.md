@@ -29,7 +29,7 @@ Implemented locally; no commit, push or deployment performed. The architecture s
 - `src/sandbox-slots.ts`: one session-scoped FIFO/reservation owner. Four held slots, 128 waiting delegates; legacy
   physical pods consume/adopt capacity. Terminal-task cleanup reconciles after restart; release requires confirmed
   pod absence. Namespace quota remains final authority. Quota exhaustion waits; unrelated Forbidden errors fail.
-- `src/turns.ts`: one shared admission/delivery owner used by API, Telegram and schedules. `TurnLedger` captures
+- `src/turns.ts`: one shared admission/delivery owner used by API and Telegram. `TurnLedger` captures
   provenance, immutable origin route, epoch, receipt/delivery states and replayable replies before tools can run.
   `kaeno.turn` retains its name/version and supports old run/notify checkpoints without prior ledger state.
   Moving this owner out of `threads.ts` avoids a work→agents→threads dependency cycle.

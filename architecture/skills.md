@@ -33,7 +33,7 @@ await materializeSkillSelection("/skill-cache", frozenSelection, "/skills-out");
 
 ## Core types and identity
 
-`RepositorySpec {id, ref?}` uses canonical lowercase GitHub owner/repo. Refs are Git tags/branches/commit IDs, not shell fragments. Config selectors are versionless `owner/repo:frontmatter-name` or `owner/repo:*`, preserving per-template order. Repository wildcards expand against discovered concrete IDs, sort matches by ID and deduplicate overlaps with explicit selections. Empty wildcard repositories fail. Concrete IDs remain strict: manifests, bindings and init plans never contain `*`. Reject duplicate repositories even with different refs, duplicate selections, undeclared repos and invalid refs/names at config parsing. Omitted fields default empty. Pure config/cron parsing does not import harness or Kubernetes.
+`RepositorySpec {id, ref?}` uses canonical lowercase GitHub owner/repo. Refs are Git tags/branches/commit IDs, not shell fragments. Config selectors are versionless `owner/repo:frontmatter-name` or `owner/repo:*`, preserving per-template order. Repository wildcards expand against discovered concrete IDs, sort matches by ID and deduplicate overlaps with explicit selections. Empty wildcard repositories fail. Concrete IDs remain strict: manifests, bindings and init plans never contain `*`. Reject duplicate repositories even with different refs, duplicate selections, undeclared repos and invalid refs/names at config parsing. Omitted fields default empty. Pure config parsing does not import harness or Kubernetes.
 
 `BoundSkill` stores ID, description, disable-model-invocation flag, resolved commit, content/executable-bit tree hash, stable sandbox path and bounded UTF-8 documents. `SkillBinding` is the existing array of those independent JSON snapshots. Binary files remain artifacts, not text tool responses. Metadata never grants tools/credentials/dependencies.
 
@@ -86,7 +86,7 @@ Existing source-image children replay their frozen source-image initialization, 
 
 ## Modules and operations
 
-- `src/config.ts`, `src/cron.ts`: pure config parsing/selection validation.
+- `src/config.ts`: pure config parsing/selection validation.
 - `src/skills.ts`: domain, metadata, hashing, catalogue, scoped snapshots, selected-tree materialization and new image-ref validation.
 - `src/skill-repositories.ts`: runtime preparation/cache publication.
 - `src/materialize-skills.ts`: credential/network-free init entry point.

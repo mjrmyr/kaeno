@@ -1,7 +1,6 @@
 // Kaeno's configuration (a ConfigMap) is validated once here; everything else trusts the typed result.
 import { readFile } from "node:fs/promises";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import { parseCron } from "./cron.ts";
 import { parseSkillRepositories, parseSkillSelection, type RepositorySpec } from "./skills.ts";
 
 export const PROVIDERS = ["anthropic", "openai"] as const;
@@ -27,15 +26,12 @@ export type Template = {
   skills: string[];
 };
 
-export type Schedule = { name: string; cron: string; timezone: string; prompt: string; thread: string; notify?: { telegram: number } };
-
 export type Config = {
-  /** Template that user-facing threads (pi, Telegram, schedules) run with. */
+  /** Template that user-facing threads (pi, Telegram) run with. */
   agent: string;
   skillRepositories: RepositorySpec[];
   templates: Record<string, Template>;
   telegram: { allowedChatIds: number[] };
-  schedules: Schedule[];
 };
 
 const fail = (message: string): never => { throw new Error(`Invalid kaeno config: ${message}`); };
@@ -68,16 +64,7 @@ export function parseConfig(raw: unknown): Config {
   if (!templates[agent]) fail(`agent: unknown template ${agent}`);
   const allowedChatIds = (c.telegram?.allowedChatIds ?? []).map(Number);
   if (allowedChatIds.some((n: number) => !Number.isSafeInteger(n))) fail("telegram.allowedChatIds must be integers");
-  const schedules = (c.schedules ?? []).map((s: any, i: number): Schedule => {
-    try { parseCron(str(s.cron, `schedules[${i}].cron`)); new Intl.DateTimeFormat("en-US", { timeZone: s.timezone ?? "Europe/Berlin" }); }
-    catch (error) { fail(`schedules[${i}]: ${error instanceof Error ? error.message : error}`); }
-    return {
-    name: /^[a-z0-9-]{1,40}$/.test(s.name) ? s.name : fail(`schedules[${i}].name`),
-    cron: str(s.cron, `schedules[${i}].cron`), timezone: s.timezone ?? "Europe/Berlin",
-    prompt: str(s.prompt, `schedules[${i}].prompt`), thread: s.thread ?? `schedule:${s.name}`,
-    notify: s.notify?.telegram !== undefined ? { telegram: Number(s.notify.telegram) } : undefined,
-  };});
-  return { agent, skillRepositories, templates, telegram: { allowedChatIds }, schedules };
+  return { agent, skillRepositories, templates, telegram: { allowedChatIds } };
 }
 
 export const loadConfig = async (path: string) => parseConfig(JSON.parse(await readFile(path, "utf8")));
