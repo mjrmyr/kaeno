@@ -11,6 +11,7 @@ const workflow = parse(await readFile(new URL("../.github/workflows/publish-imag
 const publish = workflow.jobs.publish;
 const promote = workflow.jobs["promote-main"];
 const promotion = promote.steps.find((step: any) => step.run);
+const homelab = workflow.jobs["homelab-pr"];
 const current = "a".repeat(40);
 const old = "b".repeat(40);
 const sandboxDigest = `sha256:${"c".repeat(64)}`;
@@ -25,6 +26,8 @@ async function runPromotion({ sha = current, head = current, apiFailure = false,
   const directory = await mkdtemp(join(tmpdir(), "kaeno-promotion-"));
   directories.push(directory);
   const log = join(directory, "calls");
+  const output = join(directory, "output");
+  await writeFile(output, "");
   await writeFile(join(directory, "gh"), `#!/bin/bash
 printf 'gh %s\\n' "$*" >> "$CALL_LOG"
 [[ "$API_FAILURE" != true ]] || exit 1
@@ -39,12 +42,16 @@ printf 'docker %s\\n' "$*" >> "$CALL_LOG"
     env: {
       ...process.env, PATH: `${directory}:${process.env.PATH}`, CALL_LOG: log,
       GITHUB_REPOSITORY: "mjrmyr/kaeno", GITHUB_SHA: sha, MAIN_HEAD: head,
+      GITHUB_OUTPUT: output,
       SANDBOX_DIGEST: sandboxDigest, KAENO_DIGEST: kaenoDigest,
       API_FAILURE: String(apiFailure), REGISTRY_FAILURE: registryFailure,
     },
   });
   const calls = (await readFile(log, "utf8")).trim().split("\n");
-  return { result, calls, writes: calls.filter(line => line.startsWith("docker ")) };
+  return {
+    result, calls, writes: calls.filter(line => line.startsWith("docker ")),
+    output: await readFile(output, "utf8"),
+  };
 }
 
 it("builds keep SHA/version tags, but only the serialized main-only job can write aliases", () => {
@@ -71,7 +78,8 @@ it("builds keep SHA/version tags, but only the serialized main-only job can writ
 });
 
 it("checks live main before promoting the exact digest pair to all four aliases", async () => {
-  const { result, calls, writes } = await runPromotion();
+  const { result, calls, writes, output } = await runPromotion();
+  expect(output).toBe("promoted=true\n");
   expect(result.status).toBe(0);
   expect(calls[0]).toBe("gh api repos/mjrmyr/kaeno/git/ref/heads/main --header Cache-Control: no-cache --jq .object.sha");
   expect(writes).toEqual([
@@ -81,41 +89,87 @@ it("checks live main before promoting the exact digest pair to all four aliases"
 });
 
 it("skips an old build or retry without any alias writes", async () => {
-  const { result, writes } = await runPromotion({ sha: old });
+  const { result, writes, output } = await runPromotion({ sha: old });
+  expect(output).toBe("");
   expect(result.status).toBe(0);
   expect(result.stdout).toContain("Skipping aliases");
   expect(writes).toEqual([]);
 });
 
 it("fails closed if the live HEAD API fails", async () => {
-  const { result, writes } = await runPromotion({ apiFailure: true });
+  const { result, writes, output } = await runPromotion({ apiFailure: true });
+  expect(output).toBe("");
   expect(result.status).not.toBe(0);
   expect(writes).toEqual([]);
 });
 
 it("does not promote on an empty HEAD response", async () => {
-  const { result, writes } = await runPromotion({ head: "" });
+  const { result, writes, output } = await runPromotion({ head: "" });
+  expect(output).toBe("");
   expect(result.status).toBe(0);
   expect(writes).toEqual([]);
 });
 
 it("an out-of-order old retry cannot undo a newer promotion", async () => {
   expect((await runPromotion({ sha: old, head: old })).writes).toHaveLength(2);
-  expect((await runPromotion()).writes).toHaveLength(2);
+  const retry = await runPromotion();
+  expect(retry.writes).toHaveLength(2);
+  expect(retry.output).toBe("promoted=true\n");
   expect((await runPromotion({ sha: old })).writes).toEqual([]);
 });
 
 it("stops if sandbox promotion fails, and a current-main retry writes the whole pair", async () => {
   const failed = await runPromotion({ registryFailure: "kaeno-sandbox:main" });
   expect(failed.result.status).not.toBe(0);
+  expect(failed.output).toBe("");
   expect(failed.writes).toHaveLength(1);
-  expect((await runPromotion()).writes).toHaveLength(2);
+  const retry = await runPromotion();
+  expect(retry.writes).toHaveLength(2);
+  expect(retry.output).toBe("promoted=true\n");
 });
 
 it("a partial pair is repaired by current-main retry, never by an old retry", async () => {
   const failed = await runPromotion({ registryFailure: "--tag ghcr.io/mjrmyr/kaeno:main" });
   expect(failed.result.status).not.toBe(0);
+  expect(failed.output).toBe("");
   expect(failed.writes).toHaveLength(2); // Sandbox succeeded; kaeno was attempted.
   expect((await runPromotion({ sha: old })).writes).toEqual([]);
-  expect((await runPromotion()).writes).toHaveLength(2);
+  const retry = await runPromotion();
+  expect(retry.writes).toHaveLength(2);
+  expect(retry.output).toBe("promoted=true\n");
+});
+
+it("exposes completed promotion without restoring the separate source/base recheck", () => {
+  expect(promotion.id).toBe("promotion");
+  expect(promote.outputs).toEqual({ promoted: "${{ steps.promotion.outputs.promoted }}" });
+  expect(homelab.needs).toEqual(["publish", "promote-main"]);
+  expect(homelab.steps.some((step: any) => step.id === "current")).toBe(false);
+  expect(homelab.steps.some((step: any) => step.run?.includes("gh api"))).toBe(false);
+  const proposal = homelab.steps.find((step: any) => step.uses?.startsWith("peter-evans/create-pull-request@"));
+  expect(proposal.if).toBe("steps.image.outputs.changed == 'true'");
+  expect(proposal.with.draft).toBe(false);
+});
+
+it("requires successful main publish AND actual promotion for follow-up automation (432 gate cases)", () => {
+  // This gate uses only JS-compatible comparisons/booleans; bracket the hyphenated job ID.
+  const eligible = new Function("github", "needs",
+    `return (${homelab.if.replaceAll("needs.promote-main", 'needs["promote-main"]')});`);
+  let cases = 0;
+  for (const event of ["push", "pull_request", "workflow_dispatch"]) {
+    for (const ref of ["refs/heads/main", "refs/heads/ci/homelab-image-pr", "refs/tags/v1.0.0"]) {
+      for (const published of ["success", "failure", "cancelled", "skipped"]) {
+        for (const promoted of ["success", "failure", "cancelled", "skipped"]) {
+          for (const output of ["true", "false", undefined]) {
+            expect(eligible({ event_name: event, ref }, {
+              publish: { result: published },
+              "promote-main": { result: promoted, outputs: { promoted: output } },
+            })).toBe(event === "push" && ref === "refs/heads/main" &&
+              published === "success" && promoted === "success" && output === "true");
+            cases++;
+          }
+        }
+      }
+    }
+  }
+  expect(cases).toBe(432);
 });

@@ -93,6 +93,8 @@ jobs:
     if: github.ref == 'refs/heads/main'
     needs: publish
     runs-on: ubuntu-latest
+    outputs:
+      promoted: ${{ steps.promotion.outputs.promoted }}
     permissions:
       contents: read
       packages: write
@@ -114,6 +116,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Promote completed image pair only for current main HEAD
+        id: promotion
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SANDBOX_DIGEST: ${{ needs.publish.outputs.sandbox-digest }}
@@ -139,11 +142,13 @@ jobs:
             --tag ghcr.io/mjrmyr/kaeno:main \
             --tag ghcr.io/mjrmyr/kaeno:latest \
             "ghcr.io/mjrmyr/kaeno@$KAENO_DIGEST"
+          echo 'promoted=true' >> "$GITHUB_OUTPUT"
 
   homelab-pr:
     if: >-
       github.event_name == 'push' && github.ref == 'refs/heads/main' &&
-      needs.publish.result == 'success' && needs.promote-main.result == 'success'
+      needs.publish.result == 'success' && needs.promote-main.result == 'success' &&
+      needs.promote-main.outputs.promoted == 'true'
     needs: [publish, promote-main]
     runs-on: ubuntu-latest
     permissions:
