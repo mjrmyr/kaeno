@@ -139,3 +139,181 @@ jobs:
             --tag ghcr.io/mjrmyr/kaeno:main \
             --tag ghcr.io/mjrmyr/kaeno:latest \
             "ghcr.io/mjrmyr/kaeno@$KAENO_DIGEST"
+
+  homelab-pr:
+    # Tags and failed/cancelled publications or promotions must never propose a rollout.
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      needs.publish.result == 'success' && needs.promote-main.result == 'success'
+    needs: [publish, promote-main]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    concurrency:
+      group: homelab-kaeno-image-pr
+      cancel-in-progress: false
+    steps:
+      - name: Check credential and current Kaeno main
+        id: eligible
+        env:
+          HOMELAB_PR_TOKEN: ${{ secrets.HOMELAB_PR_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$HOMELAB_PR_TOKEN" ]]; then
+            echo '::notice::Skipping homelab PR: HOMELAB_PR_TOKEN is not configured.'
+            exit 0
+          fi
+          main_head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" \
+            --header 'Cache-Control: no-cache' --jq '.object.sha')
+          if [[ "$main_head" != "$GITHUB_SHA" ]]; then
+            echo '::notice::Skipping homelab PR: this run is no longer current Kaeno main.'
+            exit 0
+          fi
+          echo 'ready=true' >> "$GITHUB_OUTPUT"
+
+      - name: Check out latest homelab main
+        if: steps.eligible.outputs.ready == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: mjrmyr/homelab
+          ref: main
+          path: homelab
+          token: ${{ secrets.HOMELAB_PR_TOKEN }}
+          persist-credentials: false
+
+      - name: Install manifest parser
+        if: steps.eligible.outputs.ready == 'true'
+        run: python3 -m pip install --disable-pip-version-check PyYAML==6.0.3
+
+      - name: Pin only the Kaeno orchestrator image
+        if: steps.eligible.outputs.ready == 'true'
+        id: image
+        env:
+          KAENO_DIGEST: ${{ needs.publish.outputs.kaeno-digest }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import copy
+          import os
+          import re
+          from pathlib import Path
+          import yaml
+
+          # Reject ambiguous YAML rather than silently accepting duplicate keys.
+          class UniqueLoader(yaml.SafeLoader):
+              pass
+
+          def unique_mapping(loader, node):
+              result = {}
+              for key_node, value_node in node.value:
+                  key = loader.construct_object(key_node)
+                  if key in result:
+                      raise ValueError(f"Duplicate manifest key: {key}")
+                  result[key] = loader.construct_object(value_node)
+              return result
+
+          UniqueLoader.add_constructor(
+              yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, unique_mapping
+          )
+          digest = os.environ["KAENO_DIGEST"]
+          if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+              raise ValueError("Missing or invalid published Kaeno digest")
+          path = Path("homelab/apps/kaeno/kustomization.yaml")
+          original = path.read_text()
+          document = yaml.load(original, Loader=UniqueLoader)
+          if (not isinstance(document, dict)
+              or document.get("apiVersion") != "kustomize.config.k8s.io/v1beta1"
+              or document.get("kind") != "Kustomization"):
+              raise ValueError("Unexpected Kustomization document")
+          images = document.get("images")
+          if not isinstance(images, list) or not all(isinstance(i, dict) for i in images):
+              raise ValueError("Expected an images mapping list")
+          targets = [i for i in images if i.get("name") == "kaeno"]
+          if len(targets) != 1:
+              raise ValueError("Expected exactly one images[name=kaeno] entry")
+          target = targets[0]
+          if (set(target) != {"name", "newName", "digest"}
+              or target["newName"] not in {"localhost:5000/kaeno", "ghcr.io/mjrmyr/kaeno"}
+              or not isinstance(target["digest"], str)
+              or not re.fullmatch(r"sha256:[0-9a-f]{64}", target["digest"])):
+              raise ValueError("Unexpected Kaeno image mapping; refusing to edit")
+          expected = copy.deepcopy(document)
+          next(i for i in expected["images"] if i.get("name") == "kaeno").update(
+              newName="ghcr.io/mjrmyr/kaeno", digest=digest
+          )
+          # Preserve all other bytes, including comments, resources and other images.
+          pattern = r"(^  - name: kaeno\n    newName: )[^\n]+(\n    digest: )sha256:[0-9a-f]{64}(?=\n|$)"
+          updated, count = re.subn(
+              pattern, lambda m: m[1] + "ghcr.io/mjrmyr/kaeno" + m[2] + digest,
+              original, flags=re.MULTILINE,
+          )
+          if count != 1 or yaml.load(updated, Loader=UniqueLoader) != expected:
+              raise ValueError("Unexpected layout or changes outside the target image")
+          changed = updated != original
+          if changed:
+              path.write_text(updated)
+          else:
+              print("::notice::Homelab main already pins this Kaeno image; no PR needed.")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"changed={str(changed).lower()}\n")
+          PY
+          git -C homelab diff --check
+          changed_paths=$(git -C homelab diff --name-only)
+          if [[ -n "$changed_paths" && "$changed_paths" != 'apps/kaeno/kustomization.yaml' ]]; then
+            echo 'Unexpected files changed; refusing to open a PR.' >&2
+            exit 1
+          fi
+
+      - name: Recheck current Kaeno main before writing
+        if: steps.image.outputs.changed == 'true'
+        id: current
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          main_head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" \
+            --header 'Cache-Control: no-cache' --jq '.object.sha')
+          if [[ "$main_head" != "$GITHUB_SHA" ]]; then
+            echo '::notice::Skipping homelab PR: Kaeno main advanced during preparation.'
+            exit 0
+          fi
+          echo 'ready=true' >> "$GITHUB_OUTPUT"
+
+      - name: Verify homelab base has not advanced
+        if: steps.current.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.HOMELAB_PR_TOKEN }}
+        run: |
+          set -euo pipefail
+          default_branch=$(gh api repos/mjrmyr/homelab --jq '.default_branch')
+          main_head=$(gh api repos/mjrmyr/homelab/git/ref/heads/main \
+            --header 'Cache-Control: no-cache' --jq '.object.sha')
+          if [[ "$default_branch" != main || "$main_head" != "$(git -C homelab rev-parse HEAD)" ]]; then
+            echo 'Homelab base changed; refusing a stale PR update. Rerun against latest main.' >&2
+            exit 1
+          fi
+
+      - name: Create or update review-only homelab PR
+        if: steps.current.outputs.ready == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
+        with:
+          token: ${{ secrets.HOMELAB_PR_TOKEN }}
+          path: homelab
+          base: main
+          branch: chore/kaeno-image
+          add-paths: apps/kaeno/kustomization.yaml
+          commit-message: 'chore(kaeno): update published orchestrator digest'
+          title: 'chore(kaeno): update published orchestrator digest'
+          draft: always-true
+          body: |
+            Pin `images[name=kaeno]` in `apps/kaeno/kustomization.yaml` to:
+            `ghcr.io/mjrmyr/kaeno@${{ needs.publish.outputs.kaeno-digest }}`.
+
+            Source commit: https://github.com/mjrmyr/kaeno/commit/${{ github.sha }}
+            Successful publish and promotion: https://github.com/mjrmyr/kaeno/actions/runs/${{ github.run_id }}
+
+            The orchestrator embeds its matching sandbox digest; no separate sandbox
+            image mapping is changed. This stable branch is regenerated from homelab
+            main. Review image pull access and the diff before merging manually.
+            This automation does not merge or deploy.
