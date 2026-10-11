@@ -11,6 +11,9 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    outputs:
+      sandbox-digest: ${{ steps.sandbox.outputs.digest }}
+      kaeno-digest: ${{ steps.kaeno.outputs.digest }}
     permissions:
       contents: read
       packages: write
@@ -51,8 +54,6 @@ jobs:
           tags: |
             type=sha,format=short,prefix=sha-
             type=ref,event=tag
-            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Build and push sandbox
         id: sandbox
@@ -74,10 +75,9 @@ jobs:
           tags: |
             type=sha,format=short,prefix=sha-
             type=ref,event=tag
-            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Build and push kaeno with pinned sandbox
+        id: kaeno
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -88,3 +88,54 @@ jobs:
             SANDBOX_IMAGE=ghcr.io/mjrmyr/kaeno-sandbox@${{ steps.sandbox.outputs.digest }}
           tags: ${{ steps.kaeno-meta.outputs.tags }}
           labels: ${{ steps.kaeno-meta.outputs.labels }}
+
+  promote-main:
+    if: github.ref == 'refs/heads/main'
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    # Only alias writers share this lock. Queue order is not guaranteed, so the
+    # live HEAD check is also required (including for reruns of old commits).
+    # Do not auto-cancel halfway through the two-image promotion.
+    concurrency:
+      group: ghcr-main-aliases
+      cancel-in-progress: false
+    steps:
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote completed image pair only for current main HEAD
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SANDBOX_DIGEST: ${{ needs.publish.outputs.sandbox-digest }}
+          KAENO_DIGEST: ${{ needs.publish.outputs.kaeno-digest }}
+        run: |
+          set -euo pipefail
+          # Fail closed on API errors. Do not use the event's (possibly stale) ref.
+          main_head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" \
+            --header 'Cache-Control: no-cache' --jq '.object.sha')
+          if [[ "$main_head" != "$GITHUB_SHA" ]]; then
+            echo "Skipping aliases: run SHA $GITHUB_SHA is not current main HEAD $main_head."
+            exit 0
+          fi
+          # Both builds have succeeded. Promote their exact digests, never SHA
+          # tags that a concurrent rebuild could replace. Finish the pair even
+          # if main advances now; the next eligible job runs after this lock.
+          # GHCR has no transaction across these four tag writes.
+          docker buildx imagetools create --prefer-index=false \
+            --tag ghcr.io/mjrmyr/kaeno-sandbox:main \
+            --tag ghcr.io/mjrmyr/kaeno-sandbox:latest \
+            "ghcr.io/mjrmyr/kaeno-sandbox@$SANDBOX_DIGEST"
+          docker buildx imagetools create --prefer-index=false \
+            --tag ghcr.io/mjrmyr/kaeno:main \
+            --tag ghcr.io/mjrmyr/kaeno:latest \
+            "ghcr.io/mjrmyr/kaeno@$KAENO_DIGEST"
