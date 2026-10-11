@@ -13,6 +13,7 @@ import { createAgents } from "./agents.ts";
 import { createApi } from "./api.ts";
 import { loadConfig } from "./config.ts";
 import * as k8s from "./k8s.ts";
+import { log } from "./log.ts";
 import { pollTelegram, telegramClient, telegramNotifier } from "./telegram.ts";
 import { defineTurn, refreshThreads, type ThreadDeps } from "./threads.ts";
 import { defineControl } from "./turns.ts";
@@ -33,7 +34,7 @@ const self = env("POD_NAME") ? await k8s.getPod(env("POD_NAME")!) : undefined;
 const executionImage = env("SANDBOX_IMAGE") ?? JSON.parse(await readFile(env("KAENO_BUILD_INFO") ?? "/app/build-info.json", "utf8")).sandboxImage;
 const images = parseSandboxImages({ execution: executionImage });
 const skillCacheClaim = env("KAENO_SKILL_CACHE_CLAIM") ?? self?.spec?.volumes?.find((v: any) => v.name === "skill-cache")?.persistentVolumeClaim?.claimName ?? "kaeno-skills";
-console.log("skills: resolving runtime configuration before resuming agents");
+log("info", "kaeno", "app.starting");
 const skills = await prepareSkills({
   repositories: config.skillRepositories,
   selections: Object.fromEntries(Object.values(config.templates).map(t => [t.name, t.skills])),
@@ -60,7 +61,7 @@ registry.install(defineExtension({ name: "kaeno-channels", tasks: [Turn, Control
 harness = await Harness.open(await openNodeSqliteStorage(env("KAENO_DB") ?? "/data/kaeno.sqlite"), {
   models, registry, env: agents.env,
   settings: { extensions: [CodingTools, agents.Kaeno], toolExecution: "parallel", followUpMode: "one-at-a-time", retry: { maxRetries: 4 } },
-  onReport: error => console.error("harness:", error),
+  onReport: error => log("error", "harness", "harness.error", {}, error),
 }, BACKGROUND_CONTEXT);
 
 const deps: ThreadDeps = { harness: () => harness, agent: {
@@ -75,15 +76,16 @@ const stopping = new AbortController();
 const port = Number(env("PORT") ?? 8080);
 const api = createApi({ ...deps, token, Turn, Control, work }).listen(port);
 if (telegram) void pollTelegram({ ...deps, client: telegram, allowed: new Set(config.telegram.allowedChatIds), Turn, Control, work, signal: stopping.signal });
-const sweep = () => agents.sweep().catch(e => console.error("sweeper:", e));
+const sweep = () => agents.sweep().catch(error => log("error", "kaeno", "sweep.error", {}, error));
 const sweeper = setInterval(sweep, 5 * 60_000);
 setTimeout(sweep, 30_000); // after resumed delegations had a chance to re-adopt their pods
 
-console.log(`kaeno listening on :${port} · agent ${config.agent} (${config.templates[config.agent]!.model.provider}/${config.templates[config.agent]!.model.modelId}) · ` +
-  `templates ${Object.keys(config.templates).join(", ")} · telegram ${telegram ? "on" : "off"} · sandbox image ${images.execution}`);
+log("info", "kaeno", "app.started", {
+  port, agentCount: Object.keys(config.templates).length, telegram: !!telegram,
+});
 
 for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, async () => {
-  console.log(`${signal}: closing`);
+  log("info", "kaeno", "app.stopping", { signal });
   agents.shutdown(); stopping.abort(); clearInterval(sweeper); api.close();
   await harness.close(BACKGROUND_CONTEXT); // durable state stays; the next process resumes from it
   process.exit(0);

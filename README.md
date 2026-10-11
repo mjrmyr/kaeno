@@ -324,6 +324,40 @@ do not acquire updated ServiceAccount pull Secrets automatically. Do not commit 
 Cluster pull-auth setup and switching from the existing local registry are separate deployment work, not performed
 by this publishing workflow.
 
+## Local structured logs
+
+`src/log.ts` writes one JSON line per event to **stderr**, leaving stdout free for protocols. Startup/shutdown,
+Harness reports and the sweep catch in `src/kaeno.ts` use it. This is an incremental migration: existing skills,
+API, Telegram, sandbox-removal and envd raw logs remain unchanged, so process output is still mixed-format and
+those older logs do **not** inherit this logger's privacy policy. HTTP traces and envd protocol output are unchanged.
+Loki/Grafana could collect these local JSON events in future; no collector or integration is configured here.
+
+```ts
+log("info", "kaeno", "app.started", { agentCount: 2, port: 8080, telegram: false });
+log("error", "harness", "harness.error", {}, error);
+log("info", "kaeno", "app.stopping", { signal: "SIGTERM" });
+```
+
+Records contain ISO `timestamp`, `level`, `component`, `event`, optional nested `context`, and optional
+`error: { kind }`. Debug is off (fixed info threshold), with no new environment/config setting. Component/event
+are constants at call sites. Context must contain only caller-selected safe scalar facts: **no prompts, user bodies,
+config/env values, tokens, URLs or error text** (the listening port and boolean feature status are intentional safe
+operational facts). Runtime projection omits non-scalars, non-finite numbers and accessors; it never calls `toJSON`.
+It is not a content scrubber: a string can still contain secrets, so callers must select safe fields. Errors expose
+only a built-in allowlisted kind or `unknown`, never messages, stacks, arbitrary names/codes/causes/properties or
+string throws. Empty context and absent errors are omitted. Synchronous logging/output failures are swallowed.
+
+### Design rationale
+
+One `log(level, component, event, context?, error?)` export keeps call sites direct. Positional context/error preserve
+the small agreed usage without another options wrapper. We rejected an event catalog (couples the utility to domain
+events), a logger factory (unneeded state/indirection), and four severity methods (extra interface for the same work).
+**Laziness protocol** keeps this to one module and a few lifecycle/error sites, with no dependencies, sinks or loop
+success logs. **Minimize reader load** leaves severity and event visible at each call site. **Boundary discipline**
+concentrates defensive scalar projection and unknown-error handling at the output boundary. Nested context cannot
+overwrite envelope fields. The accepted tradeoff is privacy over diagnostic detail: coarse error kinds need other
+investigation paths, and unconverted raw logs still need a separate migration/review.
+
 ## Develop and deploy
 
 **Upgrading from a version with schedules:** remove `schedules` from the live ConfigMap, then restart/roll out
