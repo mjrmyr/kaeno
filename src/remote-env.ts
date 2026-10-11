@@ -86,28 +86,35 @@ export class RemoteExecutionEnv implements ExecutionEnv {
     this.cwd = options.cwd;
   }
 
-  private post(path: string, body: object) {
+  private post(path: string, body: object, signal?: AbortSignal) {
     return fetch(this.options.url + path, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${this.options.token}`, "x-env-client": this.client },
-      body: JSON.stringify(body),
+      body: JSON.stringify(body), signal,
     });
   }
 
   // Cancellation is a message, not a dropped connection: the server aborts the operation's own Context and the
   // operation still returns its Result (an `aborted` failure), exactly as a local environment would.
-  private async request(path: string, body: object, args: readonly unknown[], context: Context, keepOpen = false): Promise<any> {
+  private async request(path: string, body: object, args: readonly unknown[], context: Context, keepOpen = false, transportSignal?: AbortSignal): Promise<any> {
     const callbacks: Fn[] = [];
     const wireArgs = encode(args, fn => callbacks.push(fn) - 1);
     const requestId = randomUUID();
-    const onAbort = () => { void this.post("/cancel", { requestId }).then(r => r.body?.cancel(), () => {}); };
+    const transport = new AbortController();
+    let cancellationDeadline: ReturnType<typeof setTimeout> | undefined;
+    const onAbort = () => {
+      void this.post("/cancel", { requestId }, AbortSignal.timeout(5000)).then(r => r.body?.cancel(), () => {});
+      // Normally envd returns its aborted Result. A lost/unresponsive envd cannot hold bottom-up abort forever.
+      cancellationDeadline = setTimeout(() => transport.abort(context.abortSignal?.reason), 5000); cancellationDeadline.unref();
+    };
     const signal = context.abortSignal;
     signal?.addEventListener("abort", onAbort, { once: true });
-    const detach = () => signal?.removeEventListener("abort", onAbort);
+    if (signal?.aborted) onAbort();
+    const detach = () => { signal?.removeEventListener("abort", onAbort); clearTimeout(cancellationDeadline); };
     const hooks: DecodeHooks = { context, callback: id => callbacks[id]!, handle: h => this.proxy(h) };
     let response: Response;
     try {
-      response = await this.post(path, { ...body, requestId, aborted: signal?.aborted ?? false, args: wireArgs, cwd: this.cwd });
+      response = await this.post(path, { ...body, requestId, aborted: signal?.aborted ?? false, args: wireArgs, cwd: this.cwd }, transportSignal ? AbortSignal.any([transport.signal, transportSignal]) : transport.signal);
     } catch (error) { detach(); throw error; }
     if (!response.ok || !response.body) { detach(); throw new Error(`remote env ${path}: HTTP ${response.status} ${await response.text()}`); }
 
@@ -180,7 +187,7 @@ export class RemoteExecutionEnv implements ExecutionEnv {
   createTempDir(prefix: string | undefined, c: Context): Promise<Result<string, FileError>> { return this.invoke("createTempDir", [prefix], c); }
   createTempFile(o: { prefix?: string; suffix?: string } | undefined, c: Context): Promise<Result<string, FileError>> { return this.invoke("createTempFile", [o], c); }
   exec(command: string | readonly string[], o: ShellExecOptions | undefined, c: Context): Promise<Result<ShellExecResult, ExecutionError>> { return this.invoke("exec", [command, o], c); }
-  async cleanup(c: Context): Promise<void> { await this.request("/cleanup", {}, [], c); }
+  async cleanup(c: Context): Promise<void> { await this.request("/cleanup", {}, [], c, false, c.abortSignal); }
 }
 
 export type { LineScan, TextLine };

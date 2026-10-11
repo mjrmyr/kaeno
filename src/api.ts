@@ -7,26 +7,30 @@
 //   GET  /healthz
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+import type { Context } from "@earendil-works/chord";
 import { watchEvents, type AgentEvent, type ConversationId, type Harness } from "@earendil-works/pi-durable";
-import { answerText, thread, Threads, type ThreadDeps } from "./threads.ts";
+import { thread, Threads, type ThreadDeps } from "./threads.ts";
+import { admitTurn, admitControl, TurnLedger, type TurnTask, type ControlTask } from "./turns.ts";
+import type { WorkController } from "./work.ts";
 
 const oneLine = (s: string, max = 200) => { const f = s.replace(/\s+/g, " ").trim(); return f.length > max ? f.slice(0, max - 1) + "…" : f; };
 
 export function describeTool(name: string, args: any): string {
   if (name === "bash") return `$ ${oneLine(String(args?.command ?? ""))}`;
+  if (name === "start_work") return `▸ starting work: ${oneLine(String(args?.title ?? ""))}`;
   if (name === "delegate") return `▸ delegating to ${args?.agent}: ${oneLine(String(args?.task ?? ""), 300)}`;
   if (name === "read_skill") return oneLine(`read_skill ${args?.skill ?? ""} ${args?.file ?? "SKILL.md"}`);
   return oneLine(`${name} ${String(args?.path ?? "")}`);
 }
 
 /** Follow a conversation and the sub-agents it delegates to, as human-readable trace lines. */
-async function trace(harness: Harness, conversationId: ConversationId, emit: (line: string) => void, label = "") {
+async function trace(harness: Harness, conversationId: ConversationId, emit: (line: string) => void, context: Context) {
   const streams: { stop(): Promise<unknown> }[] = [];
   const attached = new Set<ConversationId>();
   const follow = async (id: ConversationId, prefix: string) => {
     attached.add(id);
-    const stream = await watchEvents(harness, id, BACKGROUND_CONTEXT);
+    const stream = await watchEvents(harness, id, context);
     streams.push(stream);
     let text = "";
     stream.start(async (events: readonly AgentEvent[]) => {
@@ -52,11 +56,11 @@ async function trace(harness: Harness, conversationId: ConversationId, emit: (li
       }
     });
   };
-  await follow(conversationId, label);
+  await follow(conversationId, "");
   return () => Promise.all(streams.map(s => s.stop()));
 }
 
-export function createApi(deps: ThreadDeps & { token: string }) {
+export function createApi(deps: ThreadDeps & { token: string; Turn: TurnTask; Control: ControlTask; work: WorkController }) {
   const { harness, token } = deps;
   const json = (res: ServerResponse, status: number, body: unknown) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
   const authorized = (req: IncomingMessage) => {
@@ -74,29 +78,47 @@ export function createApi(deps: ThreadDeps & { token: string }) {
         const doc = await harness().snapshot(Threads, BACKGROUND_CONTEXT);
         return json(res, 200, Object.entries(doc?.threads ?? {}).map(([key, t]) => ({ key, ...t })));
       }
-      const m = /^\/v1\/threads\/([A-Za-z0-9:_.-]{1,200})\/(turn|abort)$/.exec(path);
-      if (!m || req.method !== "POST") return json(res, 404, { error: "Not found" });
+      const m = /^\/v1\/threads\/([A-Za-z0-9:_.-]{1,200})\/(turn|abort|replies|work)$/.exec(path);
+      if (!m || !["POST", "GET"].includes(req.method ?? "")) return json(res, 404, { error: "Not found" });
       const key = m[1]!;
       const conversationId = await thread(deps, key);
       const conversation = (await harness().conversation(conversationId, BACKGROUND_CONTEXT))!;
-      if (m[2] === "abort") { await conversation.abort(BACKGROUND_CONTEXT); return json(res, 200, { aborted: true }); }
+      if (m[2] === "replies" && req.method === "GET") {
+        const after = Number(new URL(req.url!, "http://x").searchParams.get("after") ?? "0");
+        if (!Number.isSafeInteger(after) || after < 0) return json(res, 400, { error: "after must be a nonnegative reply cursor" });
+        const ledger = await harness().snapshot(TurnLedger, conversationId, BACKGROUND_CONTEXT);
+        return json(res, 200, { replies: ledger?.replies.filter(r => r.id > after) ?? [], next: (ledger?.next ?? 1) - 1,
+          truncated: !!ledger?.replies.length && after < ledger.replies[0]!.id - 1 });
+      }
+      if (m[2] === "work" && req.method === "GET") return json(res, 200, await deps.work.list(conversationId));
+      if (req.method !== "POST" || !["turn", "abort"].includes(m[2]!)) return json(res, 404, { error: "Not found" });
+      if (m[2] === "abort") {
+        const id = await harness().commit(tx => admitControl(tx, deps.Control, conversationId, "stop"), BACKGROUND_CONTEXT);
+        await harness().waitForTask(id, BACKGROUND_CONTEXT);
+        return json(res, 200, { cancellationRequested: true });
+      }
 
       const { text, requestId } = await body(req);
-      if (typeof text !== "string" || !text.trim() || typeof requestId !== "string" || !/^[A-Za-z0-9:_.-]{8,200}$/.test(requestId))
+      if (typeof text !== "string" || !text.trim() || typeof requestId !== "string" || !/^[A-Za-z0-9:_.-]{8,200}$/.test(requestId) || ["__proto__", "constructor", "prototype"].includes(requestId) || requestId.startsWith("work-report:"))
         return json(res, 400, { error: "Need text and requestId" });
-      const submission = await conversation.submit({ type: "input", content: text, requestId, whenBusy: "followUp" }, BACKGROUND_CONTEXT);
+      const turn = await harness().commit(tx => admitTurn(tx, deps.Turn, { conversationId, content: text, requestId }), BACKGROUND_CONTEXT);
 
       res.writeHead(200, { "content-type": "application/x-ndjson", "cache-control": "no-cache" });
-      const write = (frame: object) => { if (!res.writableEnded) res.write(JSON.stringify(frame) + "\n"); };
+      const observer = new AbortController(), observation = withAbortSignal(observer.signal, BACKGROUND_CONTEXT);
+      const closed = () => observer.abort(); res.once("close", closed);
+      // Traces are best-effort; bound buffering for a stalled observer. Final replies have a durable cursor feed.
+      const write = (frame: object, final = false) => { if (!res.destroyed && !res.writableEnded && (final || res.writableLength < 65_536)) res.write(JSON.stringify(frame) + "\n"); };
       const keepalive = setInterval(() => write({ type: "ping" }), 15000);
-      const stop = await trace(harness(), conversationId, line => write({ type: "trace", text: line }));
+      let stop: (() => Promise<unknown>) | undefined;
       try {
-        const settled = await submission.wait(BACKGROUND_CONTEXT); // the work never depends on this connection
-        await new Promise(r => setTimeout(r, 50)); // let the last committed events reach the trace
-        if (settled.status === "done" && settled.type === "input") write({ type: "done", text: await answerText(harness(), settled.answer) });
-        else write({ type: "error", message: settled.reason === "aborted" ? "Stopped." : `Kaeno could not answer: ${settled.reason}` });
-      } finally { clearInterval(keepalive); await stop(); res.end(); }
+        stop = await trace(harness(), conversationId, line => write({ type: "trace", text: line }), observation);
+        await harness().waitForTask(turn, observation); // disconnect stops only observation, not admission/execution
+        const receipt = (await harness().snapshot(TurnLedger, conversationId, BACKGROUND_CONTEXT))?.receipts[requestId];
+        if (receipt?.text) write({ type: "done", text: receipt.text }, true);
+        else write({ type: "error", message: "Stopped." }, true);
+      } finally { clearInterval(keepalive); await stop?.(); res.removeListener("close", closed); res.end(); }
     } catch (error) {
+      if (res.destroyed) return;
       console.error("api:", error);
       if (!res.headersSent) json(res, 400, { error: error instanceof Error ? error.message : "Bad request" });
       else res.end();

@@ -16,6 +16,8 @@ import * as k8s from "./k8s.ts";
 import { startScheduler } from "./schedule.ts";
 import { pollTelegram, telegramClient, telegramNotifier } from "./telegram.ts";
 import { defineTurn, refreshThreads, type ThreadDeps } from "./threads.ts";
+import { defineControl } from "./turns.ts";
+import { createWork } from "./work.ts";
 import { parseSandboxImages } from "./skills.ts";
 import { prepareSkills } from "./skill-repositories.ts";
 
@@ -44,21 +46,26 @@ const models = createModels();
 models.setProvider(anthropicProvider()); // reads ANTHROPIC_API_KEY
 models.setProvider(openaiProvider());    // reads OPENAI_API_KEY
 let harness!: Harness;
-const agents = createAgents({ config, images, skillCacheClaim, skills, harness: () => harness });
+let agents!: ReturnType<typeof createAgents>;
 const telegram = telegramToken ? telegramClient(telegramToken, env("TELEGRAM_API_BASE")) : undefined;
 const Turn = defineTurn(() => telegramNotifier(telegram));
+const Control = defineControl(() => harness, (id, workId) => work.cancel(id, workId));
+const work: ReturnType<typeof createWork> = createWork({ harness: () => harness, Turn, Control,
+  capture: () => agents.captureWork(), configure: (tx, id, blueprint, workId) => agents.configureWork(tx, id, blueprint, workId), clean: id => agents.workClean(id) });
+agents = createAgents({ config, images, skillCacheClaim, skills, harness: () => harness, work });
 const registry = createRegistry();
 registry.install(CodingTools);
 registry.install(agents.Kaeno);
-registry.install(defineExtension({ name: "kaeno-channels", tasks: [Turn] }));
+registry.install(work.extension);
+registry.install(defineExtension({ name: "kaeno-channels", tasks: [Turn, Control] }));
 harness = await Harness.open(await openNodeSqliteStorage(env("KAENO_DB") ?? "/data/kaeno.sqlite"), {
   models, registry, env: agents.env,
-  settings: { extensions: [CodingTools, agents.Kaeno], toolExecution: "parallel", retry: { maxRetries: 4 } },
+  settings: { extensions: [CodingTools, agents.Kaeno], toolExecution: "parallel", followUpMode: "one-at-a-time", retry: { maxRetries: 4 } },
   onReport: error => console.error("harness:", error),
 }, BACKGROUND_CONTEXT);
 
 const deps: ThreadDeps = { harness: () => harness, agent: {
-  template: config.agent, change: () => agents.agentChange(config.templates[config.agent]!),
+  template: config.agent, role: "chat", change: () => agents.agentChange(config.templates[config.agent]!),
   skills: () => agents.bindSkills(config.templates[config.agent]!),
 } };
 await refreshThreads(deps);
@@ -67,8 +74,8 @@ harness.resume(); // continue every run, delegation and turn the last process le
 // ---- channels and housekeeping ----
 const stopping = new AbortController();
 const port = Number(env("PORT") ?? 8080);
-const api = createApi({ ...deps, token }).listen(port);
-if (telegram) void pollTelegram({ ...deps, client: telegram, allowed: new Set(config.telegram.allowedChatIds), Turn, signal: stopping.signal });
+const api = createApi({ ...deps, token, Turn, Control, work }).listen(port);
+if (telegram) void pollTelegram({ ...deps, client: telegram, allowed: new Set(config.telegram.allowedChatIds), Turn, Control, work, signal: stopping.signal });
 startScheduler({ ...deps, schedules: config.schedules, Turn }, stopping.signal);
 const sweep = () => agents.sweep().catch(e => console.error("sweeper:", e));
 const sweeper = setInterval(sweep, 5 * 60_000);

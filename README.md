@@ -10,8 +10,9 @@ SSH to GitHub.
 pi (extension) ─┐                                 kaeno pod (Deployment, ns kaeno)
 Telegram bot ───┼─ HTTP/API · long polling ─▶  pi-durable Harness ── SQLite on PVC (every thread, sub-agent, tool call)
 schedules ──────┘                                 │ thread conversation (template "kaeno", e.g. Claude)
-                                                  │   └─ delegate tool → child conversation (template "worker", e.g. GPT)
-                                                  │         └─ its read/write/edit/bash run via RemoteExecutionEnv
+                                                  │ CHAT → start_work → background WORK conversation (same model)
+                                                  │                        └─ optional delegate → WORKER (e.g. GPT)
+                                                  │                             └─ read/write/edit/bash via RemoteExecutionEnv
                                                   ▼
                                         sandbox pod kaeno-sb-… (one per delegation) — envd: files + shell in /workspace
                                         internet + GitHub SSH · no cluster/LAN/tailnet access · no credentials but the deploy key
@@ -22,7 +23,13 @@ schedules ──────┘                                 │ thread conve
 - **Durable**: a message is admitted to a thread's conversation before anything runs. If kaeno restarts, every run,
   delegation and Telegram/scheduled turn resumes where it stopped; paused delegations keep their sandbox. A tool call
   the restart cut off is reported to the model as interrupted, never silently rerun. Clients only watch: closing pi
-  or losing the connection never stops work, and re-asking with the same request ID returns the result.
+  or losing the connection never stops work. Retrying the same request ID returns the original CHAT reply; later work
+  results have their own durable reply IDs.
+- **Conversational work**: CHAT answers ordinary conversation and acknowledges substantial requests immediately.
+  Each request gets a fresh background WORK conversation for reasoning, planning, review and retries. WORK may finish
+  without workers; shell/files/Git execution uses disposable WORKERs. New workers are execution leaves; WORK owns fanout.
+  Models/templates remain configured as before. At most 32 active work requests per chat and four sandbox pods globally.
+  Durable FIFO admission and confirmed deletion govern capacity; no warm worker fleet or persistent task workspace.
 - **Threads**: one durable conversation per channel key: `pi:<pi session id>`, `telegram:<chat id>`, `schedule:<name>`.
 - **Agents**: `config.json` (ConfigMap `kaeno-config`) defines templates: `model`, `thinkingLevel`, `instructions`,
   `sandbox`, `tools` (`read`, `write`, `edit`, `bash`), `skills`, and `delegates` (templates it may start sub-agents from).
@@ -36,11 +43,16 @@ schedules ──────┘                                 │ thread conve
 
 **pi**: the extension in `pi-extension/kaeno` (symlinked into `~/.pi/agent/extensions/kaeno`) registers the model
 `kaeno/kaeno`. Run `pi --model kaeno/kaeno`. Kaeno's live trace, including the sub-agents' commands, appears as
-thinking; its answer is the reply. The token is read from `~/.config/kaeno/token`.
+thinking; its short CHAT answer is the reply. The token is read from `~/.config/kaeno/token`.
+Background completion is **not automatically injected into pi's TUI** in this MVP: ask Kaeno for job status/results or
+retrieve the API reply feed. Telegram receives proactive completion messages.
 
 **Telegram**: create a bot with @BotFather, add its token to the `kaeno` Secret as `telegram-bot-token`, message the
 bot once (it replies with your chat id), and add that id to `telegram.allowedChatIds` in `config.json`.
-`/stop` aborts the current work, `/new` starts a fresh context.
+`/jobs` lists work; `/cancel <id>` requests cancellation of one job. `/stop` fences queued inputs and cancels this
+chat's current response and work. `/new` resets CHAT context but preserves work; later old-context results are labelled.
+Cancellation remains `cancelling` until descendant/pod cleanup completes. Replies already claimed for dispatch cannot
+be unsent; Telegram delivery is at-least-once (including possible repeated chunks on retry).
 
 **Schedules**: in `config.json`:
 `{"name": "morning", "cron": "0 7 * * 1-5", "timezone": "Europe/Berlin", "prompt": "…", "notify": {"telegram": <chat id>}}`.
@@ -50,7 +62,11 @@ Each slot fires once (even across restarts); slots missed while kaeno was down a
 (`~/.config/kaeno/github_deploy_key.pub`) to GitHub (account key or per-repo deploy key).
 
 **API** (`homelab-kaeno:8080`, bearer token): `POST /v1/threads/:key/turn {text, requestId}` streams NDJSON
-(`trace` lines, then `done`/`error`); `POST /v1/threads/:key/abort`; `GET /v1/threads`.
+(`trace` lines, then `done`/`error` for this CHAT reply); `POST /v1/threads/:key/abort`; `GET /v1/threads`.
+`GET /v1/threads/:key/work` lists jobs. `GET /v1/threads/:key/replies?after=0` returns ordered replies, a `next` cursor and
+`truncated` flag; save the cursor to retrieve later completions independently of POST/disconnect. The last 500 replies
+are retained, with 512 recent admission/job entries plus active entries. Chats admit up to 64 pending replies before
+rejecting/deferring new user input. Work-report request IDs are reserved for the application.
 
 ## Agent skills
 

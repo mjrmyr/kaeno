@@ -14,13 +14,18 @@ import { createRegistry, defineExtension, Harness, LiveDoc } from "@earendil-wor
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import type { Config } from "../src/config.ts";
+import { createWork } from "../src/work.ts";
+import { admitTurn, TurnLedger } from "../src/turns.ts";
 import { copySkillTree, inspectSkill, INSTALLER, materializeSkillSelection, openSkillCatalog, type SkillManifest } from "../src/skills.ts";
 
 const listen = (server: ReturnType<typeof createServer>) =>
   new Promise<string>(ok => server.listen(0, "127.0.0.1", () => ok(`http://127.0.0.1:${(server.address() as AddressInfo).port}`)));
 
 describe("kaeno durable delegation", () => {
-  it.each([false, true])("loads assigned skills, resumes frozen images after upgrade (recreate=%s), and cleans up", async recreate => {
+  it.each([
+    { recreate: false, background: false }, { recreate: true, background: false },
+    { recreate: false, background: true }, { recreate: true, background: true },
+  ])("loads assigned skills and resumes frozen images (recreate=$recreate, background=$background)", async ({ recreate, background }) => {
     const dir = await mkdtemp(join(tmpdir(), "kaeno-durable-"));
     const workspace = await mkdtemp(join(tmpdir(), "kaeno-pod-"));
     const store = join(dir, "catalogue");
@@ -90,6 +95,11 @@ describe("kaeno durable delegation", () => {
       const system = JSON.stringify(request.messages.filter((m: any) => m.role === "system"));
       const last = request.messages.findLast((m: any) => m.role !== "system");
       const text = typeof last.content === "string" ? last.content : last.content.map((p: any) => p.text ?? "").join("");
+      if (system.includes("Kaeno CHAT")) {
+        if (last.role === "toolResult") return fauxAssistantMessage([fauxText("ACK: work accepted")]);
+        if (text.startsWith("Work #")) return fauxAssistantMessage([fauxText(text.split("\n\n").slice(1).join("\n\n"))]);
+        return fauxAssistantMessage([fauxToolCall("start_work", { title: "Write file", brief: "Please get hello.txt written." }, { id: "start" })], { stopReason: "toolUse" });
+      }
       if (system.includes("ORCHESTRATOR")) {
         expect(system).not.toContain("Run the assigned script, not unrelated skills.");
         if (last.role === "toolResult" && last.toolName === "delegate") return fauxAssistantMessage([fauxText(`Worker reports: ${text}`)]);
@@ -129,20 +139,24 @@ describe("kaeno durable delegation", () => {
     const open = async () => { // a fresh process: new agents, same storage; different current images on reopen
       version++;
       const catalog = await openSkillCatalog(store, config.skillRepositories, {});
-      agents = createAgents({ config, images: { execution: `execution-v${version}` }, skillCacheClaim: `skill-cache-v${version}`, skills: catalog, harness: () => harness, sandboxUrl: () => envdUrl, sandboxCwd: workspace });
+      const work = background ? createWork({ harness: () => harness, Turn, capture: () => agents.captureWork(), configure: (tx, child, b, workId) => agents.configureWork(tx, child, b, workId), clean: id => agents.workClean(id) }) : undefined;
+      agents = createAgents({ config, images: { execution: `execution-v${version}` }, skillCacheClaim: `skill-cache-v${version}`, skills: catalog, harness: () => harness, sandboxUrl: () => envdUrl, sandboxCwd: workspace, work });
       const registry = createRegistry();
       registry.install(CodingTools); registry.install(agents.Kaeno); registry.install(defineExtension({ name: "kaeno-channels", tasks: [Turn] }));
+      if (work) registry.install(work.extension);
       harness = await Harness.open(await openNodeSqliteStorage(join(dir, "kaeno.sqlite")), {
         models, registry, env: agents.env, settings: { extensions: [CodingTools, agents.Kaeno], toolExecution: "parallel" },
       }, BACKGROUND_CONTEXT);
+      if (background) harness.resume();
       return harness;
     };
-    const deps = { harness: () => harness, agent: { template: "kaeno", change: () => agents.agentChange(config.templates.kaeno!), skills: () => agents.bindSkills(config.templates.kaeno!) } };
+    const deps = { harness: () => harness, agent: { template: "kaeno", role: background ? "chat" as const : undefined, change: () => agents.agentChange(config.templates.kaeno!), skills: () => agents.bindSkills(config.templates.kaeno!) } };
 
     await open();
     const id = await thread(deps, "test:1");
     const conversation = (await harness.conversation(id, BACKGROUND_CONTEXT))!;
-    await conversation.submit({ type: "input", content: "Please get hello.txt written.", requestId: "req-00001" }, BACKGROUND_CONTEXT);
+    if (background) await harness.commit(tx => admitTurn(tx, Turn, { conversationId: id, content: "Please get hello.txt written.", requestId: "req-00001" }), BACKGROUND_CONTEXT);
+    else await conversation.submit({ type: "input", content: "Please get hello.txt written.", requestId: "req-00001" }, BACKGROUND_CONTEXT);
     await started;                                  // worker verified the script and is about to run its slow command
     const childId = Number((Array.from(pods.values())[0] as any).metadata.annotations["kaeno.io/conversation"]) as any;
     let running = false;
@@ -168,12 +182,21 @@ describe("kaeno durable delegation", () => {
     await writeFile(join(store, "manifest.json"), JSON.stringify({ ...manifest, entries: [] }));
     await open();                                   // new process, same storage
     await refreshThreads(deps);                      // busy root must keep its binding too
-    expect((await harness.snapshot(AgentState, id, BACKGROUND_CONTEXT))?.skills?.map(s => s.id)).toEqual(["demo/root:guide"]);
+    expect((await harness.snapshot(AgentState, id, BACKGROUND_CONTEXT))?.skills?.map(s => s.id)).toEqual(background ? [] : ["demo/root:guide"]);
     harness.resume();
     const again = (await harness.conversation(id, BACKGROUND_CONTEXT))!;
-    const settled = await (await again.submit({ type: "input", content: "Please get hello.txt written.", requestId: "req-00001" }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
-    expect(settled.status).toBe("done");
-    const answer = await answerText(harness, (settled as any).answer);
+    let answer: string;
+    if (background) {
+      let result: string | undefined;
+      for (const end = Date.now() + 10_000; Date.now() < end && !result; await new Promise(r => setTimeout(r, 20))) {
+        result = (await harness.snapshot(TurnLedger, id, BACKGROUND_CONTEXT))?.replies.find(r => r.source.kind === "work-result")?.text;
+      }
+      expect(result).toBeDefined(); answer = result!;
+    } else {
+      const settled = await (await again.submit({ type: "input", content: "Please get hello.txt written.", requestId: "req-00001" }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+      expect(settled.status).toBe("done");
+      answer = await answerText(harness, (settled as any).answer);
+    }
     expect(answer).toMatch(/^Worker reports: hello.txt written/);
     // The non-replay-safe bash call that the crash cut off is reported to the worker as interrupted, not rerun.
     expect(answer).toMatch(/interrupted/i);

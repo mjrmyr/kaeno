@@ -4,6 +4,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, type Harness } from "@earendil-works/pi-durable";
 import type { Schedule } from "./config.ts";
 import { thread, type ThreadDeps } from "./threads.ts";
+import { admitTurn } from "./turns.ts";
 
 import { matches, parseCron, zoned } from "./cron.ts";
 
@@ -24,10 +25,10 @@ export async function tick(deps: ThreadDeps & { schedules: Schedule[]; Turn: any
       const state = await tx.doc(ScheduleState);
       if (state.last[schedule.name] === slot) return;
       state.last[schedule.name] = slot;
-      await tx.createTask(deps.Turn, {
+      await admitTurn(tx, deps.Turn, {
         conversationId, content: `[scheduled task "${schedule.name}" at ${slot} ${schedule.timezone}]\n${schedule.prompt}`,
-        requestId: `schedule:${schedule.name}:${slot}`, notify: schedule.notify,
-      }, { ownership: { kind: "conversation" }, conversationId, background: true });
+        requestId: `schedule:${schedule.name}:${slot}`, notify: schedule.notify, source: { kind: "schedule" },
+      });
       console.log(`schedule: fired ${schedule.name} for ${slot}`);
     }, BACKGROUND_CONTEXT);
   }
