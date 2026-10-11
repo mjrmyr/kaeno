@@ -1,0 +1,141 @@
+name: Publish GHCR images
+
+on:
+  push:
+    branches: [main]
+    tags: ['**']
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    outputs:
+      sandbox-digest: ${{ steps.sandbox.outputs.digest }}
+      kaeno-digest: ${{ steps.kaeno.outputs.digest }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # Reject rather than normalize version tags or overwrite reserved aliases.
+      - name: Validate version tag
+        if: github.ref_type == 'tag'
+        env:
+          GIT_TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$GIT_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] ||
+             [[ "$GIT_TAG" == main || "$GIT_TAG" == latest || "$GIT_TAG" == sha-* ]]; then
+            echo 'Version tags must be valid Docker tags, excluding main, latest and sha-*.' >&2
+            exit 1
+          fi
+
+      - name: Check out source
+        uses: actions/checkout@v7.0.1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4.4.1 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4.6.0 # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sandbox image metadata
+        id: sandbox-meta
+        uses: docker/metadata-action@v6.2.0 # v6.2.0
+        with:
+          images: ghcr.io/mjrmyr/kaeno-sandbox
+          flavor: latest=false
+          tags: |
+            type=sha,format=short,prefix=sha-
+            type=ref,event=tag
+
+      - name: Build and push sandbox
+        id: sandbox
+        uses: docker/build-push-action@v7.4.0 # v7.4.0
+        with:
+          context: .
+          target: sandbox
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.sandbox-meta.outputs.tags }}
+          labels: ${{ steps.sandbox-meta.outputs.labels }}
+
+      - name: Kaeno image metadata
+        id: kaeno-meta
+        uses: docker/metadata-action@v6.2.0 # v6.2.0
+        with:
+          images: ghcr.io/mjrmyr/kaeno
+          flavor: latest=false
+          tags: |
+            type=sha,format=short,prefix=sha-
+            type=ref,event=tag
+
+      - name: Build and push kaeno with pinned sandbox
+        id: kaeno
+        uses: docker/build-push-action@v7.4.0 # v7.4.0
+        with:
+          context: .
+          target: kaeno
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            SANDBOX_IMAGE=ghcr.io/mjrmyr/kaeno-sandbox@${{ steps.sandbox.outputs.digest }}
+          tags: ${{ steps.kaeno-meta.outputs.tags }}
+          labels: ${{ steps.kaeno-meta.outputs.labels }}
+
+  promote-main:
+    if: github.ref == 'refs/heads/main'
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    # Only alias writers share this lock. Queue order is not guaranteed, so the
+    # live HEAD check is also required (including for reruns of old commits).
+    # Do not auto-cancel halfway through the two-image promotion.
+    concurrency:
+      group: ghcr-main-aliases
+      cancel-in-progress: false
+    steps:
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4.4.1 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4.6.0 # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote completed image pair only for current main HEAD
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SANDBOX_DIGEST: ${{ needs.publish.outputs.sandbox-digest }}
+          KAENO_DIGEST: ${{ needs.publish.outputs.kaeno-digest }}
+        run: |
+          set -euo pipefail
+          # Fail closed on API errors. Do not use the event's (possibly stale) ref.
+          main_head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" \
+            --header 'Cache-Control: no-cache' --jq '.object.sha')
+          if [[ "$main_head" != "$GITHUB_SHA" ]]; then
+            echo "Skipping aliases: run SHA $GITHUB_SHA is not current main HEAD $main_head."
+            exit 0
+          fi
+          # Both builds have succeeded. Promote their exact digests, never SHA
+          # tags that a concurrent rebuild could replace. Finish the pair even
+          # if main advances now; the next eligible job runs after this lock.
+          # GHCR has no transaction across these four tag writes.
+          docker buildx imagetools create --prefer-index=false \
+            --tag ghcr.io/mjrmyr/kaeno-sandbox:main \
+            --tag ghcr.io/mjrmyr/kaeno-sandbox:latest \
+            "ghcr.io/mjrmyr/kaeno-sandbox@$SANDBOX_DIGEST"
+          docker buildx imagetools create --prefer-index=false \
+            --tag ghcr.io/mjrmyr/kaeno:main \
+            --tag ghcr.io/mjrmyr/kaeno:latest \
+            "ghcr.io/mjrmyr/kaeno@$KAENO_DIGEST"
