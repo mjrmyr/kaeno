@@ -16,6 +16,7 @@ import { RemoteExecutionEnv } from "./remote-env.ts";
 import { readSkillDocument, skillPrompt, type SkillBinding, type SkillCatalog, type SandboxImages } from "./skills.ts";
 import { workRoot, type WorkBlueprint, type WorkController } from "./work.ts";
 import { SandboxSlots, sandboxSlots } from "./sandbox-slots.ts";
+import { agentLogHooks } from "./agent-logs.ts";
 
 /** Which template a conversation runs, and its sandbox pod if it has one. */
 export const AgentState = defineDoc<{ template?: string; role?: "chat" | "work" | "worker"; workId?: TaskId; blueprint?: WorkBlueprint; skills?: SkillBinding; sandbox?: { pod: string; token: string; images?: SandboxImages; skillCacheClaim?: string } }>({
@@ -182,6 +183,7 @@ export function createAgents({ config, images, skillCacheClaim, skills, harness,
   });
   const Kaeno = defineExtension({
     name: "kaeno", tools: [delegate, readSkill],
+    hooks: agentLogHooks(AgentState),
     sections: [section("skills", async ({ conversationId, read }, context) =>
       skillPrompt((await read.snapshot(AgentState, conversationId, context))?.skills ?? []))],
   });

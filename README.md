@@ -172,6 +172,26 @@ Never print `GH_TOKEN` or use `gh auth token` with the real credential in logs. 
 are retained, with 512 recent admission/job entries plus active entries. Chats admit up to 64 pending replies before
 rejecting/deferring new user input. Work-report request IDs are reserved for the application.
 
+## Agent logs
+
+Agent tracing is always enabled in the main Kaeno process; no flag or worker-pod log subscription is needed:
+
+```sh
+kubectl -n kaeno logs deployment/kaeno -f --tail=100
+```
+
+JSON lines with `type: "agent_trace"` include conversation/task IDs, role (`chat`, `work`, `worker`; `legacy` if unknown), template,
+work ID and sandbox pod where applicable. Events cover model requests/responses, provider-exposed thinking,
+assistant text, model-proposed tool calls, and tool starts/results. Background WORK and WORKER traces continue after CHAT acknowledges,
+without a connected pi/API observer. Model text/thinking is logged when each response completes, not token by token.
+This also covers resumed conversations; recovery can repeat log records. Logs are diagnostic, not a durable event feed.
+
+Content is limited to 8,192 characters per record (`truncated: true` marks clipping). Known credential values,
+common API-token formats, bearer tokens and private-key blocks are redacted best-effort; images, opaque thinking
+signatures and tool result metadata are omitted. **Conversation and tool content can still contain sensitive data.**
+Treat pod logs as private; don't print credentials in agent commands. Kubernetes log rotation limits retained history,
+and reasoning the provider does not expose cannot be logged. Worker `envd` logs remain execution-service diagnostics.
+
 ## Agent skills
 
 Declare source repositories in homelab's `apps/kaeno/config.json`, then select skills per template:

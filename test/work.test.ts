@@ -6,7 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { Type } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { fauxAssistantMessage, fauxProvider, fauxText, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, defineExtension, Harness, type ConversationId } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -478,4 +478,39 @@ it("starts a queued valid frozen selection even after current config removes its
   expect(seen.some(system => system.includes("WORKER") && system.includes("Kaeno WORK"))).toBe(true);
   const child = (await s.harness.commit(tx => tx.scanConversations({ ownerTaskId: id }, 1), ctx)).items[0]!;
   expect((await s.harness.snapshot(AgentState, child.id, ctx))?.template).toBe("worker");
+});
+
+it("logs CHAT, background WORK and leaf WORKER without an API/pi observer", async () => {
+  const records: any[] = [];
+  vi.spyOn(console, "log").mockImplementation(line => {
+    if (typeof line === "string" && line.startsWith('{"type":"agent_trace"')) records.push(JSON.parse(line));
+  });
+  const pods = vi.spyOn(k8s, "createPod");
+  let release!: () => void;
+  const gate = new Promise<void>(ok => { release = ok; });
+  const s = await setup(async (system, last, options) => {
+    if (system.includes("Kaeno WORK")) {
+      if (last.role === "user") {
+        await Promise.race([gate, delay(60_000, undefined, { signal: options.signal })]);
+        return fauxAssistantMessage([fauxThinking("WORK REASONING"), fauxToolCall("delegate", { agent: "worker", task: "Reason only" }, { id: "leaf" })], { stopReason: "toolUse" });
+      }
+      return reply("WORK REPORT");
+    }
+    if (system.includes("WORKER")) return fauxAssistantMessage([fauxThinking("WORKER REASONING"), fauxText("LEAF RESULT")]);
+    if (last.role === "toolResult") return reply("ACK");
+    if (text(last).startsWith("Work #")) return reply("DONE");
+    return call("start_work", { agent: "kaeno", title: "Trace", brief: "Background reasoning and delegation" });
+  });
+  s.config.templates.worker!.sandbox = false;
+  s.config.templates.worker!.tools = [];
+  await s.submit("first", "request-trace"); await s.waitReply("request-trace");
+  expect(records.some(r => r.role === "chat" && r.event === "text" && r.content === "ACK")).toBe(true);
+  release();
+  await until(async () => s.sent.includes("DONE"));
+  const job = (await s.work.list(s.id))[0]!;
+  expect(records.some(r => r.role === "work" && r.workId === job.id && r.event === "thinking" && r.content === "WORK REASONING")).toBe(true);
+  expect(records.some(r => r.role === "worker" && r.workId === job.id && r.event === "thinking" && r.content === "WORKER REASONING")).toBe(true);
+  expect(records.some(r => r.role === "work" && r.event === "tool_start" && r.tool === "delegate")).toBe(true);
+  expect(records.some(r => r.role === "work" && r.event === "tool_end" && r.content === "LEAF RESULT")).toBe(true);
+  expect(pods).not.toHaveBeenCalled();
 });
