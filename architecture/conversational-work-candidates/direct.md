@@ -42,7 +42,7 @@ Task lifecycle is the single source of truth. There is no jobs table. Status is 
 
 ```ts
 // src/jobs.ts — one new module; agents.ts keeps sandbox mechanics
-type Origin = { kind:"telegram"; chatId:number } | { kind:"schedule"; notify:Route } | { kind:"pi" }
+type Origin = { kind:"telegram"; chatId:number } | { kind:"pi" }
 
 type JobInput = {
   batchId: TaskId; index: number; title: string

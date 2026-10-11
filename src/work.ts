@@ -94,7 +94,7 @@ export function createWork({ harness, Turn, Control, capture, configure, clean, 
     const turn = await activeTurn(harness(), api.conversationId, context);
     const ledger = (await harness().snapshot(TurnLedger, api.conversationId, context))!;
     if (ledger.control || ledger.epoch !== turn.origin.epoch) throw new Error("This turn was fenced by stop/reset");
-    if (turn.source.kind === "work-result") throw new Error("Work-result turns are read-only; only a user or schedule can start/cancel work");
+    if (turn.source.kind === "work-result") throw new Error("Work-result turns are read-only; only a user can start/cancel work");
     return turn.origin;
   }
   const start = defineTool({ name: "start_work", description: "Start a durable WORK conversation in the background. It can reason itself or delegate execution to workers. Returns immediately; then give the user a concise plan and end this chat turn.",

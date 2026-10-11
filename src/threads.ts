@@ -1,4 +1,4 @@
-// Threads: one durable kaeno conversation per channel key ("pi:<session>", "telegram:<chat>", "schedule:<name>"),
+// Threads: one durable kaeno conversation per channel key ("pi:<session>", "telegram:<chat>"),
 // and the Turn task that submits a message to a thread and delivers the answer, surviving restarts.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {

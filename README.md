@@ -1,15 +1,14 @@
 # Kaeno
 
-An always-on, durable orchestrator agent on the homelab. You talk to it from **pi**, **Telegram**, or let it run
-**scheduled tasks**. Kaeno is a real agent (built on `@earendil-works/pi-durable`): it reasons, delegates work to
+An always-on, durable orchestrator agent on the homelab. You talk to it from **pi** or **Telegram**. Kaeno is a real agent (built on `@earendil-works/pi-durable`): it reasons, delegates work to
 sub-agents, checks their reports, and answers. Sub-agents are created from **agent templates** (model per template,
 Anthropic or OpenAI) and, when sandboxed, run all their tools in a **dedicated pod** with internet access and git over
 SSH to GitHub.
 
 ```
 pi (extension) ─┐                                 kaeno pod (Deployment, ns kaeno)
-Telegram bot ───┼─ HTTP/API · long polling ─▶  pi-durable Harness ── SQLite on PVC (every thread, sub-agent, tool call)
-schedules ──────┘                                 │ thread conversation (template "kaeno", e.g. Claude)
+Telegram bot ───┘─ HTTP/API · long polling ─▶  pi-durable Harness ── SQLite on PVC (every thread, sub-agent, tool call)
+                                                  │ thread conversation (template "kaeno", e.g. Claude)
                                                   │ CHAT → start_work → background WORK conversation (same model)
                                                   │                        └─ optional delegate → WORKER (e.g. GPT)
                                                   │                             └─ read/write/edit/bash via RemoteExecutionEnv
@@ -21,7 +20,7 @@ schedules ──────┘                                 │ thread conve
 ## How it works
 
 - **Durable**: a message is admitted to a thread's conversation before anything runs. If kaeno restarts, every run,
-  delegation and Telegram/scheduled turn resumes where it stopped; paused delegations keep their sandbox. A tool call
+  delegation and Telegram turn resumes where it stopped; paused delegations keep their sandbox. A tool call
   the restart cut off is reported to the model as interrupted, never silently rerun. Clients only watch: closing pi
   or losing the connection never stops work. Retrying the same request ID returns the original CHAT reply; later work
   results have their own durable reply IDs.
@@ -30,7 +29,7 @@ schedules ──────┘                                 │ thread conve
   without workers; shell/files/Git execution uses disposable WORKERs. New workers are execution leaves; WORK owns fanout.
   Models/templates remain configured as before. At most 32 active work requests per chat and four sandbox pods globally.
   Durable FIFO admission and confirmed deletion govern capacity; no warm worker fleet or persistent task workspace.
-- **Threads**: one durable conversation per channel key: `pi:<pi session id>`, `telegram:<chat id>`, `schedule:<name>`.
+- **Threads**: one durable conversation per channel key: `pi:<pi session id>`, `telegram:<chat id>`.
 - **Agents**: `config.json` (ConfigMap `kaeno-config`) defines templates: `model`, `thinkingLevel`, `instructions`,
   `sandbox`, `tools` (`read`, `write`, `edit`, `bash`), `skills`, and `delegates` (templates it may start sub-agents from).
   Idle threads refresh their template at startup/admission; busy threads and sub-agents retain their bound skills.
@@ -53,10 +52,6 @@ bot once (it replies with your chat id), and add that id to `telegram.allowedCha
 chat's current response and work. `/new` resets CHAT context but preserves work; later old-context results are labelled.
 Cancellation remains `cancelling` until descendant/pod cleanup completes. Replies already claimed for dispatch cannot
 be unsent; Telegram delivery is at-least-once (including possible repeated chunks on retry).
-
-**Schedules**: in `config.json`:
-`{"name": "morning", "cron": "0 7 * * 1-5", "timezone": "Europe/Berlin", "prompt": "…", "notify": {"telegram": <chat id>}}`.
-Each slot fires once (even across restarts); slots missed while kaeno was down are skipped.
 
 **GitHub**: sandboxes use the deploy key in Secret `kaeno-github-ssh`; add its public half
 (`~/.config/kaeno/github_deploy_key.pub`) to GitHub (account key or per-repo deploy key).
@@ -133,8 +128,16 @@ See [the architecture](architecture/skills.md) for lifecycle and verification de
 
 ## Develop and deploy
 
+**Upgrading from a version with schedules:** remove `schedules` from the live ConfigMap while still on the old
+image, then let already-admitted turns, work and Telegram deliveries finish before upgrading. To stop unwanted
+work, use `POST /v1/threads/:key/abort` for each affected thread (the old default was `schedule:<name>`; custom keys
+may differ), then wait for cancellation and delivery to settle. The upgrade stops new firings but still resumes
+unfinished durable work, which can message Telegram. Old threads/history and `kaeno.schedules` records remain in
+SQLite; the slot records are no longer read. A leftover config key is silently ignored by this version, but rolling
+back to an old image with non-empty `schedules` enables cron again; keep it removed on rollback.
+
 ```sh
-npm test          # conformance, skills/Git/CLI fixtures, durable upgrades/recreation, channels, config, cron
+npm test          # conformance, skills/Git/CLI fixtures, durable upgrades/recreation, channels, config
 npm run check     # typecheck (erasableSyntaxOnly: the image runs TypeScript with Node's type stripping)
 npm run deploy    # build/push generic sibling images on the node, pin kaeno in ../homelab
 # Review/commit the relevant homelab apps/kaeno changes, then push; Flux rolls it out.

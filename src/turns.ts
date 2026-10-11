@@ -8,7 +8,7 @@ import {
 
 export type Notify = { telegram?: number };
 export type Notifier = { send(notify: Notify, text: string): Promise<void>; typing(notify: Notify): Promise<void> };
-export type Source = { kind: "user" | "schedule" } | { kind: "work-result"; workId: TaskId; requestId: string; epoch: number };
+export type Source = { kind: "user" } | { kind: "work-result"; workId: TaskId; requestId: string; epoch: number };
 export type Origin = { conversationId: ConversationId; requestId: string; epoch: number; notify: Notify };
 export type Reply = { id: number; requestId: string; text: string; source: Source; epoch: number };
 type Receipt = { taskId?: TaskId; epoch: number; notify: Notify; source: Source; delivery: "pending" | "dispatching" | "delivered" | "failed" | "cancelled"; text?: string };
