@@ -7,9 +7,10 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { Type } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { createRegistry, defineExtension, Harness, type ConversationId } from "@earendil-works/pi-durable";
+import { createRegistry, defineExtension, Harness, type ConversationId, type Tx } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { AgentFactory } from "../src/agent-factory.ts";
 import { createAgents, AgentState } from "../src/agents.ts";
 import { createWork, WorkIndex } from "../src/work.ts";
 import { defineTurn, defineControl, admitControl, admitTurn, TurnLedger, resetEpoch } from "../src/turns.ts";
@@ -48,13 +49,14 @@ async function setup(route: (system: string, last: any, options: any) => Promise
   const Turn = defineTurn(() => ({ typing: async () => {}, send: async (notify, message) => {
     if (send) await send(notify, message); sent.push(message);
   } }));
-  let harness!: Harness, agents!: ReturnType<typeof createAgents>, work!: ReturnType<typeof createWork>;
+  let harness!: Harness, agents!: ReturnType<typeof createAgents>, work!: ReturnType<typeof createWork>, factory!: AgentFactory;
   const Control = defineControl(() => harness, (id, workId) => work.cancel(id, workId));
   let opening = 0;
   const open = async () => {
     work = createWork({ harness: () => harness, Turn, Control, config, capture: agent => agents.captureWork(agent), configure: (tx, id, b, workId) => agents.configureWork(tx, id, b, workId), clean: id => agents.workClean(id) });
     options.install?.(work, ++opening);
-    agents = createAgents({ config, harness: () => harness, work, skills: { bind: () => [] }, images: { execution: "execution-v1" }, skillCacheClaim: "cache-v1" });
+    factory = new AgentFactory({ config, skills: { bind: () => [] }, work });
+    agents = createAgents({ config, harness: () => harness, factory, skills: { bind: () => [] }, images: { execution: "execution-v1" }, skillCacheClaim: "cache-v1" });
     const registry = createRegistry(); registry.install(CodingTools); registry.install(agents.Kaeno); registry.install(work.extension);
     registry.install(defineExtension({ name: "channels", tasks: [Turn, Control] }));
     harness = await Harness.open(await openNodeSqliteStorage(join(dir, "state.sqlite")), { models, registry, env: agents.env,
@@ -63,8 +65,8 @@ async function setup(route: (system: string, last: any, options: any) => Promise
   };
   const close = async () => { agents.shutdown(); await harness.close(ctx); };
   await open(); cleanup.push(close);
-  const deps = { harness: () => harness, agent: { template: "kaeno", role: "chat" as const,
-    change: () => agents.agentChange(config.templates.kaeno!), skills: () => [] } };
+  const deps = { harness: () => harness, agent: { role: "chat" as const,
+    configure: (tx: Tx, id: ConversationId) => factory.configure(tx, id, { role: "chat" }, agents.Kaeno) } };
   const id = await thread(deps, "telegram:111");
   const submit = (content: string, requestId: string, notify = { telegram: 111 }) =>
     harness.commit(tx => admitTurn(tx, Turn, { conversationId: id, content, requestId, notify }), ctx);

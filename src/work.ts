@@ -4,22 +4,39 @@ import type { Context } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
 import { AssistantEntry, defineDoc, defineExtension, defineTask, defineTool,
   type ConversationId, type Harness, type TaskId, type ToolExecutionApi, type Tx } from "@earendil-works/pi-durable";
-import { eligibleWorkTemplates, type Config, type Template } from "./config.ts";
+import { CODING_TOOLS, eligibleWorkTemplates, type Config, type Template } from "./config.ts";
 import type { SandboxImages, SkillBinding } from "./skills.ts";
 import { activeTurn, admitTurn, admitCancel, suppressReports, TurnLedger, type ControlTask, type Origin, type TurnTask } from "./turns.ts";
 
 export type WorkBlueprint = { agent: string; templates: Record<string, { template: Template; skills: SkillBinding }>; images: SandboxImages; skillCacheClaim: string };
+/** Selected persisted entries cross the replay boundary; never consult current config/catalog. */
+export function frozenEntry(blueprint: WorkBlueprint, agent: string) {
+  const entry = blueprint?.templates && Object.hasOwn(blueprint.templates, agent) ? blueprint.templates[agent] : undefined;
+  if (!entry) throw new Error(`Missing frozen delegate template "${agent}"`);
+  const t = entry.template;
+  const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(v => typeof v === "string");
+  if (!t || t.name !== agent || typeof t.description !== "string" ||
+      typeof t.model?.provider !== "string" || !t.model.provider || typeof t.model.modelId !== "string" || !t.model.modelId ||
+      typeof t.instructions !== "string" || typeof t.sandbox !== "boolean" ||
+      (t.thinkingLevel !== undefined && !["off", "minimal", "low", "medium", "high", "xhigh"].includes(t.thinkingLevel)) ||
+      !strings(t.tools) || t.tools.some(n => !CODING_TOOLS.includes(n)) || (t.tools.length > 0 && !t.sandbox) ||
+      !strings(t.delegates) || !strings(t.skills) || !Array.isArray(entry.skills) ||
+      entry.skills.some(s => !s || typeof s.id !== "string" || !s.id || typeof s.description !== "string" ||
+        typeof s.disableModelInvocation !== "boolean" || typeof s.repositoryCommit !== "string" || !s.repositoryCommit ||
+        typeof s.treeHash !== "string" || !s.treeHash || typeof s.sandboxRoot !== "string" || !s.sandboxRoot ||
+        !s.documents || typeof s.documents !== "object" || Array.isArray(s.documents) ||
+        typeof s.documents["SKILL.md"] !== "string" || Object.values(s.documents).some(text => typeof text !== "string")))
+    throw new Error(`Invalid frozen agent template "${agent}"; cannot resume safely (cancel and submit a new request)`);
+  return entry;
+}
+
 /** Persisted tasks are a boundary: never guess a missing/invalid frozen root from current config. */
 export function workRoot(blueprint: WorkBlueprint) {
-  const root = blueprint?.templates?.[blueprint.agent];
-  if (!blueprint?.agent || !root?.template || root.template.name !== blueprint.agent ||
-      !root.template.model?.provider || !root.template.model.modelId || typeof root.template.instructions !== "string" ||
-      !Array.isArray(root.template.tools) || !Array.isArray(root.template.delegates) ||
-      !Array.isArray(root.template.skills) || !Array.isArray(root.skills) ||
+  if (typeof blueprint?.agent !== "string" || !blueprint.agent ||
       typeof blueprint.images?.execution !== "string" || !blueprint.images.execution ||
       typeof blueprint.skillCacheClaim !== "string" || !blueprint.skillCacheClaim)
     throw new Error("WORK has no valid frozen blueprint root; cannot resume safely (cancel and submit a new request)");
-  return root;
+  return frozenEntry(blueprint, blueprint.agent);
 }
 type WorkInput = { title: string; brief: string; origin: Origin; blueprint: WorkBlueprint };
 type WorkResult = { status: "completed" | "failed"; text: string };
