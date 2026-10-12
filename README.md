@@ -180,8 +180,8 @@ Agent tracing is always enabled in the main Kaeno process; no flag or worker-pod
 kubectl -n kaeno logs deployment/kaeno -f --tail=100
 ```
 
-JSON lines with `type: "agent_trace"` include conversation/task IDs, role (`chat`, `work`, `worker`; `legacy` if unknown), template,
-work ID and sandbox pod where applicable. Events cover model requests/responses, provider-exposed thinking,
+JSON lines on **stdout** with `type: "agent_trace"` and ISO `time` include conversation/task IDs, role
+(`chat`, `work`, `worker`; `legacy` if unknown), template, work ID and sandbox pod where applicable. Events cover model requests/responses, provider-exposed thinking,
 assistant text, model-proposed tool calls, and tool starts/results. Background WORK and WORKER traces continue after CHAT acknowledges,
 without a connected pi/API observer. Model text/thinking is logged when each response completes, not token by token.
 This also covers resumed conversations; recovery can repeat log records. Logs are diagnostic, not a durable event feed.
@@ -346,9 +346,10 @@ by this publishing workflow.
 
 ## Local structured logs
 
-`src/log.ts` writes one JSON line per event to **stderr**, leaving stdout free for protocols. Startup/shutdown,
-Harness reports and the sweep catch in `src/kaeno.ts` use it. This is an incremental migration: existing skills,
-API, Telegram, sandbox-removal and envd raw logs remain unchanged, so process output is still mixed-format and
+Operational `log()` in `src/log.ts` writes one JSON line per event to **stderr**; it does not write to stdout.
+[Agent traces](#agent-logs) remain on **stdout**, with their distinct content/redaction policy. Startup/shutdown,
+Harness reports and the sweep catch in `src/kaeno.ts` use operational logging. This is an incremental migration:
+existing skills, API, Telegram, sandbox-removal and envd raw logs remain unchanged, so process output is still mixed-format and
 those older logs do **not** inherit this logger's privacy policy. HTTP traces and envd protocol output are unchanged.
 Loki/Grafana could collect these local JSON events in future; no collector or integration is configured here.
 
@@ -358,8 +359,8 @@ log("error", "harness", "harness.error", {}, error);
 log("info", "kaeno", "app.stopping", { signal: "SIGTERM" });
 ```
 
-Records contain ISO `timestamp`, `level`, `component`, `event`, optional nested `context`, and optional
-`error: { kind }`. Debug is off (fixed info threshold), with no new environment/config setting. Component/event
+Operational records contain `type: "app_log"`, ISO `time`, `level`, `component`, `event`, optional nested `context`,
+and optional `error: { kind }`. Debug is off (fixed info threshold), with no new environment/config setting. Component/event
 are constants at call sites. Context must contain only caller-selected safe scalar facts: **no prompts, user bodies,
 config/env values, tokens, URLs or error text** (the listening port and boolean feature status are intentional safe
 operational facts). Runtime projection omits non-scalars, non-finite numbers and accessors; it never calls `toJSON`.
@@ -369,8 +370,12 @@ string throws. Empty context and absent errors are omitted. Synchronous logging/
 
 ### Design rationale
 
-One `log(level, component, event, context?, error?)` export keeps call sites direct. Positional context/error preserve
-the small agreed usage without another options wrapper. We rejected an event catalog (couples the utility to domain
+`log(level, component, event, context?, error?)` keeps operational call sites direct. Both it and `src/agent-logs.ts`
+use the tiny dependency-free `writeJsonLog(record, write)` export to serialize JSON and invoke an explicit writer,
+swallowing synchronous serialization/output failures. This is shared mechanism only: no global sink, factory or
+configuration. Agent logging still owns its fields, correlation, snapshot handling, redaction and clipping;
+operational scalar/error policies do not apply to agent content, which remains distinct and sensitive.
+Positional context/error preserve the small agreed usage without another options wrapper. We rejected an event catalog (couples the utility to domain
 events), a logger factory (unneeded state/indirection), and four severity methods (extra interface for the same work).
 **Laziness protocol** keeps this to one module and a few lifecycle/error sites, with no dependencies, sinks or loop
 success logs. **Minimize reader load** leaves severity and event visible at each call site. **Boundary discipline**

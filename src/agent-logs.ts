@@ -2,6 +2,7 @@
 import { GenerationTask, ToolTask, hook, type HookApi } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
 import type { AgentState } from "./agents.ts";
+import { writeJsonLog } from "./log.ts";
 
 const MAX_CONTENT = 8192;
 
@@ -23,11 +24,11 @@ export function agentLogHooks(stateDoc: typeof AgentState, write: (line: string)
     try {
       const state = await api.snapshot(stateDoc, api.conversationId, context);
       const safe = redactAgentLog(content, [...secrets, state?.sandbox?.token ?? ""]);
-      write(JSON.stringify({ type: "agent_trace", time: new Date().toISOString(), event,
+      writeJsonLog({ type: "agent_trace", time: new Date().toISOString(), event,
         conversationId: api.conversationId, taskId: api.taskId, role: state?.role ?? "legacy",
         agent: state?.template, workId: state?.workId, pod: state?.sandbox?.pod, ...fields,
         ...(safe ? { content: safe.slice(0, MAX_CONTENT), ...(safe.length > MAX_CONTENT ? { truncated: true } : {}) } : {}),
-      }));
+      }, write);
     } catch { /* Logging is best-effort, including during shutdown. */ }
   }
   return [

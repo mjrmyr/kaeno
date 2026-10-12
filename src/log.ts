@@ -1,6 +1,12 @@
 type Level = "debug" | "info" | "warn" | "error";
 type Context = Readonly<Record<string, string | number | boolean | null>>;
 
+/** Shared emission only; callers own record fields, privacy policy and output stream. */
+export function writeJsonLog(record: Readonly<Record<string, unknown>>, write: (line: string) => void): void {
+  try { write(JSON.stringify(record)); }
+  catch { /* Telemetry must not interrupt work if serialization or output fails synchronously. */ }
+}
+
 // Only caller-selected safe facts: no prompts, user bodies, config/env values,
 // tokens, URLs or error text. Scalar projection is not content redaction.
 export function log(level: Level, component: string, event: string, context?: Context, error?: unknown): void {
@@ -31,10 +37,10 @@ export function log(level: Level, component: string, event: string, context?: Co
         }
       } catch { /* Malformed unknown errors remain unknown. */ }
     }
-    console.error(JSON.stringify({
-      timestamp: new Date().toISOString(), level, component, event,
+    writeJsonLog({
+      type: "app_log", time: new Date().toISOString(), level, component, event,
       ...(Object.keys(safeContext).length ? { context: safeContext } : {}),
       ...(error !== undefined ? { error: { kind } } : {}),
-    }));
-  } catch { /* Logging must not change application behavior, even if output fails synchronously. */ }
+    }, line => console.error(line));
+  } catch { /* Record preparation must not change application behavior. */ }
 }

@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxText, fauxThinking } from "@earendil-works/pi-ai/providers/faux";
 import { AgentState } from "../src/agents.ts";
@@ -54,4 +54,49 @@ it("logging failures never block requests/tools or replace their results", async
   expect(await tool.afterTool(call, {}, api, ctx)).toBeUndefined();
   api.snapshot = async () => { throw new Error("closing storage"); };
   expect(await tool.beforeTool(call, api, ctx)).toBeUndefined();
+});
+
+it("preserves the agent envelope and every event on stdout, separate from operational logging", async () => {
+  const stdout = vi.spyOn(console, "log").mockImplementation(() => {});
+  const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const { api } = setup();
+    const hooks = agentLogHooks(AgentState, undefined, ["known-provider-secret"]);
+    const generation = hooks[0]!.handlers as any, tool = hooks[1]!.handlers as any;
+    const message = fauxAssistantMessage([fauxThinking("thinking known-provider-secret"), fauxText("text sandbox-secret-value")]);
+    const call = { type: "toolCall", id: "call-2", name: "bash", arguments: { password: "unknown-secret" } };
+    (message.content as any[]).push(call);
+    await generation.beforeRequest({}, api, ctx);
+    await generation.afterResponse(message, api, ctx);
+    await tool.beforeTool(call, api, ctx);
+    await tool.afterTool(call, { content: [{ type: "text", text: "sandbox-secret-value" }] }, api, ctx);
+    expect(stderr).not.toHaveBeenCalled();
+    const records = stdout.mock.calls.map(args => {
+      expect(args).toHaveLength(1);
+      expect(args[0]).not.toMatch(/[\r\n]/);
+      return JSON.parse(args[0]);
+    });
+    expect(records.map(r => r.event)).toEqual(["model_request", "thinking", "text", "tool_call", "model_response", "tool_start", "tool_end"]);
+    expect(records[0]).toEqual({ type: "agent_trace", time: expect.any(String), event: "model_request",
+      conversationId: 12, taskId: 34, role: "worker", agent: "swe", workId: 56, pod: "kaeno-sb-test" });
+    for (const record of records) {
+      expect(new Date(record.time).toISOString()).toBe(record.time);
+      expect(record.type).toBe("agent_trace");
+      for (const key of ["level", "component", "context", "timestamp"]) expect(record).not.toHaveProperty(key);
+    }
+    expect(records[1].content).toBe("thinking [REDACTED]");
+    expect(records[2].content).toBe("text [REDACTED]");
+    expect(records[3]).toMatchObject({ tool: "bash", toolCallId: "call-2", content: '{"password":"[REDACTED]"}' });
+    expect(records[6]).toMatchObject({ isError: false, content: "[REDACTED]" });
+    for (const secret of ["known-provider-secret", "sandbox-secret-value", "unknown-secret"])
+      expect(JSON.stringify(records)).not.toContain(secret);
+  } finally { stdout.mockRestore(); stderr.mockRestore(); }
+});
+
+it("retains legacy correlation when the snapshot has no agent state", async () => {
+  const { records, generation, api } = setup();
+  api.snapshot = async () => undefined;
+  await generation.beforeRequest({}, api, ctx);
+  expect(records).toEqual([{ type: "agent_trace", time: expect.any(String), event: "model_request",
+    conversationId: 12, taskId: 34, role: "legacy" }]);
 });

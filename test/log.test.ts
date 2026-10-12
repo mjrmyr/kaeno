@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { log } from "../src/log.ts";
+import { log, writeJsonLog } from "../src/log.ts";
 
 type Context = Parameters<typeof log>[3];
 const malformed = (value: unknown) => value as Context;
@@ -21,11 +21,11 @@ describe("structured logging", () => {
     const before = Date.now();
     log(level, "kaeno", "app.started", { count: 2, enabled: true, absent: null, fixture: "safe\nfixture" });
     const output = record();
-    expect(output).toEqual({ timestamp: expect.any(String), level, component: "kaeno", event: "app.started",
+    expect(output).toEqual({ type: "app_log", time: expect.any(String), level, component: "kaeno", event: "app.started",
       context: { count: 2, enabled: true, absent: null, fixture: "safe\nfixture" } });
-    expect(new Date(output.timestamp).toISOString()).toBe(output.timestamp);
-    expect(Date.parse(output.timestamp)).toBeGreaterThanOrEqual(before);
-    expect(Date.parse(output.timestamp)).toBeLessThanOrEqual(Date.now());
+    expect(new Date(output.time).toISOString()).toBe(output.time);
+    expect(Date.parse(output.time)).toBeGreaterThanOrEqual(before);
+    expect(Date.parse(output.time)).toBeLessThanOrEqual(Date.now());
     expect(stdout).not.toHaveBeenCalled();
   });
 
@@ -39,7 +39,7 @@ describe("structured logging", () => {
 
   it("omits absent or empty optional fields", () => {
     log("info", "kaeno", "fixture.empty", {});
-    expect(Object.keys(record()).sort()).toEqual(["component", "event", "level", "timestamp"]);
+    expect(Object.keys(record()).sort()).toEqual(["component", "event", "level", "time", "type"]);
   });
 
   it.each([Error, TypeError, RangeError, ReferenceError, SyntaxError, URIError, EvalError])(
@@ -83,9 +83,11 @@ describe("structured logging", () => {
   });
 
   it("keeps reserved keys nested, including __proto__", () => {
-    const context = JSON.parse('{"timestamp":"fixture","level":"fixture","component":"fixture","event":"fixture","context":"fixture","error":"fixture","__proto__":"fixture"}');
+    const context = JSON.parse('{"type":"fixture","time":"fixture","level":"fixture","component":"fixture","event":"fixture","context":"fixture","error":"fixture","__proto__":"fixture"}');
     log("info", "kaeno", "fixture.reserved", context);
     const output = record();
+    expect(output.type).toBe("app_log");
+    expect(output.time).not.toBe("fixture");
     expect(output.level).toBe("info");
     expect(output.component).toBe("kaeno");
     expect(output.event).toBe("fixture.reserved");
@@ -124,5 +126,34 @@ describe("structured logging", () => {
   it("does not propagate synchronous output failure", () => {
     vi.mocked(console.error).mockImplementation(() => { throw new Error("fixture output failure"); });
     expect(() => log("info", "kaeno", "fixture.output", { count: 1 })).not.toThrow();
+  });
+});
+
+describe("shared JSON-line emission", () => {
+  it("serializes an arbitrary caller-owned record once to the explicit writer", () => {
+    const write = vi.fn();
+    const input = Object.freeze({ type: "fixture", content: "first\nsecond", nested: { count: 2 } });
+    writeJsonLog(input, write);
+    expect(write).toHaveBeenCalledExactlyOnceWith(JSON.stringify(input));
+    expect(write.mock.calls[0]![0]).not.toMatch(/[\r\n]/);
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it.each(["circular", "bigint", "toJSON"])("swallows %s serialization failure without invoking the writer", kind => {
+    const input: Record<string, unknown> = kind === "bigint" ? { value: 1n } :
+      kind === "toJSON" ? { toJSON() { throw new Error("fixture serialization failure"); } } : {};
+    if (kind === "circular") input.self = input;
+    const write = vi.fn();
+    expect(() => writeJsonLog(input, write)).not.toThrow();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("swallows writer failure without retrying or falling back to another stream", () => {
+    const write = vi.fn(() => { throw new Error("fixture output failure"); });
+    const stdout = vi.spyOn(console, "log").mockImplementation(() => {});
+    expect(() => writeJsonLog({ event: "fixture" }, write)).not.toThrow();
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(console.error).not.toHaveBeenCalled();
+    expect(stdout).not.toHaveBeenCalled();
   });
 });
