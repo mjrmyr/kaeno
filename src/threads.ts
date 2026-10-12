@@ -7,6 +7,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { AgentState, textOf } from "./agents.ts";
 import type { BoundAgent } from "./agent-factory.ts";
+import { storageCopy } from "./work-blueprint.ts";
 export { defineTurn, admitTurn, TurnLedger, resetEpoch } from "./turns.ts";
 export type { Notify, Notifier } from "./turns.ts";
 
@@ -29,7 +30,7 @@ async function configureThread(tx: Tx, conversationId: ConversationId, agent: Th
   const state = await tx.doc(AgentState, conversationId);
   state.template = bound.template.name;
   if (agent.role) state.role = agent.role;
-  state.skills = bound.skills;
+  state.skills = storageCopy(bound.skills);
 }
 
 /** The conversation for a channel key, created on first use in one commit (so concurrent first messages agree). */

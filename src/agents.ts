@@ -9,17 +9,16 @@ import {
   type ConversationId, type EnvTarget, type Harness, type TaskId,
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import { eligibleWorkTemplates, type Config } from "./config.ts";
 import * as k8s from "./k8s.ts";
 import { RemoteExecutionEnv } from "./remote-env.ts";
-import { readSkillDocument, skillPrompt, type SkillBinding, type SkillCatalog, type SandboxImages } from "./skills.ts";
-import { frozenEntry, workRoot, type WorkBlueprint } from "./work.ts";
+import { readSkillDocument, skillPrompt, type SandboxImages } from "./skills.ts";
+import { frozenEntry, readBlueprint, workRoot, storageCopy, type BoundAgent, type Stored, type WorkBlueprint } from "./work-blueprint.ts";
 import { SandboxSlots, sandboxSlots } from "./sandbox-slots.ts";
 import type { AgentFactory } from "./agent-factory.ts";
 import { agentLogHooks } from "./agent-logs.ts";
 
 /** Which template a conversation runs, and its sandbox pod if it has one. */
-export const AgentState = defineDoc<{ template?: string; role?: "chat" | "work" | "worker"; workId?: TaskId; blueprint?: WorkBlueprint; skills?: SkillBinding; sandbox?: { pod: string; token: string; images?: SandboxImages; skillCacheClaim?: string } }>({
+export const AgentState = defineDoc<{ template?: string; role?: "chat" | "work" | "worker"; workId?: TaskId; blueprint?: Stored<WorkBlueprint>; skills?: Stored<BoundAgent["skills"]>; sandbox?: { pod: string; token: string; images?: SandboxImages; skillCacheClaim?: string } }>({
   kind: "kaeno.agent", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({}),
 });
 
@@ -37,9 +36,10 @@ const sumUsage = (models: Record<string, any>): Usage => {
 
 export const podName = (conversationId: ConversationId) => `kaeno-sb-${createHash("sha256").update(String(conversationId)).digest("hex").slice(0, 12)}`;
 
-export type AgentsDeps = { config: Config; images: SandboxImages; skillCacheClaim: string; skills: SkillCatalog; harness: () => Harness; sandboxUrl?: (pod: string) => string; sandboxCwd?: string; factory: AgentFactory; maxSandboxes?: number };
+export type AgentsDeps = { images: SandboxImages; skillCacheClaim: string; harness: () => Harness; sandboxUrl?: (pod: string) => string; factory: AgentFactory; maxSandboxes?: number };
 
-export function createAgents({ config, images, skillCacheClaim, skills, harness, factory, maxSandboxes = 4, sandboxCwd = "/workspace", sandboxUrl = pod => `http://${pod}.kaeno-sandbox.${k8s.namespace}.svc.cluster.local:7070` }: AgentsDeps) {
+export function createAgents({ images, skillCacheClaim, harness, factory, maxSandboxes = 4, sandboxUrl = pod => `http://${pod}.kaeno-sandbox.${k8s.namespace}.svc.cluster.local:7070` }: AgentsDeps) {
+  const config = factory.config;
   const envs = new Map<string, RemoteExecutionEnv>();
   const slots = sandboxSlots(harness, maxSandboxes);
   // While the process shuts down, running delegations are paused, not over: they keep their sandbox and are resumed
@@ -72,10 +72,10 @@ export function createAgents({ config, images, skillCacheClaim, skills, harness,
       const fail = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true });
       const callerState = await api.snapshot(AgentState, api.conversationId, context);
       if (callerState?.role === "chat") return fail("CHAT starts work; foreground delegation belongs to WORK");
-      const blueprint = callerState?.blueprint;
       // Leaves are unconditional, including old durable conversations without a blueprint.
       if (callerState?.role === "worker") return fail("WORKERs are leaves; WORK owns delegation and fanout");
-      if (callerState?.role === "work" && !blueprint) return fail("WORK has no frozen blueprint; cannot delegate safely");
+      if (callerState?.role === "work" && !callerState.blueprint) return fail("WORK has no frozen blueprint; cannot delegate safely");
+      const blueprint = callerState?.blueprint === undefined ? undefined : readBlueprint(callerState.blueprint);
       if (blueprint !== undefined) workRoot(blueprint);
       const caller = blueprint !== undefined ? blueprint.templates[blueprint.agent]?.template : config.templates[callerState?.template ?? config.agent];
       if (!caller?.delegates.includes(agent)) return fail(`Unknown agent template "${agent}". Available: ${caller?.delegates.join(", ") || "none"}`);
@@ -96,8 +96,8 @@ export function createAgents({ config, images, skillCacheClaim, skills, harness,
         const state = await tx.doc(AgentState, created.id);
         state.template = agent; state.role = "worker";
         if (callerState?.workId) state.workId = callerState.workId;
-        if (blueprint !== undefined) state.blueprint = blueprint;
-        state.skills = bound.skills;
+        if (blueprint !== undefined) state.blueprint = storageCopy(blueprint);
+        state.skills = storageCopy(bound.skills);
         if (template.sandbox) state.sandbox = { pod: podName(created.id), token: randomBytes(24).toString("hex"), images: { execution: frozenImages.execution }, skillCacheClaim: frozenClaim };
         return { id: created.id, sandbox: state.sandbox ? { ...state.sandbox, images: { execution: frozenImages.execution } } : undefined,
           selection: state.skills.map(s => ({ id: s.id, treeHash: s.treeHash })) };
@@ -176,14 +176,14 @@ export function createAgents({ config, images, skillCacheClaim, skills, harness,
   }
 
   /** pi-durable's env hook: sandboxed conversations run every file and shell operation in their pod. */
-  async function env({ conversationId, read }: EnvTarget, context: Context): Promise<ExecutionEnv | undefined> {
+  async function env({ conversationId, cwd, read }: EnvTarget, context: Context): Promise<ExecutionEnv | undefined> {
     const sandbox = (await read.snapshot(AgentState, conversationId, context))?.sandbox;
     if (!sandbox) return undefined;
     let remote = envs.get(sandbox.pod);
     if (!remote) {
       remote = new RemoteExecutionEnv({
         url: sandboxUrl(sandbox.pod),
-        token: sandbox.token, id: `pod:${sandbox.pod}`, cwd: sandboxCwd,
+        token: sandbox.token, id: `pod:${sandbox.pod}`, cwd: cwd ?? factory.sandboxCwd,
       });
       envs.set(sandbox.pod, remote);
     }
@@ -204,23 +204,13 @@ export function createAgents({ config, images, skillCacheClaim, skills, harness,
     }
   }
 
-  function captureWork(agent: string): WorkBlueprint {
-    if (!eligibleWorkTemplates(config).some(t => t.name === agent)) throw new Error(`Ineligible WORK template "${agent}"`);
-    const templates: WorkBlueprint["templates"] = {};
-    const visit = (name: string) => {
-      if (templates[name]) return;
-      const template = config.templates[name]!;
-      templates[name] = { template: structuredClone(template), skills: skills.bind(template.skills) };
-      for (const next of template.delegates) visit(next);
-    };
-    visit(agent);
-    return { agent, templates, images: { execution: images.execution }, skillCacheClaim };
-  }
+  const captureWork = (agent: string) => factory.capture(agent, images, skillCacheClaim, Kaeno);
   async function configureWork(tx: import("@earendil-works/pi-durable").Tx, id: ConversationId, blueprint: WorkBlueprint, workId?: TaskId) {
+    blueprint = readBlueprint(blueprint);
     const root = await factory.configure(tx, id, { role: "work", blueprint }, Kaeno);
     const state = await tx.doc(AgentState, id);
     state.role = "work"; if (workId) state.workId = workId;
-    state.template = blueprint.agent; state.skills = root.skills; state.blueprint = blueprint;
+    state.template = blueprint.agent; state.skills = storageCopy(root.skills); state.blueprint = storageCopy(blueprint);
   }
   async function workClean(workId: TaskId) {
     const snapshot = await harness().snapshot(SandboxSlots, BACKGROUND_CONTEXT);

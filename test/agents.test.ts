@@ -4,6 +4,7 @@ import type { BoundSkill } from "../src/skills.ts";
 import type { AgentState as SdkAgentState, Tx, ConversationId } from "@earendil-works/pi-durable";
 import { AgentFactory, type AgentSelection } from "../src/agent-factory.ts";
 import { createAgents } from "../src/agents.ts";
+import { sealBlueprint } from "../src/work-blueprint.ts";
 import { parseConfig } from "../src/config.ts";
 
 function setup() {
@@ -17,10 +18,11 @@ function setup() {
   const binding: BoundSkill[] = [{ id: "demo/skills:guide", description: "engineering skill", disableModelInvocation: false,
     repositoryCommit: "a".repeat(40), treeHash: "b".repeat(64), sandboxRoot: "/workspace/.agents/skills/demo/skills/guide", documents: { "SKILL.md": "FROZEN SKILL" } }];
   const skills = { bind: (ids: readonly string[]) => ids.length ? structuredClone(binding) : [] };
+  const tools = [{ name: "start_work" }, { name: "list_work" }, { name: "cancel_work" }];
   const factory = new AgentFactory({ config, skills,
-    work: { extension: { name: "test-work" }, tools: [{ name: "start_work" }, { name: "list_work" }, { name: "cancel_work" }] } as any });
-  const agents = createAgents({ config, harness: () => { throw new Error("unexpected harness access"); },
-    images: { execution: "frozen-image" }, skillCacheClaim: "frozen-cache", skills, factory });
+    work: { extension: { name: "test-work", tools }, tools } as any });
+  const agents = createAgents({ harness: () => { throw new Error("unexpected harness access"); },
+    images: { execution: "frozen-image" }, skillCacheClaim: "frozen-cache", factory });
   const delegate = agents.Kaeno.tools!.find(t => t.name === "delegate")!;
   const execute = (state: any, agent: string) => delegate.execute({ agent, task: "Task" }, {
     conversationId: 1, snapshot: async () => state, commit: async () => { throw new Error("unexpected child creation"); },
@@ -75,13 +77,17 @@ it.each([true, false])("WORKER tools and runtime are leaves even with configured
 
 it("WORK rejects non-allowlisted and missing frozen targets rather than consulting current config", async () => {
   const { agents, execute, configured } = setup();
-  const blueprint = agents.captureWork("swe");
+  let blueprint = agents.captureWork("swe");
   const state = { role: "work", template: "swe", blueprint };
   expect(JSON.stringify((await execute(state, "kaeno")).content)).toContain("Available: leaf");
   expect(JSON.stringify((await execute(state, "hidden")).content)).toContain("Available: leaf");
-  delete blueprint.templates.leaf;
+  const damaged = JSON.parse(JSON.stringify(blueprint));
+  delete damaged.templates.leaf;
+  const { digest: _, ...content } = damaged;
+  blueprint = sealBlueprint(content); state.blueprint = blueprint;
   expect(JSON.stringify((await execute(state, "leaf")).content)).toContain('Missing frozen delegate template');
-  await expect(configured({ role: "work", blueprint })).rejects.toThrow(/Missing frozen delegate/);
+  // The root's saved instructions no longer require resolving delegate descriptions.
+  await expect(configured({ role: "work", blueprint })).resolves.toBeDefined();
   expect(JSON.stringify((await execute({ role: "work", template: "swe" }, "leaf")).content)).toContain("no frozen blueprint");
   expect(JSON.stringify((await execute({ role: "chat", template: "kaeno" }, "swe")).content)).toContain("CHAT starts work");
 });

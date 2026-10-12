@@ -143,7 +143,7 @@ describe("kaeno durable delegation", () => {
       const catalog = await openSkillCatalog(store, config.skillRepositories, {});
       const work = background ? createWork({ harness: () => harness, Turn, config, capture: agent => agents.captureWork(agent), configure: (tx, child, b, workId) => agents.configureWork(tx, child, b, workId), clean: id => agents.workClean(id) }) : undefined;
       factory = new AgentFactory({ config, skills: catalog, work, sandboxCwd: workspace });
-      agents = createAgents({ config, images: { execution: `execution-v${version}` }, skillCacheClaim: `skill-cache-v${version}`, skills: catalog, harness: () => harness, sandboxUrl: () => envdUrl, sandboxCwd: workspace, factory });
+      agents = createAgents({ images: { execution: `execution-v${version}` }, skillCacheClaim: `skill-cache-v${version}`, harness: () => harness, sandboxUrl: () => envdUrl, factory });
       const registry = createRegistry();
       registry.install(CodingTools); registry.install(agents.Kaeno); registry.install(defineExtension({ name: "kaeno-channels", tasks: [Turn] }));
       if (work) registry.install(work.extension);

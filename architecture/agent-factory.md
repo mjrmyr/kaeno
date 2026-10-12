@@ -1,104 +1,113 @@
-# AgentFactory: minimal composition slice
+# AgentFactory: composition with immutable replay policy
 
-## Caller first (agreed sketch, before implementation)
+## Caller first
 
 ```ts
 const factory = new AgentFactory({ config, skills, work, sandboxCwd });
-const agents = createAgents({ config, skills, factory, /* lifecycle deps */ });
-// threads' existing transaction + idle gate:
+const agents = createAgents({ factory, images, skillCacheClaim, /* lifecycle deps */ });
+// Existing thread transaction + idle gate:
 const bound = await factory.configure(tx, id, { role: "chat" }, agents.Kaeno);
-// Agents' real metadata adapter:
-const root = await factory.configure(tx, id, { role: "work", blueprint }, Kaeno);
-state.skills = root.skills; // same result used by configuration
-// only after Agents authorizes a direct delegate and finds no existing child:
-const child = await factory.configure(tx, id, { role: "worker", agent, blueprint }, Kaeno);
+// Admission captures template data AND resolved role settings:
+const blueprint = agents.captureWork(agent);
+// Agents adds real metadata in the same transaction:
+await agents.configureWork(tx, id, blueprint, workId);
+// Only after direct-delegate authorization and finding no existing child:
+const child = await factory.configure(tx, id, { role: "worker", agent, blueprint }, agents.Kaeno);
 ```
 
-```ts
-type BoundAgent = { template: Template; skills: SkillBinding };
-type AgentSelection =
-  | { role: "chat" } // always config.agent
-  | { role: "work"; blueprint: WorkBlueprint } // only frozen root
-  | { role: "worker"; agent: string; blueprint?: WorkBlueprint }
-  | { role: "legacy"; agent: string; blueprint?: WorkBlueprint };
-class AgentFactory {
-  constructor(deps: { config: Config; skills: SkillCatalog;
-    work?: Pick<WorkController, "extension" | "tools">; sandboxCwd?: string });
-  bind(agent: string, blueprint?: WorkBlueprint): BoundAgent;
-  configure(tx: Tx, id: ConversationId, selection: AgentSelection,
-    kaeno: Extension): Promise<BoundAgent>;
-}
+The factory owns config, SkillCatalog and sandbox cwd. Agents no longer accepts independent copies of these
+inputs: its live authorization uses factory.config, capture uses factory.bind, and environments use the stored
+SDK cwd (with factory.sandboxCwd only for old children without one). This removes conflicting injection paths,
+including the previously possible mismatch between SDK cwd and RemoteExecutionEnv cwd.
+
+## Types and ownership
+
+- `BoundAgent`: deeply readonly template and bound skills, returned as an alias-free, deeply frozen copy.
+- `AgentSelection`: CHAT always selects config.agent; WORK requires a blueprint; WORKER/legacy may resolve live
+  or frozen data. Legacy is never a persisted role.
+- `AgentSettings`: a complete replacement with required model, thinking, tools, extensions, instructions, cwd.
+- `WorkBlueprint`: deeply readonly schema-1 snapshot, including every reachable template/skill binding, resolved
+  WORK/WORKER/legacy settings per entry, execution image, cache claim, and SHA-256 checksum.
+- `work-blueprint.ts`: JSON copying/freezing, checksum verification, schema support and selected-entry validation.
+  No orchestration imports. `work.ts` owns orchestration, not snapshot policy.
+- `Stored<T>` / `storageCopy`: explicit SDK persistence adapter. The SDK's JSON types require mutable arrays and
+  transactions expose mutable drafts. Domain consumers receive frozen copies; changing stored content without
+  resealing it is detected on the next blueprint read. The storage draft itself is not claimed to be immutable.
+
+```mermaid
+flowchart TB
+  Wiring[kaeno.ts] --> Factory[AgentFactory]
+  Wiring --> Agents[Agents: authorization and lifecycle]
+  Threads[Threads: transaction and idle gate] --> Factory
+  Work[Work: durable checkpoints] --> Agents
+  Agents -->|new child only| Factory
+  Agents -->|existing child| Adopt[Adopt without configuration]
+  Factory -->|capture once| Blueprint[Immutable blueprint + resolved role settings]
+  Blueprint -->|verify, copy, freeze| Replay[work-blueprint.ts]
+  Replay --> Factory
+  Factory -->|apply saved settings, no current policy calculation| SDK[SDK AgentDoc]
+  Factory -->|exact returned binding| Metadata[Caller writes AgentState]
+  Agents --> Metadata
+  Agents --> Sandbox[Sandbox lifecycle / remote environment]
 ```
 
-## Runtime / ownership
+The factory never imports AgentState, owns transactions, creates/submits conversations, creates tasks/pods,
+or orchestrates work. Validated config templates are the existing template registry; SkillCatalog.bind is
+skill resolution; the private roleTools/settings functions choose policy for NEW admissions/live configuration.
+There are no new registry interfaces or parallel configuration paths.
 
-```text
-kaeno.ts --> Work (callbacks to Agents)
-         --> AgentFactory(config, SkillCatalog, Work tools)
-         --> Agents(factory, lifecycle dependencies)
-channels --> threads -- idle gate / existing transaction --> factory.configure
-                   \--> AgentState metadata from returned binding
-Work checkpoints --> Agents.configureWork --> factory.configure
-Agents.delegate -- runtime auth --> adopt existing child (NO configure)
-                               \--> new child --> factory.configure
-                               \--> AgentState + sandbox lifecycle
-factory --> config templates OR validated frozen entry
-        --> SkillCatalog.bind (live only)
-        --> role policy + exact prompts/order/nulls --> SDK configure
-```
+## Replay guarantees
 
-Validated config templates already act as AgentRegistry; SkillCatalog.bind is SkillRegistry.
-The private concrete role-tool function acts as PermissionRegistry, not a new interface.
-The factory never imports/mutates AgentState, owns transactions, creates/submits conversations,
-creates tasks or pods, or orchestrates durable work. WORKER is always a leaf. Legacy is
-transient compatibility for no-role callers, never a persisted role.
+Capture visits each reachable template once, before descending, so self-cycles terminate. Each entry records
+all resolved role settings, including already-rendered delegate descriptions. Future children of that work use
+those settings verbatim, not current roleTools/settings/instructions, config, catalog or cwd. Lookup requires own
+map entries. Captured reachability is not delegation permission: Agents checks the root's direct delegate list.
+CHAT cannot foreground-delegate; WORKER is an unconditional leaf, including old no-blueprint children.
 
-Persisted blueprints cross a replay boundary (execute replay can bypass schemas): a selected
-entry validator next to WorkBlueprint/workRoot validates map identity, consumed template fields,
-coding tools/sandbox relationship, and bound skill representation. Root resolution, bind, and
-frozen delegate descriptions share it. Missing/malformed frozen entries fail closed; no live
-lookup/catalog fallback. Agents still checks CHAT/WORKER restrictions, WORK blueprint/root,
-direct caller allowlist (not transitive graph membership), then target before child adoption.
-Capture still clones templates and records visited nodes before recursion (including self-cycles).
+Selected entry/root checks still happen before child adoption. Adopted children are not reconfigured or rebound.
+Thread refresh retains its existing idle gate. SDK configuration and Kaeno metadata are written in one existing
+transaction, with metadata copied from the exact returned binding, not a second catalog lookup.
 
-## Synthesis / scope
+Tools/extensions are explicit allowlists. Empty tools means no tools. Null thinking/cwd clears inherited values.
+Null tools is NOT used: the SDK interprets it as removing the filter, potentially exposing every extension tool.
 
-A (chosen): single concrete composition/configuration factory, reusing the three existing registries.
-B (rejected): move lifecycle/orchestration into factory and persist extra permissions; increases
-reader load and changes durable semantics. Foundational thinking fixes BoundAgent/selection first;
-laziness deletes agentChange/bindSkills rather than adding aliases; reader-load minimization
-makes one configure result the source of persisted skills. Boundary discipline keeps replay
-validation local, not a duplicate full config schema.
+Schema absence/unknown versions, checksum mismatch, missing targets, malformed selected data, missing tool or
+extension implementations fail closed. Old unversioned work is not silently upgraded by running today's policy.
+Inspect/drain or cancel it before rollout and submit fresh requests. There is no automatic snapshot migration.
 
-Spawn/start orchestration is deferred. No prompt/config rewrite, schema/version broadening,
-dependency upgrades, deployment, or secrets changes. Templates/delegates/skills plus AgentDoc
-are frozen; executable role policy is NOT version-frozen, so later code changes may affect replay.
-#5 is already merged: preserve selected-root and unconditional leaf compatibility.
-#6 logging overlaps only kaeno.ts composition wiring; do not alter or merge its work.
+## Scope and security limits
 
-## Implementation / verification
+This hardening addresses accidental in-process mutation and policy drift across configuration/restarts. Deep
+readonly types reject edits; Object.freeze blocks them at runtime; restoration copies/refreezes; checksums detect
+accidental storage edits and corruption. A checksum is NOT authentication: anyone who controls the process or
+SQLite can recompute it or change AgentDoc. The snapshot pins configuration/capability decisions, not arbitrary
+JavaScript implementations of tools, hooks or orchestration. Those still come from the installed application/SDK;
+freezing an entire executable environment would require a separate deployment/version compatibility design.
+Skill provenance/provider authenticity validation is not broadened by this change.
 
-Implemented this sketch in src/agent-factory.ts. Agents now receives the factory; no
-agentChange/bindSkills aliases remain. configureWork still writes real WORK metadata;
-new workers and threads persist the exact configure result. Adoption bypasses configure.
-The selected-entry validator is frozenEntry in work.ts; workRoot additionally checks
-image/cache metadata. It checks consumed representations, not the entire config or
-artifact integrity schema. Frozen lookup and live lookup require own map entries.
+WORK execution remains a separate requested lifecycle change: this patch preserves the current WORK policy
+(no coding tools or sandbox) and does not expose host tools without sandbox provisioning/recovery/cleanup.
+No dependency upgrades, logging changes, cluster writes or deployment are performed.
 
-Verified on Node 24.21.0 from main 746a73614b326e573a34782cb41be8469d73493c:
-- Baseline: npm ci + check + test, 100 tests / 13 files passed (22.68s).
-- Implementation: npm ci + check + test, 124 tests / 14 files passed (22.95s).
-- 24 new factory cases: role/template matrix; SDK inherited-tool/cwd/thinking clearing;
-  live lookup errors; frozen lookup with forbidden live catalog; self-cycle capture;
-  malformed root/delegate identity, tool/sandbox, model, thinking, descriptions and skills;
-  single binding persisted for CHAT/WORK/WORKER; existing worker adoption without configure.
-- Existing direct-vs-transitive permission and unconditional worker-leaf tests retained
-  through API adaptation. All SQLite reopen, pod replay and receipt-first assertions intact.
-- Checked work.ts lifecycle suffix and threads idle gate byte-identical to main; role
-  prompts unchanged. Full diff reviewed and git diff --check passed.
-- npm ci: 139 packages added / 140 audited; unchanged 1 moderate + 2 critical findings.
+## Synthesis decision
 
-No architectural deviations. Sketch artifacts live in the existing architecture directory.
-No design runners were available; used the caller-approved A/B synthesis and direct review.
-No real cluster/deploy validation was attempted. Homelab remained clean at
-47a801370902f58bdc43d064b5a01f1bfc17684a. Rechecked main/#5/#6: supplied SHAs unchanged.
+A (chosen): save complete resolved configuration as immutable, checksummed data and give Factory sole ownership
+of shared composition inputs. This captures exactly what new children must run with and deletes duplicate inputs.
+B (rejected): retain multiple historical executable policy functions and select by version. That leaves correctness
+dependent on never editing an old function and adds a long-lived policy dispatch mechanism.
+
+Principles: encode lessons in structure (readonly types, runtime freezing, checksums, required settings fields);
+boundary discipline (one replay-data module, explicit storage adapters); laziness (delete conflicting dependency
+inputs rather than compare them at runtime); minimize reader load (saved configuration is the replay authority).
+
+## Verification
+
+Regression coverage includes the role/template matrix and explicit inherited-capability clearing; forbidden live
+config/catalog/policy access during frozen configuration; self-cycle capture; malformed selected entries; readonly
+compile-time contracts; deep runtime freezing and alias isolation; checksummed template/skill/image/policy edits;
+unsupported schemas; missing tool/extension implementations; saved SDK/remote cwd agreement; existing-child
+adoption without configuration; and creation of queued WORK plus a new WORKER after SQLite reopen with later
+policy code deliberately disabled. Existing SQLite/pod recovery and receipt-first tests remain in place.
+
+Final local run: Node 26.10.0 / npm 11.19.1; `npm ci`, `npm run check`, `npm test` (139 tests / 14 files),
+and `git diff --check` passed. No Node 24 rerun, real cluster or deployment verification was performed.

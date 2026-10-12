@@ -53,7 +53,7 @@ const Control = defineControl(() => harness, (id, workId) => work.cancel(id, wor
 const work: ReturnType<typeof createWork> = createWork({ harness: () => harness, Turn, Control,
   config, capture: agent => agents.captureWork(agent), configure: (tx, id, blueprint, workId) => agents.configureWork(tx, id, blueprint, workId), clean: id => agents.workClean(id) });
 const factory = new AgentFactory({ config, skills, work });
-agents = createAgents({ config, images, skillCacheClaim, skills, harness: () => harness, factory });
+agents = createAgents({ images, skillCacheClaim, harness: () => harness, factory });
 const registry = createRegistry();
 registry.install(CodingTools);
 registry.install(agents.Kaeno);

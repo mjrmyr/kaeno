@@ -4,41 +4,11 @@ import type { Context } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
 import { AssistantEntry, defineDoc, defineExtension, defineTask, defineTool,
   type ConversationId, type Harness, type TaskId, type ToolExecutionApi, type Tx } from "@earendil-works/pi-durable";
-import { CODING_TOOLS, eligibleWorkTemplates, type Config, type Template } from "./config.ts";
-import type { SandboxImages, SkillBinding } from "./skills.ts";
+import { eligibleWorkTemplates, type Config } from "./config.ts";
+import { storageCopy, workRoot, type Stored, type WorkBlueprint } from "./work-blueprint.ts";
 import { activeTurn, admitTurn, admitCancel, suppressReports, TurnLedger, type ControlTask, type Origin, type TurnTask } from "./turns.ts";
 
-export type WorkBlueprint = { agent: string; templates: Record<string, { template: Template; skills: SkillBinding }>; images: SandboxImages; skillCacheClaim: string };
-/** Selected persisted entries cross the replay boundary; never consult current config/catalog. */
-export function frozenEntry(blueprint: WorkBlueprint, agent: string) {
-  const entry = blueprint?.templates && Object.hasOwn(blueprint.templates, agent) ? blueprint.templates[agent] : undefined;
-  if (!entry) throw new Error(`Missing frozen delegate template "${agent}"`);
-  const t = entry.template;
-  const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(v => typeof v === "string");
-  if (!t || t.name !== agent || typeof t.description !== "string" ||
-      typeof t.model?.provider !== "string" || !t.model.provider || typeof t.model.modelId !== "string" || !t.model.modelId ||
-      typeof t.instructions !== "string" || typeof t.sandbox !== "boolean" ||
-      (t.thinkingLevel !== undefined && !["off", "minimal", "low", "medium", "high", "xhigh"].includes(t.thinkingLevel)) ||
-      !strings(t.tools) || t.tools.some(n => !CODING_TOOLS.includes(n)) || (t.tools.length > 0 && !t.sandbox) ||
-      !strings(t.delegates) || !strings(t.skills) || !Array.isArray(entry.skills) ||
-      entry.skills.some(s => !s || typeof s.id !== "string" || !s.id || typeof s.description !== "string" ||
-        typeof s.disableModelInvocation !== "boolean" || typeof s.repositoryCommit !== "string" || !s.repositoryCommit ||
-        typeof s.treeHash !== "string" || !s.treeHash || typeof s.sandboxRoot !== "string" || !s.sandboxRoot ||
-        !s.documents || typeof s.documents !== "object" || Array.isArray(s.documents) ||
-        typeof s.documents["SKILL.md"] !== "string" || Object.values(s.documents).some(text => typeof text !== "string")))
-    throw new Error(`Invalid frozen agent template "${agent}"; cannot resume safely (cancel and submit a new request)`);
-  return entry;
-}
-
-/** Persisted tasks are a boundary: never guess a missing/invalid frozen root from current config. */
-export function workRoot(blueprint: WorkBlueprint) {
-  if (typeof blueprint?.agent !== "string" || !blueprint.agent ||
-      typeof blueprint.images?.execution !== "string" || !blueprint.images.execution ||
-      typeof blueprint.skillCacheClaim !== "string" || !blueprint.skillCacheClaim)
-    throw new Error("WORK has no valid frozen blueprint root; cannot resume safely (cancel and submit a new request)");
-  return frozenEntry(blueprint, blueprint.agent);
-}
-type WorkInput = { title: string; brief: string; origin: Origin; blueprint: WorkBlueprint };
+type WorkInput = { title: string; brief: string; origin: Origin; blueprint: Stored<WorkBlueprint> };
 type WorkResult = { status: "completed" | "failed"; text: string };
 type WorkState = { phase: "start" } | { phase: "run"; child: ConversationId } | { phase: "report"; text: string; failed?: boolean };
 export const WorkIndex = defineDoc<{ launches: Record<string, TaskId<WorkResult>> }>({
@@ -161,7 +131,7 @@ export function createWork({ harness, Turn, Control, config, capture, configure,
           if (receipt.source.kind === "work-result" && ["pending", "dispatching"].includes(receipt.delivery)) activeIds.add(receipt.source.workId);
         const history = Object.entries(index.launches);
         for (const [key, id] of history.slice(0, Math.max(0, history.length - 511))) if (!activeIds.has(id)) delete index.launches[key];
-        const created = await tx.createTask(Work, { title, brief, origin, blueprint }, { ownership: { kind: "conversation" }, conversationId: api.conversationId, background: true });
+        const created = await tx.createTask(Work, { title, brief, origin, blueprint: storageCopy(blueprint) }, { ownership: { kind: "conversation" }, conversationId: api.conversationId, background: true });
         index.launches[origin.requestId] = created;
         return { id: created, agent: blueprint.agent };
       }, context);
