@@ -8,9 +8,10 @@ import type { AddressInfo } from "node:net";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxText } from "@earendil-works/pi-ai/providers/faux";
-import { createRegistry, defineExtension, Harness } from "@earendil-works/pi-durable";
+import { configure, type Tx, type ConversationId, createRegistry, defineExtension, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { pollTelegram, telegramClient, telegramNotifier } from "../src/telegram.ts";
+import { parseConfig } from "../src/config.ts";
 import { defineTurn } from "../src/threads.ts";
 
 const until = async (check: () => boolean, ms = 10000) => {
@@ -58,7 +59,11 @@ describe("channels", () => {
     registry.install(defineExtension({ name: "kaeno-channels", tasks: [Turn] }));
     const harness = await Harness.open(await openNodeSqliteStorage(join(dir, "k.sqlite")), { models, registry }, BACKGROUND_CONTEXT);
     harness.resume();
-    const deps = { harness: () => harness, agent: { template: "kaeno", change: () => ({ model: { provider: "faux", modelId: "faux-1" } }) } };
+    const template = parseConfig({ agent: "kaeno", templates: { kaeno: { description: "chat", model: "anthropic/chat", instructions: "profile" } } }).templates.kaeno!;
+    const deps = { harness: () => harness, agent: { configure: async (tx: Tx, id: ConversationId) => {
+      await configure(tx, id, { model: { provider: "faux", modelId: "faux-1" } });
+      return { template, skills: [] };
+    } } };
 
     const stop = new AbortController();
     void pollTelegram({ ...deps, client, allowed: new Set([111]), Turn, signal: stop.signal });

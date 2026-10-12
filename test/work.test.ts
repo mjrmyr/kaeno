@@ -7,9 +7,10 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { Type } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { createRegistry, defineExtension, Harness, type ConversationId } from "@earendil-works/pi-durable";
+import { AgentDoc, createRegistry, defineExtension, Harness, type ConversationId, type Tx } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { AgentFactory } from "../src/agent-factory.ts";
 import { createAgents, AgentState } from "../src/agents.ts";
 import { createWork, WorkIndex } from "../src/work.ts";
 import { defineTurn, defineControl, admitControl, admitTurn, TurnLedger, resetEpoch } from "../src/turns.ts";
@@ -48,23 +49,24 @@ async function setup(route: (system: string, last: any, options: any) => Promise
   const Turn = defineTurn(() => ({ typing: async () => {}, send: async (notify, message) => {
     if (send) await send(notify, message); sent.push(message);
   } }));
-  let harness!: Harness, agents!: ReturnType<typeof createAgents>, work!: ReturnType<typeof createWork>;
+  let harness!: Harness, agents!: ReturnType<typeof createAgents>, work!: ReturnType<typeof createWork>, factory!: AgentFactory;
   const Control = defineControl(() => harness, (id, workId) => work.cancel(id, workId));
   let opening = 0;
-  const open = async () => {
+  const open = async (resume = true) => {
     work = createWork({ harness: () => harness, Turn, Control, config, capture: agent => agents.captureWork(agent), configure: (tx, id, b, workId) => agents.configureWork(tx, id, b, workId), clean: id => agents.workClean(id) });
     options.install?.(work, ++opening);
-    agents = createAgents({ config, harness: () => harness, work, skills: { bind: () => [] }, images: { execution: "execution-v1" }, skillCacheClaim: "cache-v1" });
+    factory = new AgentFactory({ config, skills: { bind: () => [] }, work });
+    agents = createAgents({ harness: () => harness, factory, images: { execution: "execution-v1" }, skillCacheClaim: "cache-v1" });
     const registry = createRegistry(); registry.install(CodingTools); registry.install(agents.Kaeno); registry.install(work.extension);
     registry.install(defineExtension({ name: "channels", tasks: [Turn, Control] }));
     harness = await Harness.open(await openNodeSqliteStorage(join(dir, "state.sqlite")), { models, registry, env: agents.env,
       settings: { toolExecution: "parallel", followUpMode: "one-at-a-time" } }, ctx);
-    harness.resume();
+    if (resume) harness.resume();
   };
   const close = async () => { agents.shutdown(); await harness.close(ctx); };
   await open(); cleanup.push(close);
-  const deps = { harness: () => harness, agent: { template: "kaeno", role: "chat" as const,
-    change: () => agents.agentChange(config.templates.kaeno!), skills: () => [] } };
+  const deps = { harness: () => harness, agent: { role: "chat" as const,
+    configure: (tx: Tx, id: ConversationId) => factory.configure(tx, id, { role: "chat" }, agents.Kaeno) } };
   const id = await thread(deps, "telegram:111");
   const submit = (content: string, requestId: string, notify = { telegram: 111 }) =>
     harness.commit(tx => admitTurn(tx, Turn, { conversationId: id, content, requestId, notify }), ctx);
@@ -478,6 +480,40 @@ it("starts a queued valid frozen selection even after current config removes its
   expect(seen.some(system => system.includes("WORKER") && system.includes("Kaeno WORK"))).toBe(true);
   const child = (await s.harness.commit(tx => tx.scanConversations({ ownerTaskId: id }, 1), ctx)).items[0]!;
   expect((await s.harness.snapshot(AgentState, child.id, ctx))?.template).toBe("worker");
+});
+
+it("creates queued WORK and WORKER after SQLite reopen using saved policy, not later policy code", async () => {
+  const s = await setup((system, last) => {
+    if (system.includes("Kaeno WORK")) return last.role === "user"
+      ? call("delegate", { agent: "worker", task: "Reason about the supplied text" }) : reply("SAVED WORK REPORT");
+    if (system.includes("WORKER")) return reply("SAVED WORKER REPORT");
+    return reply("ACK");
+  }, undefined, { configure: config => { config.templates.worker!.sandbox = false; config.templates.worker!.tools = []; } });
+  await s.close(); await s.open(false); // Store an admitted task before its child exists.
+  const blueprint = s.agents.captureWork("kaeno"), task = s.work.extension.tasks![0]!;
+  const id = await s.harness.commit(tx => tx.createTask(task as any, {
+    title: "Queued", brief: "Use saved policy", blueprint,
+    origin: { conversationId: s.id, requestId: "queued-policy", epoch: 0 },
+  }, { ownership: { kind: "conversation" }, conversationId: s.id, background: true }), ctx);
+  expect((await s.harness.commit(tx => tx.scanConversations({ ownerTaskId: id }, 1), ctx)).items).toHaveLength(0);
+  await s.close();
+  s.config.templates.kaeno!.instructions = "LATER POLICY";
+  s.config.templates.kaeno!.delegates = [];
+  delete s.config.templates.worker;
+  const currentPolicy = vi.spyOn(AgentFactory.prototype as any, "settings").mockImplementation(() => { throw new Error("CURRENT POLICY FORBIDDEN"); });
+  await s.open(); await s.harness.waitForTask(id, ctx);
+  expect(JSON.stringify((await s.harness.getTask(id, ctx))!.state)).toContain("SAVED WORK REPORT");
+  const workChild = (await s.harness.commit(tx => tx.scanConversations({ ownerTaskId: id }, 1), ctx)).items[0]!;
+  const rootConfig = (await s.harness.snapshot(AgentDoc, workChild.id, ctx))!;
+  expect(rootConfig.instructions).toBe(blueprint.templates.kaeno!.settings.work.instructions);
+  expect(rootConfig.tools).toEqual(blueprint.templates.kaeno!.settings.work.tools);
+  const delegates = (await s.harness.commit(tx => tx.scanTasks({ conversationId: workChild.id, kind: "pi.tool" }, 10), ctx)).items;
+  const workers = (await Promise.all(delegates.map(t => s.harness.commit(tx => tx.scanConversations({ ownerTaskId: t.id }, 1), ctx)))).flatMap(p => p.items);
+  expect(workers).toHaveLength(1);
+  const workerConfig = (await s.harness.snapshot(AgentDoc, workers[0]!.id, ctx))!;
+  expect(workerConfig.instructions).toBe(blueprint.templates.worker!.settings.worker.instructions);
+  expect(workerConfig.tools).toEqual([]);
+  expect(currentPolicy).not.toHaveBeenCalled();
 });
 
 it("logs CHAT, background WORK and leaf WORKER without an API/pi observer", async () => {

@@ -1,3 +1,5 @@
+import { AgentFactory } from "../src/agent-factory.ts";
+import type { Tx, ConversationId } from "@earendil-works/pi-durable";
 // End to end without cloud or cluster: kaeno (faux model) delegates to a sandboxed worker whose tools run through a
 // real envd; the process "crashes" while the worker's command runs, and a new Harness on the same SQLite file
 // finishes the job in the same sandbox, then deletes it.
@@ -133,14 +135,15 @@ describe("kaeno durable delegation", () => {
     }));
 
     let harness!: Harness;
-    let agents!: ReturnType<typeof createAgents>;
+    let agents!: ReturnType<typeof createAgents>, factory!: AgentFactory;
     const Turn = defineTurn(() => ({ send: async () => {}, typing: async () => {} }));
     let version = 0;
     const open = async () => { // a fresh process: new agents, same storage; different current images on reopen
       version++;
       const catalog = await openSkillCatalog(store, config.skillRepositories, {});
       const work = background ? createWork({ harness: () => harness, Turn, config, capture: agent => agents.captureWork(agent), configure: (tx, child, b, workId) => agents.configureWork(tx, child, b, workId), clean: id => agents.workClean(id) }) : undefined;
-      agents = createAgents({ config, images: { execution: `execution-v${version}` }, skillCacheClaim: `skill-cache-v${version}`, skills: catalog, harness: () => harness, sandboxUrl: () => envdUrl, sandboxCwd: workspace, work });
+      factory = new AgentFactory({ config, skills: catalog, work, sandboxCwd: workspace });
+      agents = createAgents({ images: { execution: `execution-v${version}` }, skillCacheClaim: `skill-cache-v${version}`, harness: () => harness, sandboxUrl: () => envdUrl, factory });
       const registry = createRegistry();
       registry.install(CodingTools); registry.install(agents.Kaeno); registry.install(defineExtension({ name: "kaeno-channels", tasks: [Turn] }));
       if (work) registry.install(work.extension);
@@ -150,7 +153,7 @@ describe("kaeno durable delegation", () => {
       if (background) harness.resume();
       return harness;
     };
-    const deps = { harness: () => harness, agent: { template: "kaeno", role: background ? "chat" as const : undefined, change: () => agents.agentChange(config.templates.kaeno!), skills: () => agents.bindSkills(config.templates.kaeno!) } };
+    const deps = { harness: () => harness, agent: { role: background ? "chat" as const : undefined, configure: (tx: Tx, id: ConversationId) => factory.configure(tx, id, background ? { role: "chat" } : { role: "legacy", agent: config.agent }, agents.Kaeno) } };
 
     await open();
     const id = await thread(deps, "test:1");

@@ -2,11 +2,12 @@
 // and the Turn task that submits a message to a thread and delivers the answer, surviving restarts.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
-  AssistantEntry, configure, defineDoc, InboxDoc, LiveDoc,
-  type AgentChange, type ConversationId, type EntryId, type Harness, type Tx,
+  AssistantEntry, defineDoc, InboxDoc, LiveDoc,
+  type ConversationId, type EntryId, type Harness, type Tx,
 } from "@earendil-works/pi-durable";
 import { AgentState, textOf } from "./agents.ts";
-import type { SkillBinding } from "./skills.ts";
+import type { BoundAgent } from "./agent-factory.ts";
+import { storageCopy } from "./work-blueprint.ts";
 export { defineTurn, admitTurn, TurnLedger, resetEpoch } from "./turns.ts";
 export type { Notify, Notifier } from "./turns.ts";
 
@@ -14,7 +15,7 @@ export const Threads = defineDoc<{ threads: Record<string, { conversationId: Con
   kind: "kaeno.threads", version: 1, scope: "session", initial: () => ({ threads: {} }),
 });
 
-export type ThreadDeps = { harness: () => Harness; agent: { template: string; role?: "chat"; change: () => AgentChange; skills?: () => SkillBinding } };
+export type ThreadDeps = { harness: () => Harness; agent: { role?: "chat"; configure: (tx: Tx, id: ConversationId) => Promise<BoundAgent> } };
 
 /** One owner for thread configuration. Busy/queued durable work keeps its old template and skill snapshot. */
 async function configureThread(tx: Tx, conversationId: ConversationId, agent: ThreadDeps["agent"], created = false) {
@@ -25,11 +26,11 @@ async function configureThread(tx: Tx, conversationId: ConversationId, agent: Th
       if (page.items.some(t => !t.background || t.kind === "kaeno.turn")) return;
     }
   }
-  await configure(tx, conversationId, agent.change());
+  const bound = await agent.configure(tx, conversationId);
   const state = await tx.doc(AgentState, conversationId);
-  state.template = agent.template;
+  state.template = bound.template.name;
   if (agent.role) state.role = agent.role;
-  state.skills = agent.skills?.() ?? [];
+  state.skills = storageCopy(bound.skills);
 }
 
 /** The conversation for a channel key, created on first use in one commit (so concurrent first messages agree). */

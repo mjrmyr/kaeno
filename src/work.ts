@@ -4,24 +4,11 @@ import type { Context } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
 import { AssistantEntry, defineDoc, defineExtension, defineTask, defineTool,
   type ConversationId, type Harness, type TaskId, type ToolExecutionApi, type Tx } from "@earendil-works/pi-durable";
-import { eligibleWorkTemplates, type Config, type Template } from "./config.ts";
-import type { SandboxImages, SkillBinding } from "./skills.ts";
+import { eligibleWorkTemplates, type Config } from "./config.ts";
+import { storageCopy, workRoot, type Stored, type WorkBlueprint } from "./work-blueprint.ts";
 import { activeTurn, admitTurn, admitCancel, suppressReports, TurnLedger, type ControlTask, type Origin, type TurnTask } from "./turns.ts";
 
-export type WorkBlueprint = { agent: string; templates: Record<string, { template: Template; skills: SkillBinding }>; images: SandboxImages; skillCacheClaim: string };
-/** Persisted tasks are a boundary: never guess a missing/invalid frozen root from current config. */
-export function workRoot(blueprint: WorkBlueprint) {
-  const root = blueprint?.templates?.[blueprint.agent];
-  if (!blueprint?.agent || !root?.template || root.template.name !== blueprint.agent ||
-      !root.template.model?.provider || !root.template.model.modelId || typeof root.template.instructions !== "string" ||
-      !Array.isArray(root.template.tools) || !Array.isArray(root.template.delegates) ||
-      !Array.isArray(root.template.skills) || !Array.isArray(root.skills) ||
-      typeof blueprint.images?.execution !== "string" || !blueprint.images.execution ||
-      typeof blueprint.skillCacheClaim !== "string" || !blueprint.skillCacheClaim)
-    throw new Error("WORK has no valid frozen blueprint root; cannot resume safely (cancel and submit a new request)");
-  return root;
-}
-type WorkInput = { title: string; brief: string; origin: Origin; blueprint: WorkBlueprint };
+type WorkInput = { title: string; brief: string; origin: Origin; blueprint: Stored<WorkBlueprint> };
 type WorkResult = { status: "completed" | "failed"; text: string };
 type WorkState = { phase: "start" } | { phase: "run"; child: ConversationId } | { phase: "report"; text: string; failed?: boolean };
 export const WorkIndex = defineDoc<{ launches: Record<string, TaskId<WorkResult>> }>({
@@ -144,7 +131,7 @@ export function createWork({ harness, Turn, Control, config, capture, configure,
           if (receipt.source.kind === "work-result" && ["pending", "dispatching"].includes(receipt.delivery)) activeIds.add(receipt.source.workId);
         const history = Object.entries(index.launches);
         for (const [key, id] of history.slice(0, Math.max(0, history.length - 511))) if (!activeIds.has(id)) delete index.launches[key];
-        const created = await tx.createTask(Work, { title, brief, origin, blueprint }, { ownership: { kind: "conversation" }, conversationId: api.conversationId, background: true });
+        const created = await tx.createTask(Work, { title, brief, origin, blueprint: storageCopy(blueprint) }, { ownership: { kind: "conversation" }, conversationId: api.conversationId, background: true });
         index.launches[origin.requestId] = created;
         return { id: created, agent: blueprint.agent };
       }, context);

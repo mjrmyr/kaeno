@@ -78,7 +78,9 @@ only templates are not selectable WORK roots. There is no implicit/default selec
 
 This is an illustrative config, **not** a homelab change. CHAT can select `kaeno` or `swe`, not `worker`.
 Selection freezes the root in `WorkBlueprint.agent`, its template/model/thinking/profile and skill binding,
-reachable templates, execution image and skill-cache claim. WORK keeps the selected base instructions/skills
+reachable templates, execution image and skill-cache claim. It also saves the complete resolved role settings
+(tools, extensions, rendered instructions, cwd and thinking) for future children. Snapshots are deeply readonly,
+copied and frozen at runtime, and checksummed; recovery does not recalculate policy from current application code. WORK keeps the selected base instructions/skills
 plus WORK lifecycle instructions, but gets **no CHAT controls, coding tools or sandbox**, even when the selected
 profile is sandboxed. WORK can reason/draft itself and delegate only its selected root's frozen `delegates`.
 WORKERs get their execution profile/tools, but never work controls or delegation, even on legacy replay without
@@ -102,9 +104,12 @@ The durable SDK validates new tool calls, but does not revalidate stored execute
   match and its frozen blueprint root is valid.
 - An old call without `agent` that never admitted work fails clearly. It does **not** silently choose `kaeno`.
   Submit a new user request with a new request ID and explicit selection.
-- Old tasks missing a blueprint or with an invalid/missing frozen root cannot resume safely. They fail visibly
+- Old tasks missing a blueprint, the schema-1 resolved policy snapshot, or a valid checksum/root cannot resume safely. They fail visibly
   in durable task status (`/jobs` / work API) rather than guessing a root. Cancel/inspect and submit a fresh request;
   there is no automatic data migration or fabricated blueprint.
+- Missing saved tool/extension implementations fail rather than silently changing the available capabilities.
+  Snapshots pin configuration decisions, not tool/hook/orchestration implementation code. Checksums detect
+  accidental edits/corruption; they do not authenticate data against someone who controls the process or database.
 
 Before upgrading, inspect/drain or cancel incompatible old work and nested workers. Legacy WORKER delegations
 are now blocked, rather than preserving nested fanout on replay. Back up SQLite through the existing operations

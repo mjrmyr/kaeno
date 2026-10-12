@@ -9,6 +9,7 @@ import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { createRegistry, defineExtension, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { AgentFactory } from "./agent-factory.ts";
 import { createAgents } from "./agents.ts";
 import { createApi } from "./api.ts";
 import { loadConfig } from "./config.ts";
@@ -51,7 +52,8 @@ const Turn = defineTurn(() => telegramNotifier(telegram));
 const Control = defineControl(() => harness, (id, workId) => work.cancel(id, workId));
 const work: ReturnType<typeof createWork> = createWork({ harness: () => harness, Turn, Control,
   config, capture: agent => agents.captureWork(agent), configure: (tx, id, blueprint, workId) => agents.configureWork(tx, id, blueprint, workId), clean: id => agents.workClean(id) });
-agents = createAgents({ config, images, skillCacheClaim, skills, harness: () => harness, work });
+const factory = new AgentFactory({ config, skills, work });
+agents = createAgents({ images, skillCacheClaim, harness: () => harness, factory });
 const registry = createRegistry();
 registry.install(CodingTools);
 registry.install(agents.Kaeno);
@@ -64,8 +66,7 @@ harness = await Harness.open(await openNodeSqliteStorage(env("KAENO_DB") ?? "/da
 }, BACKGROUND_CONTEXT);
 
 const deps: ThreadDeps = { harness: () => harness, agent: {
-  template: config.agent, role: "chat", change: () => agents.agentChange(config.templates[config.agent]!),
-  skills: () => agents.bindSkills(config.templates[config.agent]!),
+  role: "chat", configure: (tx, id) => factory.configure(tx, id, { role: "chat" }, agents.Kaeno),
 } };
 await refreshThreads(deps);
 harness.resume(); // continue every run, delegation and turn the last process left unfinished
