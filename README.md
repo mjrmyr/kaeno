@@ -34,8 +34,8 @@ Telegram bot ───┘─ HTTP/API · long polling ─▶  pi-durable Harness
 - **Agents**: `config.json` (ConfigMap `kaeno-config`) defines templates: `model`, `thinkingLevel`, `instructions`,
   `sandbox`, `tools` (`read`, `write`, `edit`, `bash`), `skills`, and `delegates` (templates it may start sub-agents from).
   Idle threads refresh their template at startup/admission; busy threads and sub-agents retain their bound skills.
-- **Sandbox** (`src/k8s.ts` → `sandboxPod`): per delegation, a pod running `envd` (`src/envd.ts`), pi-durable's
-  `NodeExecutionEnv` behind a small HTTP protocol (`src/remote-env.ts`, passes pi-durable's env conformance suite).
+- **Sandbox** (`src/sandboxes/pod-spec.ts` → `sandboxPod`): per delegation, a pod running `envd` (`src/envd.ts`), pi-durable's
+  `NodeExecutionEnv` behind a small HTTP protocol (`src/execution/remote-env.ts`, passes pi-durable's env conformance suite).
   Own emptyDir workspace, read-only root, non-root, no ServiceAccount token. NetworkPolicy: public internet only.
   Deleted when the delegation ends; a sweeper removes any a crash left behind.
 
@@ -100,6 +100,7 @@ brief/title conflicts. Each new request must select explicitly. Already queued/a
 blueprints retain their choice even when current config removes or changes that template.
 
 The durable SDK validates new tool calls, but does not revalidate stored execute-phase arguments on recovery:
+
 - An old `start_work` execute intent without `agent` returns its already-admitted task only when title/brief
   match and its frozen blueprint root is valid.
 - An old call without `agent` that never admitted work fails clearly. It does **not** silently choose `kaeno`.
@@ -265,10 +266,10 @@ See [the architecture](architecture/skills.md) for lifecycle and verification de
 [Publish GHCR images](.github/workflows/publish-images.yml) builds and pushes two generic **linux/amd64** images
 on pushes to `main` and Git tag creation (tag pushes):
 
-| Image | Dockerfile target | Purpose |
-| --- | --- | --- |
-| `ghcr.io/mjrmyr/kaeno` | `kaeno` | Orchestrator |
-| `ghcr.io/mjrmyr/kaeno-sandbox` | `sandbox` | Execution workers and skill initialization |
+| Image                          | Dockerfile target | Purpose                                    |
+| ------------------------------ | ----------------- | ------------------------------------------ |
+| `ghcr.io/mjrmyr/kaeno`         | `kaeno`           | Orchestrator                               |
+| `ghcr.io/mjrmyr/kaeno-sandbox` | `sandbox`         | Execution workers and skill initialization |
 
 Both receive `sha-<7-character-commit-SHA>` tags (for example, `sha-f908b9e`). After both main builds succeed,
 a separate promotion job updates `main` and `latest`; these are moving main-build aliases, **not** latest-release
@@ -336,7 +337,7 @@ process, then configure **both** of these pull paths:
   lives in the homelab configuration, not this repository; inspect it for the actual account name, including
   `default` if no name is specified.
 - **Dynamic workers:** attach the Secret via `imagePullSecrets` to the **`kaeno-sandbox` ServiceAccount** in the
-  same namespace. [`sandboxPod` in `src/k8s.ts`](src/k8s.ts) explicitly sets
+  same namespace. [`sandboxPod` in `src/sandboxes/pod-spec.ts`](src/sandboxes/pod-spec.ts) explicitly sets
   `serviceAccountName: "kaeno-sandbox"` and does not set pod-level `imagePullSecrets`, so Kubernetes admission
   inherits that account's pull Secrets for newly created pods. This covers both the `envd` container and the
   optional `skills` init container in the **same worker pod**, including any retained skill-source image pins.
@@ -360,13 +361,20 @@ SQLite; the slot records are no longer read. A leftover config key is silently i
 back to an old image with non-empty `schedules` enables cron again; keep it removed on rollback.
 
 ```sh
-npm test          # conformance, skills/Git/CLI fixtures, durable upgrades/recreation, channels, config
-npm run check     # typecheck (erasableSyntaxOnly: the image runs TypeScript with Node's type stripping)
+npm run verify    # types, Oxlint, architecture, Prettier, unit + integration tests
+npm run check     # static checks only (including Node type-stripping compatibility)
+npm run test:unit # colocated public-API tests with mocked boundaries
+npm run test:integration # SDK/SQLite/recovery, channels, env conformance and Git/CLI/build fixtures
+npm run format    # apply Prettier; EditorConfig supplies the shared indentation settings
 npm run deploy    # build/push generic sibling images on the node, pin kaeno in ../homelab
 # Review/commit the relevant homelab apps/kaeno changes, then push; Flux rolls it out.
 ```
 
-Tests use local Git fixtures and faux models; runtime preparation tests invoke the actual pinned skills CLI
+Features expose explicit `index.ts` APIs, with consumer-owned injected contracts and application-owned composition.
+Types and unit tests live beside implementations. See [feature ownership and enforcement](architecture/refactoring.md).
+Pull requests run `npm run verify` with Node 24; linting uses Oxlint, not ESLint.
+
+Integration tests use local Git fixtures and faux models; runtime preparation tests invoke the actual pinned skills CLI
 (npm access may be needed). `sh scripts/verify-runtime-skills.sh` is an opt-in Docker smoke: it builds generic images,
 checks every layer of both images, creates runtime Git fixtures in temporary volumes, runs the real installer as
 UID10001 with a read-only root, and verifies assigned-only mounting/script execution. It never pushes or deploys.

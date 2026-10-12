@@ -2,14 +2,14 @@
 
 Higher is better. Scores assess the proposed shapes against the stated constraints.
 
-| Criterion | PVC/init-only | Authenticated HTTP |
-|---|---:|---:|
-| Runtime config/image independence | 5 | 5 |
-| Assigned-only filesystem/network isolation | 5 | 3 |
-| Durable replay and crash consistency | 4 | 4 |
-| Ownership/interface depth | 4 | 3 |
-| Single-node operational fit | 5 | 2 |
-| **Total /25** | **23** | **17** |
+| Criterion                                  | PVC/init-only | Authenticated HTTP |
+| ------------------------------------------ | ------------: | -----------------: |
+| Runtime config/image independence          |             5 |                  5 |
+| Assigned-only filesystem/network isolation |             5 |                  3 |
+| Durable replay and crash consistency       |             4 |                  4 |
+| Ownership/interface depth                  |             4 |                  3 |
+| Single-node operational fit                |             5 |                  2 |
+| **Total /25**                              |        **23** |             **17** |
 
 - **Independence:** Both move resolution to startup and use generic images.
 - **Isolation:** PVC preserves worker→kaeno denial and exposes only assigned files to main. Its trusted init can see the full cache. HTTP removes that cache exposure but opens kaeno reachability to main as well as init—contrary to the stated invariant.
@@ -20,12 +20,14 @@ Higher is better. Scores assess the proposed shapes against the stated constrain
 ## Red-flag screen
 
 **PVC**
+
 - `open → prepare → fromManifest` exposes preparation/storage coordination; graft HTTP’s consolidated preparation interface.
 - Its illustrative `SkillBinding` risks becoming a second, reduced representation beside existing bounded `BoundSkill` documents. Preserve the existing domain binding semantics.
 - Public `PublishedTree.path` leaks cache layout. Keep physical paths internal.
 - Legacy replay is an intentional exception to “one way”; strictly prohibit new legacy bindings.
 
 **HTTP**
+
 - Grant issuance after pod creation creates temporal coupling across controller, server, and Secret lifecycle.
 - Delivery authorization introduces additional state ownership and reconciliation obligations.
 - Interface depth does not compensate for violating the existing network constraint. This candidate is unsuitable unless that constraint is explicitly changed.

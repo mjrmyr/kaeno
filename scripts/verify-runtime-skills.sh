@@ -71,10 +71,10 @@ await chmod("/fixtures/bin/git",0o755);'
 # Actual runtime resolution, actual pinned npx, UID10001 and readonly root. No provider/channel/Git credentials.
 resolved=$(docker run --rm --read-only --entrypoint node -e PATH=/fixtures/bin:/usr/local/bin:/usr/bin:/bin \
   -v "$fixtures:/fixtures:ro" -v "$cache:/var/lib/kaeno/skills" "$kaeno" --input-type=module -e '
-import {prepareSkills} from "/app/src/skill-repositories.ts";
+import {prepareSkills} from "/app/src/skills/index.ts";
 const catalog=await prepareSkills({repositories:[{id:"demo/one"},{id:"demo/two"}],
   selections:{worker:["demo/one:*","demo/one:probe"],kaeno:["demo/two:probe"]},cacheRoot:"/var/lib/kaeno/skills"});
-console.log(JSON.stringify(catalog.bind(["demo/one:probe"]).map(({id,treeHash})=>({id,treeHash}))));')
+console.log(JSON.stringify(catalog.bindSkills(["demo/one:probe"]).map(({id,treeHash})=>({id,treeHash}))));')
 printf '%s\n' "$resolved"
 plan=$(printf '%s\n' "$resolved" | tail -n 1)
 # Init can read cache privately. No network; only selected output is shared with the worker.

@@ -4,13 +4,13 @@ Understood—design review only. I’ll compare lifecycle and delivery guarantee
 
 Scores assess the **written designs**, not verified implementations.
 
-| Criterion | A: direct worker jobs | B: WORK conversation |
-|---|---:|---:|
-| Ownership, replay, cleanup | 2/5 | 3/5 |
-| Multi-step isolation and context coherence | 2/5 | 5/5 |
-| Routing, acknowledgement, reset, cancellation | 2/5 | 3/5 |
-| Interface depth, one source of truth, minimal surface | 3/5 | 4/5 |
-| Installed SDK, channels, quota feasibility | 2/5 | 3/5 |
+| Criterion                                             | A: direct worker jobs | B: WORK conversation |
+| ----------------------------------------------------- | --------------------: | -------------------: |
+| Ownership, replay, cleanup                            |                   2/5 |                  3/5 |
+| Multi-step isolation and context coherence            |                   2/5 |                  5/5 |
+| Routing, acknowledgement, reset, cancellation         |                   2/5 |                  3/5 |
+| Interface depth, one source of truth, minimal surface |                   3/5 |                  4/5 |
+| Installed SDK, channels, quota feasibility            |                   2/5 |                  3/5 |
 
 ## Strongest base: **B**
 

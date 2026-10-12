@@ -1,8 +1,9 @@
-// Kubernetes init-container entry point. No harness, tools, credentials or network.
-import { materializeSkillSelection, type SkillCopySelection } from "./skills.ts";
-
+import { z } from "zod";
+import { materializeSkillSelection } from "./skills/index.ts";
 const raw: unknown = JSON.parse(process.env.KAENO_SKILL_PLAN ?? "[]");
-if (!Array.isArray(raw) || raw.length > 256 || raw.some(s => !s || typeof s.id !== "string" || typeof s.treeHash !== "string"))
-  throw new Error("Invalid KAENO_SKILL_PLAN");
-await materializeSkillSelection("/skill-cache", raw as SkillCopySelection, "/skills-out");
-console.log(`skills: materialized ${raw.length} assigned skills`);
+const selection = z
+  .array(z.object({ id: z.string(), treeHash: z.string() }))
+  .max(256)
+  .parse(raw);
+await materializeSkillSelection("/skill-cache", selection, "/skills-out");
+console.log(`skills: materialized ${selection.length} assigned skills`);

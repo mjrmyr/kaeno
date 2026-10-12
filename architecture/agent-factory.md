@@ -3,20 +3,30 @@
 ## Caller first
 
 ```ts
-const factory = new AgentFactory({ config, skills, work, sandboxCwd });
-const agents = createAgents({ factory, images, skillCacheClaim, /* lifecycle deps */ });
+const factory = new AgentFactory(config, skills, workSurface, sandboxCwd);
+// Agent lifecycle dependencies are connected in application/kaeno.ts.
 // Existing thread transaction + idle gate:
-const bound = await factory.configure(tx, id, { role: "chat" }, agents.Kaeno);
+const bound = await factory.configureAgent(
+  tx,
+  id,
+  { role: "chat" },
+  agents.Kaeno,
+);
 // Admission captures template data AND resolved role settings:
-const blueprint = agents.captureWork(agent);
+const blueprint = agents.captureWorkBlueprint(agent);
 // Agents adds real metadata in the same transaction:
-await agents.configureWork(tx, id, blueprint, workId);
+await agents.configureWorkConversation(tx, id, blueprint, workId);
 // Only after direct-delegate authorization and finding no existing child:
-const child = await factory.configure(tx, id, { role: "worker", agent, blueprint }, agents.Kaeno);
+const child = await factory.configureAgent(
+  tx,
+  id,
+  { role: "worker", agent, blueprint },
+  agents.Kaeno,
+);
 ```
 
-The factory owns config, SkillCatalog and sandbox cwd. Agents no longer accepts independent copies of these
-inputs: its live authorization uses factory.config, capture uses factory.bind, and environments use the stored
+The factory owns configuration and sandbox cwd, and consumes an injected `AgentSkills` capability. Agents no longer accepts independent copies of these
+inputs: its live authorization uses factory.config, capture uses factory.bindAgent, and environments use the stored
 SDK cwd (with factory.sandboxCwd only for old children without one). This removes conflicting injection paths,
 including the previously possible mismatch between SDK cwd and RemoteExecutionEnv cwd.
 
@@ -52,9 +62,9 @@ flowchart TB
 ```
 
 The factory never imports AgentState, owns transactions, creates/submits conversations, creates tasks/pods,
-or orchestrates work. Validated config templates are the existing template registry; SkillCatalog.bind is
+or orchestrates work. Validated config templates are the existing template registry; AgentSkills.bindSkills is
 skill resolution; the private roleTools/settings functions choose policy for NEW admissions/live configuration.
-There are no new registry interfaces or parallel configuration paths.
+Consumer-owned capability interfaces are not parallel policy registries; there is one configuration path.
 
 ## Replay guarantees
 
@@ -87,7 +97,7 @@ Skill provenance/provider authenticity validation is not broadened by this chang
 
 WORK execution remains a separate requested lifecycle change: this patch preserves the current WORK policy
 (no coding tools or sandbox) and does not expose host tools without sandbox provisioning/recovery/cleanup.
-No dependency upgrades, logging changes, cluster writes or deployment are performed.
+The feature refactor adds validation/format/lint tooling and injects logging; it does not perform cluster writes or deployment.
 
 ## Synthesis decision
 
@@ -109,5 +119,5 @@ unsupported schemas; missing tool/extension implementations; saved SDK/remote cw
 adoption without configuration; and creation of queued WORK plus a new WORKER after SQLite reopen with later
 policy code deliberately disabled. Existing SQLite/pod recovery and receipt-first tests remain in place.
 
-Final local run: Node 26.10.0 / npm 11.19.1; `npm ci`, `npm run check`, `npm test` (139 tests / 14 files),
+Historical PR #7 verification (before the feature refactor): Node 26.10.0 / npm 11.19.1; `npm ci`, `npm run check`, `npm test` (139 tests / 14 files),
 and `git diff --check` passed. No Node 24 rerun, real cluster or deployment verification was performed.

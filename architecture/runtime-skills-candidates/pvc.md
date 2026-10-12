@@ -7,33 +7,48 @@ Skill config is currently a build input: `deploy.sh` → `build-skills.ts` → i
 ## Usage (caller's view)
 
 Startup (`src/kaeno.ts`):
+
 ```ts
 const cache = await SkillCache.open({ root: "/skill-cache" });        // kaeno mounts RW
 const manifest = await prepareSkills(config.repositories, cache);     // resolve, install, hash, publish
 const catalog = SkillCatalog.fromManifest(manifest, cache);
 await Harness.resume(...);                                            // only after success
 ```
+
 Child creation (`src/agents.ts`):
+
 ```ts
-const binding = catalog.bind(selectedSkillNames);   // atomic with sandbox image capture
+const binding = catalog.bind(selectedSkillNames); // atomic with sandbox image capture
 await sandbox.create({ image: genericImage, skills: binding.trees });
 ```
+
 Pod (`src/k8s.ts`): init mounts the cache PVC RO, copies only `binding.trees` into an `emptyDir`; the main container mounts that emptyDir RO.
 
 ## Shape
 
 **Data**
-```ts
-type TreeId = `sha256:${string}`;                 // content hash of skill tree
-interface PublishedTree { id: TreeId; path: string; commit: string; source: RepositorySpec }
-interface SkillManifest { skills: Record<SkillName, PublishedTree>; resolvedAt: string }
 
-type SkillBinding =                               // persisted in AgentState
+```ts
+type TreeId = `sha256:${string}`; // content hash of skill tree
+interface PublishedTree {
+  id: TreeId;
+  path: string;
+  commit: string;
+  source: RepositorySpec;
+}
+interface SkillManifest {
+  skills: Record<SkillName, PublishedTree>;
+  resolvedAt: string;
+}
+
+type SkillBinding =
+  // persisted in AgentState
   | { kind: "tree"; skill: SkillName; tree: TreeId }
   | { kind: "legacy-image"; skill: SkillName; image: string; hash: string }; // replay only, never created
 ```
 
 **Signatures**
+
 ```ts
 interface SkillCache {
   static open(o: { root: string }): Promise<SkillCache>;
@@ -51,6 +66,7 @@ podSkillInit(binding: SkillBinding[]): InitContainerSpec;   // trusted shape, ar
 **Flow**: config → `prepareSkills` (startup, kaeno-owned) → immutable trees on the cache PVC → bind persists `TreeId`s → init copies those trees only → readonly worker mount. Replay reads the binding's `TreeId`, never the current manifest. Legacy bindings go through a read-only compat branch in `podSkillInit`.
 
 **Invariants in types/boundaries**
+
 - Git/npx/hash validation happens only in `prepareSkills`, and the init copy re-verifies the hash. Internal bindings are trusted.
 - The init container receives tree IDs, validated by pattern, so it cannot traverse the cache.
 - Hash-addressed publish makes retries idempotent. There is no GC; trees are retained.

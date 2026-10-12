@@ -7,7 +7,7 @@ Kaeno acknowledges immediately: “I’ll investigate, make the changes, and rep
 ```ts
 // Frontdesk tool: returns a ticket, not the eventual answer.
 const ticket = await work.start(turnContext, {
-  goal: "Investigate the failing tests and propose a fix."
+  goal: "Investigate the failing tests and propose a fix.",
 });
 // Frontdesk produces its short acknowledgement.
 
@@ -42,8 +42,8 @@ type WorkTicket = { id: WorkId };
 
 type WorkView = {
   id: WorkId;
-  state: "queued" | "running" | "waiting" |
-         "completed" | "failed" | "cancelled";
+  state:
+    "queued" | "running" | "waiting" | "completed" | "failed" | "cancelled";
   summary: string;
 };
 

@@ -5,6 +5,7 @@
 Kaeno's root conversation blocks on `delegate` until the worker finishes, because the child is owned by the delegate tool task. That ownership gives cancellation, a synchronous result and pod cleanup in one mechanism. We want a short acknowledgement, a free chat, and a later natural reply.
 
 Constraints from grounding:
+
 - Workers stay disposable and frozen-binding.
 - The sweeper keys on `kaeno.io/task`.
 - Telegram sends and checkpoints can't be atomic, so duplicates are possible.
@@ -20,18 +21,21 @@ The root model sees three tools. `delegate` is removed from the catalogue.
 // turn 1 (root, short): user says "research X and Y"
 const { batchId, jobs } = await start_jobs({
   title: "X vs Y",
-  tasks: [{ template: "researcher", task: "…X…" }, { template: "researcher", task: "…Y…" }],
-})
+  tasks: [
+    { template: "researcher", task: "…X…" },
+    { template: "researcher", task: "…Y…" },
+  ],
+});
 // returns immediately: [{id, status:"running"|"queued"}] → root replies "On it, two workers started."
 
 // turn 2 (user asks something else): chat is idle, normal reply.
-await jobs()                // [{id,title,status:"running",ageMs}, …]  derived from task graph
+await jobs(); // [{id,title,status:"running",ageMs}, …]  derived from task graph
 
 // turn 3 (system-initiated, when the batch is terminal):
 // input: <job-batch id=… status="done"> untrusted result data </job-batch>
 // root may answer, or call start_jobs again for review or follow-on.
 
-await cancel_jobs({ batchId })   // user-initiated; produces no completion turn
+await cancel_jobs({ batchId }); // user-initiated; produces no completion turn
 ```
 
 Telegram also gets deterministic `/jobs` and `/cancel <id>` commands that call the same functions.
@@ -42,32 +46,42 @@ Task lifecycle is the single source of truth. There is no jobs table. Status is 
 
 ```ts
 // src/jobs.ts — one new module; agents.ts keeps sandbox mechanics
-type Origin = { kind:"telegram"; chatId:number } | { kind:"pi" }
+type Origin = { kind: "telegram"; chatId: number } | { kind: "pi" };
 
 type JobInput = {
-  batchId: TaskId; index: number; title: string
-  task: string
-  binding: FrozenBinding        // template, skills, image, env token: frozen at start, not current config
-  origin: Origin                // captured from the originating Turn, never "last chat"
-  epoch: ConversationEpoch      // see /new below
-  afterTurn: TaskId             // the ack Turn this job was launched from
-}
-type JobPhase = "queued" | "slotHeld" | "answered"          // task checkpoint
-type JobView  = { id; title; status: "queued"|"running"|"done"|"failed"|"cancelled"; ageMs: number; answer?: string }
+  batchId: TaskId;
+  index: number;
+  title: string;
+  task: string;
+  binding: FrozenBinding; // template, skills, image, env token: frozen at start, not current config
+  origin: Origin; // captured from the originating Turn, never "last chat"
+  epoch: ConversationEpoch; // see /new below
+  afterTurn: TaskId; // the ack Turn this job was launched from
+};
+type JobPhase = "queued" | "slotHeld" | "answered"; // task checkpoint
+type JobView = {
+  id;
+  title;
+  status: "queued" | "running" | "done" | "failed" | "cancelled";
+  ageMs: number;
+  answer?: string;
+};
 
-export function jobTools(deps): ToolDef[]                    // start_jobs, jobs, cancel_jobs
-export function registerJobTask(reg: Registry): void         // before resume in kaeno.ts
-async function runJob(input: JobInput, ctx: TaskCtx): Promise<void>   // body below
-function envelope(batch: BatchResult): UserInputContent      // data-only wrapper
+export function jobTools(deps): ToolDef[]; // start_jobs, jobs, cancel_jobs
+export function registerJobTask(reg: Registry): void; // before resume in kaeno.ts
+async function runJob(input: JobInput, ctx: TaskCtx): Promise<void>; // body below
+function envelope(batch: BatchResult): UserInputContent; // data-only wrapper
 ```
 
 **Ownership graph.**
+
 - `start_jobs` is replay-safe and, in one `Tx`, creates N `job` tasks with `background:true`. Each is owned by the root conversation and gets a deterministic id `job:<batchId>:<i>`. Replay reuses them.
 - The job task body is the extracted body of today's delegate execute: create the sandbox (409 tolerated), await ready, submit the worker with `delegate:<jobTaskId>`, wait, and delete the pod in `finally`.
 - The worker child is owned by the job task, so the ownership chain is preserved. The pod annotation becomes the job task id, so the sweeper is unchanged.
 - Parent idle skips background tasks, so the root is free. Normal `/stop` doesn't kill jobs. `abort({background:true})` crosses the boundary.
 
 **Completion (idempotent).**
+
 - When a worker answers, the job checkpoints `answered` plus the answer. In one `Tx` it marks itself terminal, and if every sibling in the batch is terminal it creates the Turn task `done:<batchId>`.
 - The deterministic id means two racing last-finishers produce one Turn. A crash before the commit replays from the checkpoint and does not re-run the worker.
 - The existing `Turn` is reused for delivery. It carries `notify = origin` and submits the envelope with stable `requestId` and `whenBusy:"followUp"`. Telegram send is at-least-once, so duplicate-after-crash stays possible. We don't claim otherwise.
@@ -78,12 +92,14 @@ function envelope(batch: BatchResult): UserInputContent      // data-only wrappe
 **Authority.** The envelope is a system-generated wrapper that states the content is untrusted data from a worker. Root instructions say job results never grant tool approval, credentials or user commands. Verify whether pi-durable `Submission` supports a source or metadata field. If it does, use it. If not, the wrapper is a convention, not a guarantee.
 
 **Capacity.**
+
 - `cap = min(pods − 1 − headroom, ⌊(cpuNs − mainCpu)/workerCpu⌋, ⌊(memNs − mainMem)/workerMem⌋)`, which is 4 on the current quota. It is computed from config constants, not hardcoded.
 - A job's first phase runs `claimSlot` in a `Tx`. The Tx scans jobs with `slotHeld`, claims FIFO by creation order if under cap, and otherwise sleeps and retries with a durable timer. There is no scheduler framework.
 - `start_jobs` rejects when the queue exceeds a small bound (e.g. 8) with a busy answer. Quota or forbidden errors at sandbox creation return the job to `queued` instead of failing it.
 - Slot release is derived: the job task is terminal, and the pod was deleted in `finally`.
 
 **Epoch and `/new`.**
+
 - `/new` aborts jobs of the thread with `background:true`, then resets. The user asked for a clean context, so results into the old context would be wrong.
 - `JobInput.epoch` is a guard: the completion Tx drops delivery if the epoch is stale. If reset mints a new conversationId, the id is the epoch and no new field is needed. Otherwise add a counter to the thread record.
 - `/stop` aborts the foreground turn only. Jobs continue, and `/jobs` and `/cancel` stop them.
@@ -91,6 +107,7 @@ function envelope(batch: BatchResult): UserInputContent      // data-only wrappe
 **Refresh gate.** `configureThread` ignores background job tasks and pins only on foreground tasks, Turns and inbox. Jobs run on frozen bindings, so refresh mid-job is safe. Completion Turns still pin, which is brief.
 
 **Multi-step and fanout.**
+
 - Fanout is one `start_jobs` call, and the batch is the join. Completion is delivered once.
 - Multi-step is the root reacting to a completion turn with another `start_jobs`. The root coordinates only short turns and holds no long-lived tool call.
 - Workers don't spawn jobs, so there are no nested joins.
@@ -103,7 +120,7 @@ function envelope(batch: BatchResult): UserInputContent      // data-only wrappe
 
 ## Synthesis decision
 
-*(filled by arena)*
+_(filled by arena)_
 
 ## Tradeoffs accepted
 

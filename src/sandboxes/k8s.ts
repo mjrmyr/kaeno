@@ -1,0 +1,175 @@
+import { z } from "zod";
+const containerStatusSchema = z.object({
+  name: z.string(),
+  state: z
+    .object({
+      terminated: z
+        .object({
+          exitCode: z.number(),
+          message: z.string().optional(),
+          reason: z.string().optional(),
+        })
+        .optional(),
+      waiting: z
+        .object({
+          reason: z.string().optional(),
+          message: z.string().optional(),
+        })
+        .optional(),
+    })
+    .optional(),
+});
+const podSchema = z.object({
+  metadata: z.object({
+    name: z.string(),
+    annotations: z.record(z.string(), z.string()).optional(),
+  }),
+  spec: z
+    .object({
+      containers: z
+        .array(z.object({ image: z.string().optional() }))
+        .optional(),
+      volumes: z
+        .array(
+          z.object({
+            name: z.string(),
+            persistentVolumeClaim: z
+              .object({ claimName: z.string() })
+              .optional(),
+          }),
+        )
+        .optional(),
+    })
+    .optional(),
+  status: z
+    .object({
+      conditions: z
+        .array(z.object({ type: z.string(), status: z.string() }))
+        .optional(),
+      phase: z.string().optional(),
+      reason: z.string().optional(),
+      initContainerStatuses: z.array(containerStatusSchema).optional(),
+      containerStatuses: z.array(containerStatusSchema).optional(),
+    })
+    .optional(),
+});
+export interface Pod extends z.infer<typeof podSchema> {}
+export interface SandboxClient {
+  readonly namespace: string;
+  getPod(name: string): Promise<Pod | undefined>;
+  createPod(pod: unknown): Promise<void>;
+  deletePod(name: string): Promise<void>;
+  listSandboxPods(): Promise<Pod[]>;
+}
+export const SANDBOX_LABEL = "app.kubernetes.io/name=kaeno-sandbox";
+export class KubernetesClient {
+  readonly namespace: string;
+  private readonly fetch: typeof globalThis.fetch;
+  private readonly readToken: () => Promise<string>;
+  private readonly api: string;
+  private readonly pods: string;
+  constructor(
+    namespace: string,
+    fetch: typeof globalThis.fetch,
+    readToken: () => Promise<string>,
+    api = "https://kubernetes.default.svc",
+  ) {
+    this.namespace = namespace;
+    this.fetch = fetch;
+    this.readToken = readToken;
+    this.api = api;
+    this.pods = `/api/v1/namespaces/${namespace}/pods`;
+  }
+  private async call(
+    method: string,
+    path: string,
+    body?: unknown,
+  ): Promise<unknown> {
+    const token = (await this.readToken()).trim();
+    const response = await this.fetch(this.api + path, {
+      method,
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: "application/json",
+        ...(body ? { "content-type": "application/json" } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (
+      response.status === 404 ||
+      (response.status === 409 && method === "POST")
+    ) {
+      return undefined;
+    }
+    const payload = await response.text();
+    if (!response.ok) {
+      throw new Error(
+        `${method} ${path} → ${response.status}: ${payload.slice(0, 300)}`,
+      );
+    }
+    if (!payload) {
+      return undefined;
+    }
+    const value: unknown = JSON.parse(payload);
+    return value;
+  }
+  async getPod(name: string): Promise<Pod | undefined> {
+    const value = await this.call("GET", `${this.pods}/${name}`);
+    if (value === undefined) {
+      return undefined;
+    }
+    return podSchema.parse(value);
+  }
+  async createPod(pod: unknown): Promise<void> {
+    await this.call("POST", this.pods, pod);
+  }
+  async deletePod(name: string): Promise<void> {
+    await this.call("DELETE", `${this.pods}/${name}?gracePeriodSeconds=5`);
+  }
+  async listSandboxPods(): Promise<Pod[]> {
+    const value = await this.call(
+      "GET",
+      `${this.pods}?labelSelector=${encodeURIComponent(SANDBOX_LABEL)}`,
+    );
+    return z
+      .object({ items: z.array(podSchema).default([]) })
+      .parse(value ?? {}).items;
+  }
+}
+export function isReady(pod: Pick<Pod, "status"> | undefined): boolean {
+  return (
+    pod?.status?.conditions?.some(
+      (condition) => condition.type === "Ready" && condition.status === "True",
+    ) ?? false
+  );
+}
+export function failedReason(
+  pod: Pick<Pod, "status"> | undefined,
+): string | undefined {
+  for (const status of [
+    ...(pod?.status?.initContainerStatuses ?? []),
+    ...(pod?.status?.containerStatuses ?? []),
+  ]) {
+    const ended = status.state?.terminated;
+    if (ended?.exitCode && status.name === "skills") {
+      return `skills init exited ${ended.exitCode}: ${ended.message ?? ended.reason ?? "copy failed"}`;
+    }
+    const waiting = status.state?.waiting;
+    if (
+      waiting?.reason &&
+      [
+        "ErrImagePull",
+        "ImagePullBackOff",
+        "CreateContainerConfigError",
+        "InvalidImageName",
+        "CrashLoopBackOff",
+      ].includes(waiting.reason)
+    ) {
+      return `${status.name}: ${waiting.reason}: ${waiting.message ?? ""}`;
+    }
+  }
+  if (pod?.status?.phase === "Failed" || pod?.status?.phase === "Succeeded") {
+    return `pod ${pod.status.phase}: ${pod.status.reason ?? ""}`;
+  }
+  return undefined;
+}

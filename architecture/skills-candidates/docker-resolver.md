@@ -8,16 +8,10 @@ Configuration remains declarative:
 
 ```json
 {
-  "skillRepositories": [
-    "poteto/p-stack:v0.2.4",
-    "mattpocock/skills"
-  ],
+  "skillRepositories": ["poteto/p-stack:v0.2.4", "mattpocock/skills"],
   "templates": {
     "worker": {
-      "skills": [
-        "poteto/p-stack:poteto-mode",
-        "mattpocock/skills:grill-me"
-      ]
+      "skills": ["poteto/p-stack:poteto-mode", "mattpocock/skills:grill-me"]
     }
   }
 }
@@ -44,7 +38,11 @@ New agents bind once; replay uses persisted state:
 
 ```ts
 const binding = skills.bind(template.skills);
-const state = { template: template.name, sandbox: { imageDigest }, skills: binding };
+const state = {
+  template: template.name,
+  sandbox: { imageDigest },
+  skills: binding,
+};
 // Persist state with child creation before configuring it.
 ```
 
@@ -130,9 +128,7 @@ export function buildSkills(
 ): Promise<void>;
 
 // src/k8s.ts — extend existing API, not a parallel provisioning service
-export function sandboxPod(
-  state: SandboxState,
-): PodSpec;
+export function sandboxPod(state: SandboxState): PodSpec;
 ```
 
 `src/config.ts` parses repository/version syntax and qualified selections, rejecting duplicate repository identities even with different refs. `src/agents.ts` binds skills and persists the image digest at creation. `src/threads.ts` owns thread migration. `src/kaeno.ts` validates before resume. No additional runtime resolver exists.

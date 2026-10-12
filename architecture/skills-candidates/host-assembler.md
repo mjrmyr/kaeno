@@ -2,7 +2,7 @@
 
 ## Problem
 
-Skills must reach sandboxed agents without giving Kaeno file or shell tools, and without startup-time network fetches. Config lives only in `homelab/apps/kaeno/config.json`, so the bundle must be built from that exact file. Sandbox pods use the *current* orchestrator image on recreation, so a bundle baked into the image can drift under a surviving child. Assignment and content therefore have to be frozen per child.
+Skills must reach sandboxed agents without giving Kaeno file or shell tools, and without startup-time network fetches. Config lives only in `homelab/apps/kaeno/config.json`, so the bundle must be built from that exact file. Sandbox pods use the _current_ orchestrator image on recreation, so a bundle baked into the image can drift under a surviving child. Assignment and content therefore have to be frozen per child.
 
 ## Usage (caller's view)
 
@@ -11,6 +11,7 @@ Skills must reach sandboxed agents without giving Kaeno file or shell tools, and
 node scripts/build-skills.ts ../homelab/apps/kaeno/config.json .skill-bundle
 # .skill-bundle/ is NOT in .dockerignore; Dockerfile: COPY .skill-bundle /opt/kaeno/skills
 ```
+
 ```ts
 // src/kaeno.ts (startup, before refreshThreads/resume)
 const skills = await loadSkillBundle("/opt/kaeno/skills", config); // throws on drift
@@ -18,6 +19,7 @@ const skills = await loadSkillBundle("/opt/kaeno/skills", config); // throws on 
 const frozen = skills.freeze(templateName);           // FrozenSkills (ids + digests)
 await delegate({ ..., instructions: skills.promptFor(frozen) });
 ```
+
 ```ts
 // src/threads.ts refresh
 const next = skills.freeze(templateName); // thread policy: re-freeze on refresh
@@ -26,6 +28,7 @@ const next = skills.freeze(templateName); // thread policy: re-freeze on refresh
 ## Shape
 
 ### Module map
+
 - `src/skills/build.ts` (host only, run by deploy script): **single owner** of git, `npx`, name scanning, and manifest. Public surface: one function.
 - `src/skills/bundle.ts` (runtime, pure): reads manifest, validates against config, exposes `SkillBundle`.
 - `src/config.ts`: parses `skillRepositories` and template `skills`; no fetch logic.
@@ -35,43 +38,70 @@ const next = skills.freeze(templateName); // thread policy: re-freeze on refresh
 
 ```ts
 // config.ts
-type RepoSpec = { repo: string; ref?: string };          // "poteto/p-stack:v0.2.4"
-type SkillRef = { repo: string; name: string };          // selection omits version
+type RepoSpec = { repo: string; ref?: string }; // "poteto/p-stack:v0.2.4"
+type SkillRef = { repo: string; name: string }; // selection omits version
 // parseConfig invariants: no duplicate repo (any ref); every SkillRef.repo is in
 // skillRepositories; names non-empty. Config gains skillRepositories: RepoSpec[]
 // and Template.skills: SkillRef[].
 
 // skills/build.ts
-export function buildSkillBundle(configPath: string, outDir: string,
-  opts?: { git?: GitPort; installer?: InstallerPort }): Promise<Manifest>;
+export function buildSkillBundle(
+  configPath: string,
+  outDir: string,
+  opts?: { git?: GitPort; installer?: InstallerPort },
+): Promise<Manifest>;
 
-interface GitPort { checkout(repo: string, ref?: string, dest: string): Promise<{ commit: string }>; }
+interface GitPort {
+  checkout(
+    repo: string,
+    ref?: string,
+    dest: string,
+  ): Promise<{ commit: string }>;
+}
 // pinned: fetch exact ref, throw if absent. unpinned: default-branch HEAD, always re-resolved.
-interface InstallerPort { install(checkout: string, names: string[], dest: string): Promise<void>; }
+interface InstallerPort {
+  install(checkout: string, names: string[], dest: string): Promise<void>;
+}
 // real impl: npx skills@1.7.2 add <abs checkout> --skill <names...> --agent pi --copy --yes
 // run with cwd=<per-repo temp dir>, argv array (no shell), minimal env (no cloud/GitHub creds)
 
 // skills/manifest (bundle.ts)
 type Manifest = {
   version: 1;
-  configDigest: string;            // sha256 of canonicalized skill-relevant config
+  configDigest: string; // sha256 of canonicalized skill-relevant config
   installerVersion: "1.7.2";
-  repos: Record<string, { requested?: string; commit: string;
-    skills: Record<string, { dir: string; treeDigest: string }> }>;  // keyed by metadata name
+  repos: Record<
+    string,
+    {
+      requested?: string;
+      commit: string;
+      skills: Record<string, { dir: string; treeDigest: string }>;
+    }
+  >; // keyed by metadata name
 };
 
 // skills/bundle.ts
-export type FrozenSkills = { readonly entries: { repo: string; name: string;
-  path: string; treeDigest: string }[] };            // persisted in AgentState
+export type FrozenSkills = {
+  readonly entries: {
+    repo: string;
+    name: string;
+    path: string;
+    treeDigest: string;
+  }[];
+}; // persisted in AgentState
 export interface SkillBundle {
   freeze(template: string): FrozenSkills;
-  promptFor(f: FrozenSkills): string;                // names, descriptions, in-sandbox paths
+  promptFor(f: FrozenSkills): string; // names, descriptions, in-sandbox paths
   stage(f: FrozenSkills, env: RemoteExecutionEnv): Promise<void>; // see lifecycle
 }
-export function loadSkillBundle(dir: string, config: Config): Promise<SkillBundle>;
+export function loadSkillBundle(
+  dir: string,
+  config: Config,
+): Promise<SkillBundle>;
 ```
 
 ### Build algorithm (inside `buildSkillBundle`)
+
 1. Parse config via `parseConfig`; collect selected names per repo (union across templates).
 2. Per repo, fresh temp dir: clone, resolve ref (exact pin or HEAD), record commit.
 3. Run installer into an isolated per-repo install root. Scan installed `SKILL.md` frontmatter `name` to map requested name to directory. Missing requested name: fail. Never trust the directory name.
@@ -81,6 +111,7 @@ export function loadSkillBundle(dir: string, config: Config): Promise<SkillBundl
 Collisions are impossible across repos because the path is namespaced by repo, and the qualified name is `repo:name`.
 
 ### Runtime
+
 `loadSkillBundle` recomputes `configDigest` from the mounted ConfigMap config and compares to the manifest. A mismatch at startup is a hard failure before `resume`, which catches the config-only change case (ConfigMap edited without rebuild). It also verifies treeDigests against disk. There is no network access at runtime and no lockfile; commits are recorded provenance only.
 
 ## Lifecycle: image upgrades and old children

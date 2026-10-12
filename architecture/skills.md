@@ -19,9 +19,13 @@ Agent configuration is runtime data. A container release must never read local h
 Other template fields remain required; examples do not assert those repositories/refs are accessible. Runtime startup:
 
 ```ts
-const skills = await prepareSkills({ repositories: config.skillRepositories,
-  selections: Object.fromEntries(Object.values(config.templates).map(t => [t.name, t.skills])),
-  cacheRoot: "/var/lib/kaeno/skills" });
+const skills = await prepareSkills({
+  repositories: config.skillRepositories,
+  selections: Object.fromEntries(
+    Object.values(config.templates).map((t) => [t.name, t.skills]),
+  ),
+  cacheRoot: "/var/lib/kaeno/skills",
+});
 // Only now open/refresh/resume Harness and expose channels.
 ```
 
@@ -43,7 +47,7 @@ New sandbox state freezes `{images:{execution}, skillCacheClaim}` atomically wit
 
 ## Runtime preparation and cache ownership
 
-`src/skill-repositories.ts` exposes one deep entry point: `prepareSkills(options): Promise<SkillCatalog>`. It hides Git resolution, installer environment, discovery, validation, staging, publication and cleanup. No separate store classes, delivery endpoint or runtime job service.
+`src/skills/skill-repositories.ts` exposes one deep entry point: `prepareSkills(options): Promise<SkillCatalog>`. It hides Git resolution, installer environment, discovery, validation, staging, publication and cleanup. No separate store classes, delivery endpoint or runtime job service.
 
 1. Create cache `trees/`; remove abandoned private `.kaeno-skills-*` work, never published trees. One Recreate kaeno process owns writes; init containers only read.
 2. Fresh Git checkout for EVERY declared repo on EVERY startup. Pinned refs fail if absent. Unpinned resolves remote default-branch HEAD; cached packages/artifacts never serve as a Git version lock or silent network-failure fallback. Record resolved commit.
@@ -86,14 +90,17 @@ Existing source-image children replay their frozen source-image initialization, 
 
 ## Modules and operations
 
-- `src/config.ts`: pure config parsing/selection validation.
-- `src/skills.ts`: domain, metadata, hashing, catalogue, scoped snapshots, selected-tree materialization and new image-ref validation.
-- `src/skill-repositories.ts`: runtime preparation/cache publication.
+- `src/config/config.ts`: pure config parsing/selection validation.
+- `src/skills/skills.ts`: domain, metadata, hashing, catalogue, scoped snapshots, selected-tree materialization and new image-ref validation.
+- `src/skills/skill-repositories.ts`: runtime preparation/cache publication.
 - `src/materialize-skills.ts`: credential/network-free init entry point.
-- `src/agents.ts`: durable bindings, scoped tool/prompt, child replay and frozen execution/PVC capture.
-- `src/threads.ts`: sole owner of idle-only root refresh.
-- `src/k8s.ts`: trusted pod spec, init-only cache mount, readonly assigned mount and init errors.
-- `src/kaeno.ts`: startup ordering and cache/image wiring; infer claim from its actual pod volume or explicit override.
+- `src/agents/`: durable bindings, scoped tool/prompt, child replay and frozen execution/PVC capture.
+- `src/threads/threads.ts`: sole owner of idle-only root refresh.
+- `src/sandboxes/`: trusted pod spec, init-only cache mount, readonly assigned mount and init errors.
+- `src/application/kaeno.ts`: startup ordering and cache/image wiring; infer claim from its actual pod volume or explicit override.
+
+Features expose explicit public `index.ts` APIs; see [current package ownership](refactoring.md).
+
 - `Dockerfile`, `scripts/deploy.sh`: generic sibling images/release pins only. No config snapshot, source fetching or bundled skill layer. .dockerignore excludes obsolete bundles/config snapshots.
 - Homelab `deployment.yaml`, `pvc.yaml`: separate kaeno-skills PVC and main RW mount. No skill-source credential or Secret reference. No active config preferences/network-policy changes.
 

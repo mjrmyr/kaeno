@@ -3,7 +3,7 @@ name: Publish GHCR images
 on:
   push:
     branches: [main]
-    tags: ['**']
+    tags: ["**"]
 
 permissions:
   contents: read
@@ -240,8 +240,8 @@ jobs:
           base: main
           branch: chore/kaeno-image
           draft: false
-          commit-message: 'chore(kaeno): update published orchestrator digest'
-          title: 'chore(kaeno): update published orchestrator digest'
+          commit-message: "chore(kaeno): update published orchestrator digest"
+          title: "chore(kaeno): update published orchestrator digest"
           body: |
             Pin `images[name=kaeno]` to `ghcr.io/mjrmyr/kaeno@${{ needs.publish.outputs.kaeno-digest }}`.
             Source: https://github.com/mjrmyr/kaeno/commit/${{ github.sha }}

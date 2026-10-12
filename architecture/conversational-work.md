@@ -18,7 +18,10 @@ Conceptual call sites (application contracts, not existing SDK APIs):
 
 ```ts
 // Model tool handler in the CHAT role: admission only, not execution.
-const ticket = await work.start(turn, { title: "Implement X", brief: "Goal, constraints, relevant context, proposed plan…" });
+const ticket = await work.start(turn, {
+  title: "Implement X",
+  brief: "Goal, constraints, relevant context, proposed plan…",
+});
 return `Accepted work #${ticket.id}; ${ticket.state}`;
 
 // Model/status command in the same chat: scope checked, no raw global task access.
@@ -26,7 +29,11 @@ const views = await work.list(turn);
 const requested = await work.cancel(turn, ticket.id); // requested/cancelling, not premature “cancelled”
 
 // Trusted reporter, not a worker or user-supplied route.
-await turns.report(origin, { kind: "work-result", workId, outcome }, `work-report:${workId}`);
+await turns.report(
+  origin,
+  { kind: "work-result", workId, outcome },
+  `work-report:${workId}`,
+);
 ```
 
 ## Shape
@@ -53,7 +60,8 @@ No mode flag on a universal delegate tool. CHAT has start_work/list_work/cancel_
 ```ts
 // Proposed sketch only. Branded native IDs are used in implementation.
 type Role = "chat" | "work" | "worker";
-type Destination = { kind: "telegram"; chatId: number } | { kind: "thread-feed"; key: string };
+type Destination =
+  { kind: "telegram"; chatId: number } | { kind: "thread-feed"; key: string };
 type Origin = {
   threadKey: string;
   conversationId: ConversationId;
@@ -62,7 +70,11 @@ type Origin = {
   destination: Destination;
 };
 type WorkRequest = { title: string; brief: string };
-type WorkInput = { origin: Origin; request: WorkRequest; frozen: FrozenWorkBlueprint };
+type WorkInput = {
+  origin: Origin;
+  request: WorkRequest;
+  frozen: FrozenWorkBlueprint;
+};
 type WorkOutcome =
   | { kind: "completed"; report: string; answer: EntryId }
   | { kind: "failed"; reason: string }
@@ -75,7 +87,10 @@ type TurnReceipt = {
   // Identity/source/route captured at admission. Delivery states have failure handling.
   origin: Origin;
   source: { kind: "user" } | { kind: "work-result"; workId: TaskId };
-  acknowledgement: { state: "pending" } | { state: "delivered" } | { state: "failed"; reason: string };
+  acknowledgement:
+    | { state: "pending" }
+    | { state: "delivered" }
+    | { state: "failed"; reason: string };
 };
 interface Work {
   start(turn: TurnContext, request: WorkRequest): Promise<WorkTicket>; // not implemented
