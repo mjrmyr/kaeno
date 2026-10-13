@@ -55,12 +55,12 @@ it("formats public SDK events through the registered listener", async () => {
     [
       {
         type: "tool_execution_start",
-        toolName: "delegate",
+        toolName: "start_work",
         toolCallId: "call",
-        args: { agent: "worker", task: "Plan" },
+        args: { agent: "worker", title: "Plan", brief: "Do it" },
       },
     ],
     BACKGROUND_CONTEXT,
   );
-  expect(emit).toHaveBeenCalledWith(expect.stringContaining("worker"));
+  expect(emit).toHaveBeenCalledWith("▸ starting work: Plan");
 });

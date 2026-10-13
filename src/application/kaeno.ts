@@ -13,12 +13,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
-import {
-  Agent,
-  AgentDelegation,
-  AgentFactory,
-  AgentTraceLogger,
-} from "../agents/index.ts";
+import { Agent, AgentFactory, AgentTraceLogger } from "../agents/index.ts";
 import { ApiServer } from "../api/index.ts";
 import { eligibleWorkTemplates, loadConfig } from "../config/index.ts";
 import { HarnessReference } from "../durable/index.ts";
@@ -159,11 +154,14 @@ export async function startApplication(): Promise<void> {
     turns,
     { listWorkTemplates: () => eligibleWorkTemplates(config) },
     agentReference.getValue,
-    agentReference.getValue,
   );
   workReference.initialize(work);
   const factory = new AgentFactory(config, skills, work);
-  const capacity = new SandboxCapacity(harnessReference.getHarness, kubernetes);
+  const capacity = new SandboxCapacity(
+    harnessReference.getHarness,
+    kubernetes,
+    config.sandboxCapacity,
+  );
   const environmentFactory = {
     createEnvironment: (
       pod: string,
@@ -183,14 +181,6 @@ export async function startApplication(): Promise<void> {
     kubernetes,
     capacity,
     environmentFactory,
-    images,
-    skillCacheClaim,
-  );
-  const delegation = new AgentDelegation(
-    factory,
-    sandboxes,
-    images,
-    skillCacheClaim,
   );
   const logSecrets = Object.entries(process.env)
     .filter(([name]) => /TOKEN|API_KEY|PASSWORD|SECRET|PRIVATE_KEY/i.test(name))
@@ -198,7 +188,6 @@ export async function startApplication(): Promise<void> {
   const logger = new AgentTraceLogger((line) => console.log(line), logSecrets);
   const agent = new Agent(
     factory,
-    delegation,
     harnessReference.getHarness,
     sandboxes,
     images,
@@ -274,11 +263,10 @@ export async function startApplication(): Promise<void> {
   const sweeper = setInterval(sweep, 5 * 60000);
   const initialSweep = setTimeout(sweep, 30000);
   console.log(
-    `kaeno listening on :${port} · agent ${config.agent} · templates ${Object.keys(config.templates).join(", ")} · sandbox image ${images.execution}`,
+    `kaeno listening on :${port} · agent ${config.agent} · max depth ${config.maxDepth} · sandboxes ${config.sandboxCapacity} · templates ${Object.keys(config.templates).join(", ")} · sandbox image ${images.execution}`,
   );
   for (const signal of ["SIGTERM", "SIGINT"] as const) {
     process.once(signal, async () => {
-      agent.shutdown();
       stopping.abort();
       clearInterval(sweeper);
       clearTimeout(initialSweep);

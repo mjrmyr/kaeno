@@ -8,8 +8,6 @@ import {
   readBlueprint,
   sealBlueprint,
   storageCopy,
-  workRoot,
-  type AgentSettings,
   type WorkBlueprint,
 } from "./index.ts";
 vi.mock("@earendil-works/pi-durable", async () => {
@@ -18,41 +16,23 @@ vi.mock("@earendil-works/pi-durable", async () => {
 });
 vi.mock("../config/index.ts", () => ({
   PROVIDERS: ["anthropic", "openai"],
-  CODING_TOOLS: ["read", "write", "edit", "bash"],
 }));
-it("rejects a missing stored root policy before reading agent identity", () => {
-  expect(() => workRoot(undefined)).toThrow(/frozen policy/);
-});
 function payload(): Omit<WorkBlueprint, "digest"> {
-  const settings: AgentSettings = {
-    model: { provider: "anthropic", modelId: "saved-model" },
-    thinkingLevel: null,
-    extensions: ["coding-tools", "kaeno"],
-    tools: [],
-    instructions: "saved profile",
-    cwd: null,
-  };
   return {
-    schema: 1,
+    schema: 2,
     agent: "worker",
+    maxDepth: 2,
     templates: {
       worker: {
         template: {
           name: "worker",
           description: "worker",
-          model: settings.model,
+          model: { provider: "anthropic", modelId: "saved-model" },
           instructions: "saved profile",
-          sandbox: true,
-          tools: ["bash"],
           skills: [],
-          delegates: [],
+          delegates: ["worker"],
         },
         skills: [],
-        settings: {
-          work: settings,
-          worker: { ...settings, tools: ["bash"], cwd: "/saved-workspace" },
-          legacy: settings,
-        },
       },
     },
     images: { execution: "saved-image" },
@@ -101,17 +81,19 @@ function forged(
 it("seals an alias-free, deeply frozen policy and returns independently mutable storage drafts", () => {
   const original = payload();
   const snapshot = sealBlueprint(original);
-  expect(workRoot(snapshot).settings.worker.cwd).toBe("/saved-workspace");
-  expect(Object.isFrozen(snapshot.templates.worker.settings.worker.tools)).toBe(
+  expect(frozenEntry(snapshot, "worker").template.delegates).toEqual([
+    "worker",
+  ]);
+  expect(Object.isFrozen(snapshot.templates.worker.template.delegates)).toBe(
     true,
   );
   expect(Reflect.set(snapshot.images, "execution", "changed")).toBe(false);
   const draft = storageCopy(snapshot);
   draft.images.execution = "changed";
-  draft.templates.worker.settings.worker.tools.push("write");
+  draft.templates.worker.template.delegates.push("other");
   expect(snapshot.images.execution).toBe("saved-image");
-  expect(snapshot.templates.worker.settings.worker.tools).toEqual(["bash"]);
-  expect(original.templates.worker.settings.worker.tools).toEqual(["bash"]);
+  expect(snapshot.templates.worker.template.delegates).toEqual(["worker"]);
+  expect(original.templates.worker.template.delegates).toEqual(["worker"]);
 });
 it("verifies checksums independently of object insertion order", () => {
   const snapshot = sealBlueprint(payload());
@@ -125,7 +107,7 @@ it.each([
   null,
   {},
   { schema: 0, digest: "x" },
-  { schema: 2, digest: "x" },
+  { schema: 1, digest: "x" },
 ])("rejects missing or unsupported saved policy envelopes (%j)", (value) => {
   expect(() => readBlueprint(value)).toThrow(/frozen policy/);
 });
@@ -134,7 +116,7 @@ it("detects policy edits before replay and rejects absent targets", () => {
   draft.templates.worker.template.instructions = "changed";
   expect(() => readBlueprint(draft)).toThrow(/integrity/);
   expect(() => frozenEntry(sealBlueprint(payload()), "missing")).toThrow(
-    /Missing frozen delegate/,
+    /Missing frozen template/,
   );
 });
 it.each<[string, (snapshot: Record<string, JsonValue>) => void]>([
@@ -184,9 +166,9 @@ it.each<[string, (snapshot: Record<string, JsonValue>) => void]>([
     },
   ],
   [
-    "tools without sandbox",
+    "invalid depth limit",
     (snapshot) => {
-      setTemplateField(snapshot, "sandbox", false);
+      snapshot.maxDepth = 0;
     },
   ],
 ])(
@@ -195,29 +177,6 @@ it.each<[string, (snapshot: Record<string, JsonValue>) => void]>([
     const snapshot = rawBlueprint();
     // Modify a plain JSON boundary value, not private implementation state.
     mutate(snapshot);
-    expect(() => readBlueprint(forged(snapshot))).toThrow(
-      /Invalid frozen blueprint/,
-    );
-  },
-);
-it.each([
-  "model",
-  "thinkingLevel",
-  "tools",
-  "cwd",
-  "extensions",
-  "instructions",
-])(
-  "rejects a malformed saved worker %s even with a valid checksum",
-  (field) => {
-    const snapshot = rawBlueprint();
-    const templates = object(snapshot.templates);
-    const entry = object(templates.worker);
-    const settings = object(entry.settings);
-    settings.worker = { ...object(settings.worker), [field]: 42 };
-    entry.settings = settings;
-    templates.worker = entry;
-    snapshot.templates = templates;
     expect(() => readBlueprint(forged(snapshot))).toThrow(
       /Invalid frozen blueprint/,
     );

@@ -232,7 +232,7 @@ export class TelegramPoller {
       await this.harness().waitForTask(taskId, BACKGROUND_CONTEXT);
       const reply =
         text === "/stop"
-          ? "Stop requested. Worker cleanup may still be in progress; /jobs shows status."
+          ? "Stop requested. WORK and sandbox cleanup may still be in progress; /jobs shows status."
           : "Started a fresh context. Existing work continues; /jobs lists it.";
       await this.client.sendMessage(chatId, reply);
       return;

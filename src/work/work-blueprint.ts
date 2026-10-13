@@ -1,7 +1,7 @@
 import { copyJson } from "@earendil-works/chord";
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { CODING_TOOLS, PROVIDERS, type Template } from "../config/index.ts";
+import { PROVIDERS, type Template } from "../config/index.ts";
 import type { Stored } from "../durable/index.ts";
 import type { SandboxImages, SkillBinding } from "../skills/index.ts";
 export type { Stored } from "../durable/index.ts";
@@ -14,23 +14,13 @@ export interface BoundAgent {
   readonly template: DeepReadonly<Template>;
   readonly skills: DeepReadonly<SkillBinding>;
 }
-export type FrozenRole = "work" | "worker" | "legacy";
-export interface AgentSettings {
-  readonly model: DeepReadonly<Template["model"]>;
-  readonly thinkingLevel: Exclude<Template["thinkingLevel"], undefined> | null;
-  readonly extensions: readonly string[];
-  readonly tools: readonly string[];
-  readonly instructions: string;
-  readonly cwd: string | null;
-}
-export interface BlueprintEntry extends BoundAgent {
-  readonly settings: Readonly<Record<FrozenRole, AgentSettings>>;
-}
+/** One request tree's immutable policy: every reachable template, frozen when CHAT starts the root WORK. */
 export interface WorkBlueprint {
-  readonly schema: 1;
+  readonly schema: 2;
   readonly digest: string;
   readonly agent: string;
-  readonly templates: Readonly<Record<string, BlueprintEntry>>;
+  readonly maxDepth: number;
+  readonly templates: Readonly<Record<string, BoundAgent>>;
   readonly images: Readonly<SandboxImages>;
   readonly skillCacheClaim: string;
 }
@@ -57,49 +47,25 @@ const skillSchema = z.object({
     .record(z.string(), z.string())
     .refine((documents) => Object.hasOwn(documents, "SKILL.md")),
 });
-const settingsSchema = z.object({
+const templateSchema = z.object({
+  name: z.string(),
+  description: z.string(),
   model: modelSchema,
-  thinkingLevel: thinkingSchema.nullable(),
-  extensions: z.array(z.string()),
-  tools: z.array(z.string()),
+  thinkingLevel: thinkingSchema.optional(),
   instructions: z.string(),
-  cwd: z.string().nullable(),
+  delegates: z.array(z.string()),
+  skills: z.array(z.string()),
 });
-const templateSchema = z
-  .object({
-    name: z.string(),
-    description: z.string(),
-    model: modelSchema,
-    thinkingLevel: thinkingSchema.optional(),
-    instructions: z.string(),
-    sandbox: z.boolean(),
-    tools: z.array(z.enum(CODING_TOOLS)),
-    delegates: z.array(z.string()),
-    skills: z.array(z.string()),
-  })
-  .refine((template) => template.tools.length === 0 || template.sandbox);
-const entrySchema = z
-  .object({
-    template: templateSchema,
-    skills: z.array(skillSchema),
-    settings: z.object({
-      work: settingsSchema,
-      worker: settingsSchema,
-      legacy: settingsSchema,
-    }),
-  })
-  .refine((entry) =>
-    Object.values(entry.settings).every(
-      (settings) =>
-        settings.model.provider === entry.template.model.provider &&
-        settings.model.modelId === entry.template.model.modelId,
-    ),
-  );
+const entrySchema = z.object({
+  template: templateSchema,
+  skills: z.array(skillSchema),
+});
 const blueprintSchema = z
   .object({
-    schema: z.literal(1),
+    schema: z.literal(2),
     digest: z.string(),
     agent: z.string().min(1),
+    maxDepth: z.number().int().min(1),
     templates: z.record(z.string(), entrySchema),
     images: z.object({
       execution: z.string().min(1),
@@ -186,7 +152,7 @@ export function sealBlueprint(
 /** Boundary: verify stored data before narrowing it. This checksum is not authentication. */
 export function readBlueprint(value: unknown): WorkBlueprint {
   const envelope = z
-    .object({ schema: z.literal(1), digest: z.string() })
+    .object({ schema: z.literal(2), digest: z.string() })
     .passthrough()
     .safeParse(value);
   if (!envelope.success) {
@@ -226,14 +192,9 @@ export function storageCopy(
 export function frozenEntry(
   blueprint: WorkBlueprint,
   agent: string,
-): BlueprintEntry {
-  const snapshot = readBlueprint(blueprint);
-  if (!Object.hasOwn(snapshot.templates, agent)) {
-    throw new Error(`Missing frozen delegate template "${agent}"`);
+): BoundAgent {
+  if (!Object.hasOwn(blueprint.templates, agent)) {
+    throw new Error(`Missing frozen template "${agent}"`);
   }
-  return snapshot.templates[agent];
-}
-export function workRoot(blueprint: unknown): BlueprintEntry {
-  const snapshot = readBlueprint(blueprint);
-  return snapshot.templates[snapshot.agent];
+  return blueprint.templates[agent];
 }

@@ -4,7 +4,6 @@ import type {
   SimpleStreamOptions,
   TranscriptContext,
 } from "@earendil-works/pi-ai";
-import { Type } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
   fauxAssistantMessage,
@@ -28,9 +27,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
-import { z } from "zod";
 import { AgentFactory, AgentState } from "../../src/agents/index.ts";
 import { parseConfig } from "../../src/config/index.ts";
+import { parseTaskId } from "../../src/durable/index.ts";
 import type { Notifier } from "../../src/turns/index.ts";
 import {
   admitControl,
@@ -46,7 +45,7 @@ import {
   createApi,
   createThreadFixture,
   createWork,
-  historicalWorkTask,
+  queuedWorkTask,
   refreshThreads,
   thread,
 } from "./composition.ts";
@@ -66,6 +65,7 @@ afterEach(async () => {
   for (const fn of cleanup.splice(0).reverse()) {
     await fn();
   }
+  k8s.resetCluster();
 });
 async function until(check: () => Promise<boolean>, ms = 8000) {
   for (const end = Date.now() + ms; Date.now() < end; await delay(10)) {
@@ -112,8 +112,6 @@ async function setup(
         description: "execution",
         model: "openai/test",
         instructions: "WORKER",
-        sandbox: true,
-        tools: ["bash"],
       },
     },
   });
@@ -168,10 +166,7 @@ async function setup(
       Turn,
       Control,
       config,
-      capture: (agent) => agents.captureWorkBlueprint(agent),
-      configure: (tx, id, right, workId) =>
-        agents.configureWorkConversation(tx, id, right, workId),
-      clean: (id) => agents.isWorkClean(id),
+      agents: () => agents,
     });
     options.install?.(work, ++opening);
     factory = new AgentFactory(
@@ -208,7 +203,6 @@ async function setup(
     }
   };
   const close = async () => {
-    agents.shutdown();
     await harness.close(ctx);
   };
   await open();
@@ -258,7 +252,7 @@ async function setup(
     },
   };
 }
-it("acknowledges work, answers a second request while WORK is reasoning, and reports later without any worker", async () => {
+it("acknowledges work, answers a second request while WORK is reasoning, and reports later from its own sandbox", async () => {
   const { promise: gate, resolve: release } = Promise.withResolvers<void>();
   const createPod = vi.spyOn(k8s, "createPod");
   const conversation = await setup(async (system, last, options) => {
@@ -295,10 +289,12 @@ it("acknowledges work, answers a second request while WORK is reasoning, and rep
   await conversation.submit("second", "request-second");
   await conversation.waitReply("request-second");
   expect(conversation.sent[1]).toBe("Second request answered immediately");
+  expect(createPod).toHaveBeenCalledTimes(1);
+  expect(k8s.runningPods()).toHaveLength(1);
   release();
   await until(async () => conversation.sent.length === 3);
   expect(conversation.sent[2]).toContain("Finished");
-  expect(createPod).not.toHaveBeenCalled();
+  expect(k8s.runningPods()).toEqual([]);
   expect(
     required((await conversation.work.listWork(conversation.id))[0]).status,
   ).toBe("completed");
@@ -635,12 +631,12 @@ it("retains a send claimed before reset; pending sends are the cancellation cuto
     release();
   }
 });
-it("one request cannot launch two independent WORK coordinators", async () => {
-  let launched = false;
+it("parallel start_work calls in one request start independent works; a replayed call does not", async () => {
   const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+  let launched = 0;
   const conversation = await setup(async (system, last, options) => {
     if (system.includes("Kaeno WORK")) {
-      launched = true;
+      launched++;
       await Promise.race([
         gate,
         delay(60000, undefined, { signal: options.signal }),
@@ -657,7 +653,7 @@ it("one request cannot launch two independent WORK coordinators", async () => {
           ),
           fauxToolCall(
             "start_work",
-            { agent: "kaeno", title: "Two", brief: "OTHER_BRIEF" },
+            { agent: "worker", title: "Two", brief: "OTHER_BRIEF" },
             { id: "two" },
           ),
         ],
@@ -667,10 +663,12 @@ it("one request cannot launch two independent WORK coordinators", async () => {
     return reply("ACK");
   });
   try {
-    const turn = await conversation.submit("MULTI", "one-work-per-request");
+    const turn = await conversation.submit("MULTI", "two-works-per-request");
     await conversation.harness.waitForTask(turn, ctx);
-    await until(async () => launched);
-    expect(await conversation.work.listWork(conversation.id)).toHaveLength(1);
+    await until(async () => launched === 2);
+    const jobs = await conversation.work.listWork(conversation.id);
+    expect(jobs.map((job) => job.title).sort()).toEqual(["One", "Two"]);
+    expect(new Set(jobs.map((job) => job.id)).size).toBe(2);
   } finally {
     release();
   }
@@ -833,8 +831,9 @@ it("serves short API replies and replayable later replies independently of the P
   );
   expect(tail.replies.map((value) => value.text)).toEqual(["DONE"]);
 });
-it("offers only primary/direct templates, requires explicit selection, and keeps CHAT primary across two WORK roots", async () => {
+it("offers CHAT's eligible templates in its instructions and rejects unknown or missing selections", async () => {
   const systems: string[] = [];
+  const results: string[] = [];
   const pods = vi.spyOn(k8s, "createPod");
   const conversation = await setup(
     (system, last) => {
@@ -843,11 +842,13 @@ it("offers only primary/direct templates, requires explicit selection, and keeps
         return reply("RESULT");
       }
       if (last.role === "toolResult") {
+        results.push(text(last));
         return reply(text(last));
       }
       if (text(last).startsWith("Work #")) {
         return reply("DONE");
       }
+      systems.push(system);
       const agent = text(last);
       return call("start_work", {
         ...(agent === "missing" ? {} : { agent }),
@@ -868,26 +869,16 @@ it("offers only primary/direct templates, requires explicit selection, and keeps
       },
     },
   );
-  const schema = z
-    .object({
-      properties: z.object({
-        agent: z.object({
-          type: z.string(),
-          enum: z.array(z.string()),
-          description: z.string(),
-        }),
-      }),
-      required: z.array(z.string()),
-    })
-    .parse(conversation.work.tools[0]?.parameters);
-  expect(schema.properties.agent.type).toBe("string");
-  expect(schema.properties.agent.enum).toEqual(["kaeno", "worker"]);
-  expect(schema.properties.agent.description).toContain("worker: execution");
-  expect(schema.required).toContain("agent");
   for (const agent of ["missing", "hidden", "arbitrary", "kaeno", "worker"]) {
     await conversation.submit(agent, `select-${agent}`);
     await conversation.waitReply(`select-${agent}`);
   }
+  const chat = required(systems.find((value) => value.includes("Kaeno CHAT")));
+  expect(chat).toContain("- worker: execution");
+  expect(chat).not.toContain("not direct");
+  expect(
+    results.filter((value) => value.includes("Unknown work template")),
+  ).toHaveLength(2);
   await until(
     async () =>
       (await conversation.work.listWork(conversation.id)).filter(
@@ -895,13 +886,18 @@ it("offers only primary/direct templates, requires explicit selection, and keeps
       ).length === 2,
   );
   const jobs = await conversation.work.listWork(conversation.id);
-  expect(jobs).toHaveLength(2);
+  expect(jobs.map((job) => job.agent)).toEqual(["kaeno", "worker"]);
   const roots = await Promise.all(
     jobs.map(async (job) =>
       storedBlueprint((await conversation.harness.getTask(job.id, ctx))?.input),
     ),
   );
   expect(roots.map((value) => value.agent)).toEqual(["kaeno", "worker"]);
+  // worker may start "hidden" below it, so its frozen tree contains it; CHAT could not start it directly.
+  expect(Object.keys(required(roots[1]).templates).sort()).toEqual([
+    "hidden",
+    "worker",
+  ]);
   expect(
     systems.some(
       (state) => state.includes("WORKER") && state.includes("Kaeno WORK"),
@@ -911,83 +907,9 @@ it("offers only primary/direct templates, requires explicit selection, and keeps
     (await conversation.harness.snapshot(AgentState, conversation.id, ctx))
       ?.template,
   ).toBe("kaeno");
-  expect(pods).not.toHaveBeenCalled();
+  expect(pods).toHaveBeenCalledTimes(2);
 });
-it.each([true, false])(
-  "replays old durable missing-agent execute intent safely (already admitted=%s)",
-  async (admitted) => {
-    let interrupted = false;
-    let replayResult = "";
-    const conversation = await setup(
-      (system, last) => {
-        if (system.includes("Kaeno WORK")) {
-          return reply("FROZEN RESULT");
-        }
-        if (last.role === "toolResult") {
-          replayResult = text(last);
-          return reply("ACK");
-        }
-        if (text(last).startsWith("Work #")) {
-          return reply("DONE");
-        }
-        return call("start_work", { title: "Old call", brief: "Old brief" });
-      },
-      undefined,
-      {
-        install: (work, opening) => {
-          if (opening !== 1) {
-            return;
-          }
-          const start = required(work.tools[0]);
-          // Simulate the old schema/implementation, not a newly invalid model call. SDK stores execute intent.
-          start.parameters = Type.Object({
-            title: Type.String(),
-            brief: Type.String(),
-          });
-          const execute = start.execute;
-          start.execute = async (args, api, context) => {
-            if (admitted) {
-              await execute(
-                { ...readObject(args), agent: "worker" },
-                api,
-                context,
-              );
-            }
-            interrupted = true;
-            await delay(60000, undefined, { signal: context.abortSignal });
-            throw new Error("unreachable");
-          };
-        },
-      },
-    );
-    await conversation.submit("old", "old-request");
-    await until(async () => interrupted);
-    await conversation.close();
-    delete conversation.config.templates.worker;
-    required(conversation.config.templates.kaeno).delegates = [];
-    await conversation.open();
-    await conversation.waitReply("old-request");
-    if (admitted) {
-      expect(replayResult).toContain("template worker");
-      expect(await conversation.work.listWork(conversation.id)).toHaveLength(1);
-      expect(
-        storedBlueprint(
-          (
-            await conversation.harness.getTask(
-              required((await conversation.work.listWork(conversation.id))[0])
-                .id,
-              ctx,
-            )
-          )?.input,
-        ).agent,
-      ).toBe("worker");
-    } else {
-      expect(replayResult).toContain("requires an explicit eligible agent");
-      expect(await conversation.work.listWork(conversation.id)).toHaveLength(0);
-    }
-  },
-);
-it("receipt-first admission returns frozen choice before capture and conflicts on changed template or identity", async () => {
+it("a replayed start_work call returns its admitted work even after the live config changed", async () => {
   let result = "";
   let phase = 0;
   const conversation = await setup(
@@ -1014,57 +936,59 @@ it("receipt-first admission returns frozen choice before capture and conflicts o
         if (opening !== 1) {
           return;
         }
-        const start = required(work.tools[0]);
+        const start = required(work.orchestrationTools[0]);
         const execute = start.execute;
         start.execute = async (args, api, context) => {
           const prior = await execute(args, api, context);
           expect(readObject(prior.details).agent).toBe("worker");
-          // Receipt wins even if current config no longer offers or can capture this template.
+          // The call is the idempotency key: a replay neither re-validates nor re-captures.
           required(conversation.config.templates.kaeno).delegates = [];
           delete conversation.config.templates.worker;
           expect((await execute(args, api, context)).details).toEqual(
             prior.details,
           );
-          await expect(
-            execute({ ...readObject(args), agent: "kaeno" }, api, context),
-          ).rejects.toThrow(/different WORK template/);
-          await expect(
-            execute({ ...readObject(args), brief: "changed" }, api, context),
-          ).rejects.toThrow(/One WORK/);
           phase++;
           return prior;
         };
       },
     },
   );
-  await conversation.submit("first", "receipt-first");
-  await conversation.waitReply("receipt-first");
+  await conversation.submit("first", "replayed-call");
+  await conversation.waitReply("replayed-call");
   expect(phase).toBe(1);
   expect(result).toContain("template worker");
+  expect(await conversation.work.listWork(conversation.id)).toHaveLength(1);
 });
+function queuedInput(
+  conversationId: ConversationId,
+  agent: string,
+  blueprint: unknown,
+): Record<string, unknown> {
+  return {
+    title: "queued",
+    brief: "queued frozen work",
+    agent,
+    depth: 1,
+    parent: {
+      kind: "chat",
+      origin: { conversationId, requestId: "queued", epoch: 0, notify: {} },
+    },
+    blueprint,
+  };
+}
 it.each([
   undefined,
   { agent: "missing", templates: {} },
   { agent: "worker", templates: { worker: {} } },
 ])(
-  "fails old queued WORK with missing/bad blueprint visibly instead of choosing current primary (%j)",
+  "fails a queued WORK with a missing or bad blueprint visibly instead of choosing current policy (%j)",
   async (blueprint) => {
     const conversation = await setup(() => reply("should not run"));
-    const task = historicalWorkTask;
     const id = await conversation.harness.commit(
       (tx) =>
         tx.createTask(
-          task,
-          {
-            title: "broken",
-            brief: "broken",
-            blueprint,
-            origin: {
-              conversationId: conversation.id,
-              requestId: "broken",
-              epoch: 0,
-            },
-          },
+          queuedWorkTask,
+          queuedInput(conversation.id, "worker", blueprint),
           {
             ownership: { kind: "conversation" },
             conversationId: conversation.id,
@@ -1092,130 +1016,35 @@ it.each([
     ).toHaveLength(0);
   },
 );
-it("selected sandboxed WORK has no execution surface and delegates only frozen targets to leaf WORKERs", async () => {
-  let verified = false;
-  const pods = vi.spyOn(k8s, "createPod");
-  const conversation = await setup(
-    (system, last) => {
-      if (system.includes("Kaeno WORK")) {
-        if (last.role === "user") {
-          // Remove/change current targets before delegation: only the admitted blueprint is authoritative.
-          delete conversation.config.templates.leaf;
-          required(conversation.config.templates.worker).delegates = ["kaeno"];
-          return call("bash", { command: "should-not-run" });
-        }
-        if (last.role === "toolResult" && last.toolName === "bash") {
-          expect(text(last)).toContain("not available");
-          return call(
-            "delegate",
-            { agent: "kaeno", task: "Not allowlisted" },
-            "denied",
-          );
-        }
-        if (last.role === "toolResult" && last.toolCallId === "denied") {
-          expect(text(last)).toContain("Available: leaf");
-          return call(
-            "delegate",
-            { agent: "leaf", task: "Allowed" },
-            "allowed",
-          );
-        }
-        expect(text(last)).toContain("LEAF VERIFIED");
-        verified = true;
-        return reply("WORK VERIFIED");
-      }
-      if (system.includes("LEAF-PROFILE")) {
-        if (last.role === "user") {
-          return call("delegate", { agent: "kaeno", task: "No grandchildren" });
-        }
-        expect(text(last)).toContain("not available");
-        return reply("LEAF VERIFIED");
-      }
-      if (last.role === "toolResult") {
-        return reply("ACK");
-      }
-      if (text(last).startsWith("Work #")) {
-        return reply("DONE");
-      }
-      return call("start_work", {
-        agent: "worker",
-        title: "Engineering",
-        brief: "Coordinate",
-      });
-    },
-    undefined,
-    {
-      configure: (config) => {
-        required(config.templates.worker).delegates = ["leaf"];
-        config.templates.leaf = {
-          ...required(config.templates.kaeno),
-          name: "leaf",
-          instructions: "LEAF-PROFILE",
-          delegates: ["kaeno"],
-        };
-      },
-    },
-  );
-  await conversation.submit("first", "frozen-delegation");
-  await conversation.waitReply("frozen-delegation");
-  await until(async () => verified);
-  expect(pods).not.toHaveBeenCalled();
-  const job = required((await conversation.work.listWork(conversation.id))[0]);
-  const child = required(
-    (
-      await conversation.harness.commit(
-        (tx) => tx.scanConversations({ ownerTaskId: job.id }, 1),
-        ctx,
-      )
-    ).items[0],
-  );
-  const state = required(
-    await conversation.harness.snapshot(AgentState, child.id, ctx),
-  );
-  expect(state.template).toBe("worker");
-  expect(state.role).toBe("work");
-  expect(state.sandbox).toBeUndefined();
-  expect(
-    required(required(state.blueprint).templates.worker).template.tools,
-  ).toEqual(["bash"]);
-  expect(
-    required(required(state.blueprint).templates.worker).template.delegates,
-  ).toEqual(["leaf"]);
-});
-it("starts a queued valid frozen selection even after current config removes its root", async () => {
+it("starts a queued WORK from its frozen policy after reopen, even when current config removed its template", async () => {
   const seen: string[] = [];
   const conversation = await setup((system) => {
     seen.push(system);
     return reply("QUEUED FROZEN RESULT");
   });
+  await conversation.close();
+  await conversation.open(false); // store an admitted task before its conversation exists
   const blueprint = conversation.agents.captureWorkBlueprint("worker");
-  const task = historicalWorkTask;
-  const id = await conversation.harness.commit(async (tx) => {
-    const id = await tx.createTask(
-      task,
-      {
-        title: "queued",
-        brief: "queued frozen work",
-        blueprint,
-        origin: {
+  const id = await conversation.harness.commit(
+    (tx) =>
+      tx.createTask(
+        queuedWorkTask,
+        queuedInput(conversation.id, "worker", blueprint),
+        {
+          ownership: { kind: "conversation" },
           conversationId: conversation.id,
-          requestId: "queued",
-          epoch: 0,
+          background: true,
         },
-      },
-      {
-        ownership: { kind: "conversation" },
-        conversationId: conversation.id,
-        background: true,
-      },
-    );
-    delete conversation.config.templates.worker;
-    required(conversation.config.templates.kaeno).delegates = [];
-    return id;
-  }, ctx);
+      ),
+    ctx,
+  );
+  await conversation.close();
+  delete conversation.config.templates.worker;
+  required(conversation.config.templates.kaeno).delegates = [];
+  required(conversation.config.templates.kaeno).instructions = "LATER POLICY";
+  await conversation.open();
   await conversation.harness.waitForTask(id, ctx);
   const record = required(await conversation.harness.getTask(id, ctx));
-  expect(record.state.status).toBe("terminal");
   expect(JSON.stringify(record.state)).toContain("QUEUED FROZEN RESULT");
   expect(
     seen.some(
@@ -1230,172 +1059,313 @@ it("starts a queued valid frozen selection even after current config removes its
       )
     ).items[0],
   );
-  expect(
-    (await conversation.harness.snapshot(AgentState, child.id, ctx))?.template,
-  ).toBe("worker");
+  const state = required(
+    await conversation.harness.snapshot(AgentState, child.id, ctx),
+  );
+  expect(state).toMatchObject({ template: "worker", role: "work" });
+  expect(state.sandbox?.images).toEqual({ execution: "execution-v1" });
+  const saved = required(
+    await conversation.harness.snapshot(AgentDoc, child.id, ctx),
+  );
+  expect(saved.instructions).toContain("WORKER");
+  expect(saved.instructions).not.toContain("LATER POLICY");
+  expect(saved.tools).toEqual(["read", "write", "edit", "bash", "ask_parent"]);
 });
-it("creates queued WORK and WORKER after SQLite reopen using saved policy, not later policy code", async () => {
+it("WORK starts an allowed child, answers its question, and reports only after the child finished", async () => {
+  const order: string[] = [];
+  let childId = 0;
   const conversation = await setup(
     (system, last) => {
-      if (system.includes("Kaeno WORK")) {
-        return last.role === "user"
-          ? call("delegate", {
-              agent: "worker",
-              task: "Reason about the supplied text",
-            })
-          : reply("SAVED WORK REPORT");
+      const message = text(last);
+      if (system.includes("COORDINATOR")) {
+        if (last.role === "user" && message.startsWith("Child Work #")) {
+          if (message.includes("asks")) {
+            childId = Number(/#(\d+)/.exec(message)?.[1]);
+            order.push("question");
+            return call(
+              "message_work",
+              { id: childId, text: "Blue" },
+              "answer",
+            );
+          }
+          order.push("child-report");
+          return reply(`WORK VERIFIED: ${message.split("\n\n").at(-1)}`);
+        }
+        if (last.role === "user") {
+          return call(
+            "start_work",
+            { agent: "kaeno", title: "Denied", brief: "Not allowed" },
+            "denied",
+          );
+        }
+        if (last.role === "toolResult" && last.toolCallId === "denied") {
+          expect(message).toContain("Available: leaf");
+          return call(
+            "start_work",
+            { agent: "leaf", title: "Paint", brief: "Paint it" },
+            "allowed",
+          );
+        }
+        if (last.role === "toolResult" && last.toolCallId === "allowed") {
+          expect(message).toContain("Started work #");
+          order.push("interim");
+          return reply("Waiting for the leaf.");
+        }
+        expect(message).toContain("Message delivered");
+        return reply("Answered the leaf.");
       }
-      if (system.includes("WORKER")) {
-        return reply("SAVED WORKER REPORT");
+      if (system.includes("LEAF-PROFILE")) {
+        // At the depth limit: no orchestration offered, only its parent channel.
+        expect(system).not.toContain("Child work templates");
+        if (last.role === "user" && message.startsWith("Message from")) {
+          expect(message).toContain("parent WORK");
+          order.push("answer-received");
+          return reply(`LEAF DONE: ${message.split("\n\n").at(-1)}`);
+        }
+        if (last.role === "user") {
+          return call("ask_parent", { question: "Which color?" });
+        }
+        return reply("unreachable after terminate");
       }
-      return reply("ACK");
+      if (last.role === "toolResult") {
+        return reply("ACK");
+      }
+      if (message.startsWith("Work #")) {
+        order.push("chat-report");
+        return reply(message.split("\n\n").at(-1) ?? "");
+      }
+      return call("start_work", {
+        agent: "worker",
+        title: "Coordinate",
+        brief: "Coordinate",
+      });
     },
     undefined,
     {
       configure: (config) => {
-        required(config.templates.worker).sandbox = false;
-        required(config.templates.worker).tools = [];
+        required(config.templates.worker).instructions = "COORDINATOR";
+        required(config.templates.worker).delegates = ["leaf"];
+        config.templates.leaf = {
+          ...required(config.templates.kaeno),
+          name: "leaf",
+          description: "paints",
+          instructions: "LEAF-PROFILE",
+          delegates: ["kaeno"],
+        };
       },
     },
   );
-  await conversation.close();
-  await conversation.open(false); // Store an admitted task before its child exists.
-  const blueprint = conversation.agents.captureWorkBlueprint("kaeno");
-  const task = historicalWorkTask;
-  const id = await conversation.harness.commit(
-    (tx) =>
-      tx.createTask(
-        task,
-        {
-          title: "Queued",
-          brief: "Use saved policy",
-          blueprint,
-          origin: {
-            conversationId: conversation.id,
-            requestId: "queued-policy",
-            epoch: 0,
-          },
-        },
-        {
-          ownership: { kind: "conversation" },
-          conversationId: conversation.id,
-          background: true,
-        },
-      ),
+  await conversation.submit("first", "nested");
+  await until(async () =>
+    conversation.sent.some((value) => value.includes("WORK VERIFIED")),
+  );
+  expect(order).toEqual([
+    "interim",
+    "question",
+    "answer-received",
+    "child-report",
+    "chat-report",
+  ]);
+  expect(conversation.sent.at(-1)).toBe("WORK VERIFIED: LEAF DONE: Blue");
+  const [root] = await conversation.work.listWork(conversation.id);
+  expect(root).toMatchObject({ agent: "worker", status: "completed" });
+  const child = required(
+    await conversation.harness.getTask(parseTaskId(childId), ctx),
+  );
+  expect(child.state.status).toBe("terminal");
+  expect(readObject(child.input)).toMatchObject({ agent: "leaf", depth: 2 });
+  expect(k8s.runningPods()).toEqual([]);
+});
+it("CHAT relays a WORK question to the user, inspects it, and forwards the answer with message_work", async () => {
+  let workId = 0;
+  let inspected = "";
+  const conversation = await setup((system, last) => {
+    const message = text(last);
+    if (system.includes("Kaeno WORK")) {
+      if (message.startsWith("Message from your CHAT")) {
+        return reply(`Used ${message.split("\n\n").at(-1)}`);
+      }
+      return call("ask_parent", { question: "Which file?" });
+    }
+    if (last.role === "toolResult" && last.toolName === "inspect_work") {
+      inspected = message;
+      return reply("It waits for your answer.");
+    }
+    if (last.role === "toolResult") {
+      return reply(last.toolName === "message_work" ? "Forwarded." : "ACK");
+    }
+    if (message.startsWith("Work #") && message.includes("needs input")) {
+      workId = Number(/#(\d+)/.exec(message)?.[1]);
+      return reply(`Question: ${message.split("\n\n").at(-1)}`);
+    }
+    if (message.startsWith("Work #")) {
+      return reply(`DONE: ${message.split("\n\n").at(-1)}`);
+    }
+    if (message === "status?") {
+      return call("inspect_work", { id: workId });
+    }
+    if (message.startsWith("answer:")) {
+      return call("message_work", { id: workId, text: message.slice(8) });
+    }
+    return call("start_work", { agent: "kaeno", title: "Ask", brief: "Ask" });
+  });
+  await conversation.submit("first", "ask-start");
+  await until(async () => conversation.sent.includes("Question: Which file?"));
+  expect(
+    required((await conversation.work.listWork(conversation.id))[0]).status,
+  ).toBe("needs-input");
+  await conversation.submit("status?", "ask-status");
+  await conversation.waitReply("ask-status");
+  expect(readObject(JSON.parse(inspected))).toMatchObject({
+    id: workId,
+    status: "needs-input",
+    children: [],
+  });
+  await conversation.submit("answer: a.txt", "ask-answer");
+  await conversation.waitReply("ask-answer");
+  await until(async () => conversation.sent.includes("DONE: Used a.txt"));
+  expect(conversation.sent).toEqual([
+    "ACK",
+    "Question: Which file?",
+    "It waits for your answer.",
+    "Forwarded.",
+    "DONE: Used a.txt",
+  ]);
+});
+it("cancelling a WORK cancels its running children first and removes every sandbox", async () => {
+  let started = false;
+  const conversation = await setup(
+    async (system, last, options) => {
+      if (system.includes("COORDINATOR")) {
+        if (last.role === "user") {
+          return call("start_work", {
+            agent: "leaf",
+            title: "Slow",
+            brief: "Slow",
+          });
+        }
+        return reply("Waiting.");
+      }
+      if (system.includes("LEAF-PROFILE")) {
+        started = true;
+        await delay(60000, undefined, { signal: options.signal });
+        return reply("never");
+      }
+      if (last.role === "toolResult") {
+        return reply("ACK");
+      }
+      return call("start_work", {
+        agent: "worker",
+        title: "Tree",
+        brief: "Tree",
+      });
+    },
+    undefined,
+    {
+      configure: (config) => {
+        required(config.templates.worker).instructions = "COORDINATOR";
+        required(config.templates.worker).delegates = ["leaf"];
+        config.templates.leaf = {
+          ...required(config.templates.kaeno),
+          name: "leaf",
+          description: "slow",
+          instructions: "LEAF-PROFILE",
+          delegates: [],
+        };
+      },
+    },
+  );
+  await conversation.submit("first", "tree");
+  await until(async () => started);
+  expect(k8s.runningPods()).toHaveLength(2);
+  const [root] = await conversation.work.listWork(conversation.id);
+  await until(
+    async () =>
+      required((await conversation.work.listWork(conversation.id))[0])
+        .status === "waiting-for-children",
+  );
+  await conversation.work.cancelWork(conversation.id, required(root).id);
+  await until(
+    async () =>
+      required((await conversation.work.listWork(conversation.id))[0])
+        .status === "aborted",
+  );
+  const children = await conversation.harness.commit(
+    (tx) => tx.scanTasks({ kind: "kaeno.work" }, 10),
     ctx,
   );
-  expect(
-    (
-      await conversation.harness.commit(
-        (tx) => tx.scanConversations({ ownerTaskId: id }, 1),
-        ctx,
-      )
-    ).items,
-  ).toHaveLength(0);
-  await conversation.close();
-  required(conversation.config.templates.kaeno).instructions = "LATER POLICY";
-  required(conversation.config.templates.kaeno).delegates = [];
-  delete conversation.config.templates.worker;
-  await conversation.open();
-  await conversation.harness.waitForTask(id, ctx);
-  expect(
-    JSON.stringify(required(await conversation.harness.getTask(id, ctx)).state),
-  ).toContain("SAVED WORK REPORT");
-  const workChild = required(
-    (
-      await conversation.harness.commit(
-        (tx) => tx.scanConversations({ ownerTaskId: id }, 1),
-        ctx,
-      )
-    ).items[0],
-  );
-  const rootConfig = required(
-    await conversation.harness.snapshot(AgentDoc, workChild.id, ctx),
-  );
-  expect(rootConfig.instructions).toBe(
-    required(blueprint.templates.kaeno).settings.work.instructions,
-  );
-  expect(rootConfig.tools).toEqual(
-    required(blueprint.templates.kaeno).settings.work.tools,
-  );
-  const delegates = (
-    await conversation.harness.commit(
-      (tx) =>
-        tx.scanTasks({ conversationId: workChild.id, kind: "pi.tool" }, 10),
-      ctx,
-    )
-  ).items;
-  const workers = (
-    await Promise.all(
-      delegates.map((taskValue) =>
-        conversation.harness.commit(
-          (tx) => tx.scanConversations({ ownerTaskId: taskValue.id }, 1),
-          ctx,
-        ),
-      ),
-    )
-  ).flatMap((conversation) => conversation.items);
-  expect(workers).toHaveLength(1);
-  const workerConfig = required(
-    await conversation.harness.snapshot(AgentDoc, required(workers[0]).id, ctx),
-  );
-  expect(workerConfig.instructions).toBe(
-    required(blueprint.templates.worker).settings.worker.instructions,
-  );
-  expect(workerConfig.tools).toEqual([]);
+  expect(children.items.map((task) => task.state.status)).toEqual([
+    "terminal",
+    "terminal",
+  ]);
+  expect(k8s.runningPods()).toEqual([]);
+  expect(conversation.sent).toEqual(["ACK"]);
 });
-it("logs CHAT, background WORK and leaf WORKER without an API/pi observer", async () => {
+it("logs CHAT, WORK and child WORK with their work IDs without an API/pi observer", async () => {
   const records: Record<string, unknown>[] = [];
   vi.spyOn(console, "log").mockImplementation((line) => {
     if (typeof line === "string" && line.startsWith('{"type":"agent_trace"')) {
       records.push(readObject(JSON.parse(line)));
     }
   });
-  const pods = vi.spyOn(k8s, "createPod");
-  const { promise: gate, resolve: release } = Promise.withResolvers<void>();
-  const conversation = await setup(async (system, last, options) => {
-    if (system.includes("Kaeno WORK")) {
-      if (last.role === "user") {
-        await Promise.race([
-          gate,
-          delay(60000, undefined, { signal: options.signal }),
-        ]);
-        return fauxAssistantMessage(
-          [
-            fauxThinking("WORK REASONING"),
-            fauxToolCall(
-              "delegate",
-              { agent: "worker", task: "Reason only" },
-              { id: "leaf" },
-            ),
-          ],
-          { stopReason: "toolUse" },
-        );
+  const conversation = await setup(
+    (system, last) => {
+      if (system.includes("COORDINATOR")) {
+        if (last.role === "user" && text(last).startsWith("Child Work #")) {
+          return reply("WORK REPORT");
+        }
+        if (last.role === "user") {
+          return fauxAssistantMessage(
+            [
+              fauxThinking("WORK REASONING"),
+              fauxToolCall(
+                "start_work",
+                { agent: "leaf", title: "Leaf", brief: "Reason only" },
+                { id: "leaf" },
+              ),
+            ],
+            { stopReason: "toolUse" },
+          );
+        }
+        return reply("Waiting.");
       }
-      return reply("WORK REPORT");
-    }
-    if (system.includes("WORKER")) {
-      return fauxAssistantMessage([
-        fauxThinking("WORKER REASONING"),
-        fauxText("LEAF RESULT"),
-      ]);
-    }
-    if (last.role === "toolResult") {
-      return reply("ACK");
-    }
-    if (text(last).startsWith("Work #")) {
-      return reply("DONE");
-    }
-    return call("start_work", {
-      agent: "kaeno",
-      title: "Trace",
-      brief: "Background reasoning and delegation",
-    });
-  });
-  required(conversation.config.templates.worker).sandbox = false;
-  required(conversation.config.templates.worker).tools = [];
+      if (system.includes("LEAF-PROFILE")) {
+        return fauxAssistantMessage([
+          fauxThinking("LEAF REASONING"),
+          fauxText("LEAF RESULT"),
+        ]);
+      }
+      if (last.role === "toolResult") {
+        return reply("ACK");
+      }
+      if (text(last).startsWith("Work #")) {
+        return reply("DONE");
+      }
+      return call("start_work", {
+        agent: "worker",
+        title: "Trace",
+        brief: "Background reasoning and delegation",
+      });
+    },
+    undefined,
+    {
+      configure: (config) => {
+        required(config.templates.worker).instructions = "COORDINATOR";
+        required(config.templates.worker).delegates = ["leaf"];
+        config.templates.leaf = {
+          ...required(config.templates.kaeno),
+          name: "leaf",
+          description: "leaf",
+          instructions: "LEAF-PROFILE",
+          delegates: [],
+        };
+      },
+    },
+  );
   await conversation.submit("first", "request-trace");
-  await conversation.waitReply("request-trace");
+  await until(async () => conversation.sent.includes("DONE"));
+  const [job] = await conversation.work.listWork(conversation.id);
+  const leaf = records.find((value) => value.content === "LEAF REASONING");
   expect(
     records.some(
       (value) =>
@@ -1404,42 +1374,24 @@ it("logs CHAT, background WORK and leaf WORKER without an API/pi observer", asyn
         value.content === "ACK",
     ),
   ).toBe(true);
-  release();
-  await until(async () => conversation.sent.includes("DONE"));
-  const job = required((await conversation.work.listWork(conversation.id))[0]);
   expect(
     records.some(
       (value) =>
         value.role === "work" &&
-        value.workId === job.id &&
+        value.workId === required(job).id &&
         value.event === "thinking" &&
-        value.content === "WORK REASONING",
+        value.content === "WORK REASONING" &&
+        typeof value.pod === "string",
     ),
   ).toBe(true);
-  expect(
-    records.some(
-      (value) =>
-        value.role === "worker" &&
-        value.workId === job.id &&
-        value.event === "thinking" &&
-        value.content === "WORKER REASONING",
-    ),
-  ).toBe(true);
+  expect(leaf).toMatchObject({ role: "work", agent: "leaf" });
+  expect(required(leaf).workId).not.toBe(required(job).id);
   expect(
     records.some(
       (value) =>
         value.role === "work" &&
         value.event === "tool_start" &&
-        value.tool === "delegate",
+        value.tool === "start_work",
     ),
   ).toBe(true);
-  expect(
-    records.some(
-      (value) =>
-        value.role === "work" &&
-        value.event === "tool_end" &&
-        value.content === "LEAF RESULT",
-    ),
-  ).toBe(true);
-  expect(pods).not.toHaveBeenCalled();
 });

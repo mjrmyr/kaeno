@@ -18,8 +18,8 @@ export interface EnvironmentFactory {
 export interface ManagedSandbox {
   pod: string;
   token: string;
-  images?: SandboxImages;
-  skillCacheClaim?: string;
+  images: SandboxImages;
+  skillCacheClaim: string;
 }
 export interface SandboxLaunch {
   sandbox: ManagedSandbox;
@@ -33,46 +33,28 @@ export class SandboxManager {
   private readonly client: SandboxClient;
   private readonly capacity: SandboxCapacity;
   private readonly environmentFactory: EnvironmentFactory;
-  private readonly images: SandboxImages;
-  private readonly skillCacheClaim: string;
   private readonly environments = new Map<string, ExecutionEnv>();
   constructor(
     harness: () => SandboxRuntime,
     client: SandboxClient,
     capacity: SandboxCapacity,
     environmentFactory: EnvironmentFactory,
-    images: SandboxImages,
-    skillCacheClaim: string,
   ) {
     this.harness = harness;
     this.client = client;
     this.capacity = capacity;
     this.environmentFactory = environmentFactory;
-    this.images = images;
-    this.skillCacheClaim = skillCacheClaim;
   }
-  async ensureSandbox(
-    launch: SandboxLaunch,
-    saveImages: (images: SandboxImages) => Promise<void>,
-    ctx: Context,
-  ): Promise<void> {
+  /** Idempotent: a restarted WORK re-acquires its own reservation and adopts its existing pod. */
+  async ensureSandbox(launch: SandboxLaunch, ctx: Context): Promise<void> {
     const { sandbox } = launch;
     await this.capacity.acquireSandbox(launch.taskId, sandbox.pod, ctx);
-    let images = sandbox.images;
-    if (!images) {
-      const existing = await this.client.getPod(sandbox.pod);
-      images = {
-        execution:
-          existing?.spec?.containers?.[0]?.image ?? this.images.execution,
-      };
-      await saveImages(images);
-    }
     const spec = sandboxPod(
       {
         name: sandbox.pod,
         token: sandbox.token,
-        images,
-        skillCacheClaim: sandbox.skillCacheClaim ?? this.skillCacheClaim,
+        images: sandbox.images,
+        skillCacheClaim: sandbox.skillCacheClaim,
         skills: launch.selection,
         conversationId: launch.conversationId,
         taskId: String(launch.taskId),

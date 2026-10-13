@@ -1,7 +1,8 @@
 // pi provider extension: use kaeno (the durable homelab orchestrator) as a model in pi.
 // Each pi session maps to one durable kaeno thread ("pi:<sessionId>"); kaeno keeps the conversation, so only the
-// newest user message is sent. Kaeno's live trace (its reasoning, delegations and the sub-agents' tool calls) streams
-// into pi's thinking block; kaeno's answer is the reply. Closing pi never stops the work: re-asking resumes it.
+// newest user message is sent. Kaeno CHAT's live trace (its reasoning and the works it starts) streams into pi's
+// thinking block; kaeno's answer is the reply. WORK runs on in sandboxes; its reports arrive as later replies.
+// Closing pi never stops the work: re-asking resumes it.
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";

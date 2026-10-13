@@ -16,10 +16,10 @@ import {
   thread,
 } from "./composition.ts";
 import { FixtureReference } from "./reference.ts";
-import { messageText, readObject, required, serverPort } from "./values.ts";
-// End to end without cloud or cluster: kaeno (faux model) delegates to a sandboxed worker whose tools run through a
-// real envd; the process "crashes" while the worker's command runs, and a new Harness on the same SQLite file
-// finishes the job in the same sandbox, then deletes it.
+import { messageText, required, serverPort } from "./values.ts";
+// End to end without cloud or cluster: CHAT (faux model) starts an orchestrating WORK, which starts a worker WORK; both
+// run in sandboxes whose tools go through a real envd. The process "crashes" while the worker's command runs, and a
+// new Harness on the same SQLite file finishes the tree in the same sandboxes, reports up to CHAT, and deletes them.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
@@ -45,7 +45,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -65,15 +65,10 @@ const listen = (server: ReturnType<typeof createServer>) =>
       ok(`http://127.0.0.1:${serverPort(server)}`),
     ),
   );
-describe("kaeno durable delegation", () => {
-  it.each([
-    { recreate: false, background: false },
-    { recreate: true, background: false },
-    { recreate: false, background: true },
-    { recreate: true, background: true },
-  ])(
-    "loads assigned skills and resumes frozen images (recreate=$recreate, background=$background)",
-    async ({ recreate, background }) => {
+describe("kaeno durable work tree", () => {
+  it.each([{ recreate: false }, { recreate: true }])(
+    "loads assigned skills and resumes nested sandboxed WORK after a crash (recreate=$recreate)",
+    async ({ recreate }) => {
       const dir = await mkdtemp(join(tmpdir(), "kaeno-durable-"));
       const workspace = await mkdtemp(join(tmpdir(), "kaeno-pod-"));
       const store = join(dir, "catalogue");
@@ -133,6 +128,7 @@ describe("kaeno durable delegation", () => {
       const podSchema = z.object({
         metadata: z.object({
           name: z.string(),
+          labels: z.record(z.string(), z.string()),
           annotations: z.record(z.string(), z.string()),
         }),
         spec: z.object({
@@ -153,7 +149,11 @@ describe("kaeno durable delegation", () => {
         }),
       });
       const pods = new Map<string, z.infer<typeof podSchema>>();
-      let podToken = "";
+      const tokens = new Set<string>();
+      // One envd per pod, all on the shared workspace, each accepting only its own pod's token.
+      const envds = new Map<string, { server: Server; url: string }>();
+      const plans: Record<string, string[]> = {};
+      let materializing = Promise.resolve();
       const kube = createServer(async (req, res) => {
         let raw = "";
         for await (const chunk of req) {
@@ -171,13 +171,18 @@ describe("kaeno durable delegation", () => {
             res.writeHead(409).end("{}");
             return;
           }
-          podToken = z
+          const token = z
             .string()
             .parse(
               pod.spec.containers[0].env.find(
                 (environment) => environment.name === "KAENO_ENV_TOKEN",
               )?.value,
             ); // as the pod would get it
+          tokens.add(token);
+          if (!envds.has(pod.metadata.name)) {
+            const server = createEnvServer({ token, root: workspace });
+            envds.set(pod.metadata.name, { server, url: await listen(server) });
+          }
           expect(pod.spec.containers[0].image).toBe("execution-v1");
           expect(pod.spec.initContainers[0].image).toBe("execution-v1");
           expect(
@@ -191,14 +196,18 @@ describe("kaeno durable delegation", () => {
                 z.string().parse(pod.spec.initContainers[0].env[0].value),
               ),
             );
-          await materializeSkillSelection(
-            cache,
-            plan,
-            join(workspace, ".agents/skills"),
+          plans[required(pod.metadata.labels["kaeno.io/template"])] = plan.map(
+            (entry) => entry.id,
           );
-          expect(await readdir(join(workspace, ".agents/skills/demo"))).toEqual(
-            ["worker"],
+          // Real pods materialize into their own filesystems; this shared workspace needs one copy at a time.
+          materializing = materializing.then(() =>
+            materializeSkillSelection(
+              cache,
+              plan,
+              join(workspace, ".agents/skills"),
+            ),
           );
+          await materializing;
           pods.set(pod.metadata.name, pod);
           res.writeHead(201).end(raw);
           return;
@@ -222,21 +231,25 @@ describe("kaeno durable delegation", () => {
       process.env.KUBERNETES_API = await listen(kube);
       process.env.KUBERNETES_TOKEN_FILE = join(dir, "token");
       await writeFile(process.env.KUBERNETES_TOKEN_FILE, "fake");
-      const envd = createEnvServer({ token: () => podToken, root: workspace });
-      const envdUrl = await listen(envd);
-      const { AgentState } = await import("../../src/agents/index.ts");
-      const { answerText } = await import("../../src/threads/index.ts");
       const config: Config = {
         agent: "kaeno",
+        maxDepth: 2,
+        sandboxCapacity: 4,
         skillRepositories: [{ id: "demo/root" }, { id: "demo/worker" }],
         templates: {
           kaeno: {
             name: "kaeno",
+            description: "front desk",
+            model: { provider: "anthropic", modelId: "faux-1" },
+            instructions: "FRONT DESK",
+            delegates: ["orchestrator"],
+            skills: [],
+          },
+          orchestrator: {
+            name: "orchestrator",
             description: "orchestrator",
             model: { provider: "anthropic", modelId: "faux-1" },
             instructions: "ORCHESTRATOR",
-            sandbox: false,
-            tools: [],
             delegates: ["worker"],
             skills: [recreate ? "demo/root:*" : "demo/root:guide"],
           },
@@ -245,22 +258,20 @@ describe("kaeno durable delegation", () => {
             description: "worker",
             model: { provider: "anthropic", modelId: "faux-1" },
             instructions: "WORKER",
-            sandbox: true,
-            tools: ["read", "write", "edit", "bash"],
             delegates: [],
             skills: [recreate ? "demo/worker:*" : "demo/worker:probe"],
           },
         },
         telegram: { allowedChatIds: [] },
       };
-      // One scripted model for both agents, routed by role (system prompt) and the latest message.
+      // One scripted model for every agent, routed by role (system prompt) and the latest message.
       const faux = fauxProvider({ provider: "anthropic" });
       const models = createModels();
       models.setProvider(faux.provider);
       let commandStarted: () => void;
       const started = new Promise<void>((ok) => (commandStarted = ok));
       faux.setResponses(
-        Array.from({ length: 30 }, () => (request: TranscriptContext) => {
+        Array.from({ length: 40 }, () => (request: TranscriptContext) => {
           const system = JSON.stringify(
             request.messages.filter((message) => message.role === "system"),
           );
@@ -282,7 +293,7 @@ describe("kaeno durable delegation", () => {
                 fauxToolCall(
                   "start_work",
                   {
-                    agent: "kaeno",
+                    agent: "orchestrator",
                     title: "Write file",
                     brief: "Please get hello.txt written.",
                   },
@@ -296,9 +307,17 @@ describe("kaeno durable delegation", () => {
             expect(system).not.toContain(
               "Run the assigned script, not unrelated skills.",
             );
-            if (last.role === "toolResult" && last.toolName === "delegate") {
+            if (text.startsWith("Child Work #")) {
               return fauxAssistantMessage([
-                fauxText(`Worker reports: ${text}`),
+                fauxText(
+                  `Worker reports: ${text.split("\n\n").slice(1).join("\n\n")}`,
+                ),
+              ]);
+            }
+            if (last.role === "toolResult" && last.toolName === "start_work") {
+              expect(text).toContain("Started work #");
+              return fauxAssistantMessage([
+                fauxText("Waiting for the worker."),
               ]);
             }
             if (last.role === "toolResult" && last.toolName === "read_skill") {
@@ -306,12 +325,13 @@ describe("kaeno durable delegation", () => {
               return fauxAssistantMessage(
                 [
                   fauxToolCall(
-                    "delegate",
+                    "start_work",
                     {
                       agent: "worker",
-                      task: "Write hello.txt, then run the slow check.",
+                      title: "Hello",
+                      brief: "Write hello.txt, then run the slow check.",
                     },
-                    { id: "d1" },
+                    { id: "child" },
                   ),
                 ],
                 { stopReason: "toolUse" },
@@ -328,7 +348,9 @@ describe("kaeno durable delegation", () => {
               { stopReason: "toolUse" },
             );
           }
+          expect(system).toContain("WORKER");
           expect(system).not.toContain("demo/root:guide");
+          expect(system).not.toContain("Child work templates");
           if (last.role === "user") {
             return fauxAssistantMessage(
               [
@@ -429,27 +451,19 @@ describe("kaeno durable delegation", () => {
           config.skillRepositories,
           {},
         );
-        const work = background
-          ? createWork({
-              harness: () => harnessReference.getHarness(),
-              Turn,
-              config,
-              capture: (agent) =>
-                agentsReference.getValue().captureWorkBlueprint(agent),
-              configure: (tx, child, right, workId) =>
-                agentsReference
-                  .getValue()
-                  .configureWorkConversation(tx, child, right, workId),
-              clean: (id) => agentsReference.getValue().isWorkClean(id),
-            })
-          : undefined;
+        const work = createWork({
+          harness: () => harnessReference.getHarness(),
+          Turn,
+          config,
+          agents: () => agentsReference.getValue(),
+        });
         factory = new AgentFactory(config, catalog, work, workspace);
         agentsReference.setValue(
           createAgents({
             images: { execution: `execution-v${version}` },
             skillCacheClaim: `skill-cache-v${version}`,
             harness: () => harnessReference.getHarness(),
-            sandboxUrl: () => envdUrl,
+            sandboxUrl: (pod) => required(envds.get(pod)).url,
             factory,
           }),
         );
@@ -459,9 +473,7 @@ describe("kaeno durable delegation", () => {
         registry.install(
           defineExtension({ name: "kaeno-channels", tasks: [Turn] }),
         );
-        if (work) {
-          registry.install(work.extension);
-        }
+        registry.install(work.extension);
         harnessReference.setHarness(
           await Harness.open(
             await openNodeSqliteStorage(join(dir, "kaeno.sqlite")),
@@ -477,58 +489,42 @@ describe("kaeno durable delegation", () => {
             BACKGROUND_CONTEXT,
           ),
         );
-        if (background) {
-          harnessReference.getHarness().resume();
-        }
+        harnessReference.getHarness().resume();
         return harnessReference.getHarness();
       };
       const deps = createThreadFixture(() => harnessReference.getHarness(), {
-        role: background ? ("chat" as const) : undefined,
+        role: "chat",
         configure: (tx: Tx, id: ConversationId) =>
           factory.configureAgent(
             tx,
             id,
-            background
-              ? { role: "chat" }
-              : { role: "legacy", agent: config.agent },
+            { role: "chat" },
             agentsReference.getValue().extension,
           ),
       });
       await open();
       const id = await thread(deps, "test:1");
-      const conversation = required(
-        await harnessReference
-          .getHarness()
-          .conversation(id, BACKGROUND_CONTEXT),
-      );
-      if (background) {
-        await harnessReference.getHarness().commit(
-          (tx) =>
-            admitTurn(tx, Turn, {
-              conversationId: id,
-              content: "Please get hello.txt written.",
-              requestId: "req-00001",
-            }),
-          BACKGROUND_CONTEXT,
-        );
-      } else {
-        await conversation.submit(
-          {
-            type: "input",
+      await harnessReference.getHarness().commit(
+        (tx) =>
+          admitTurn(tx, Turn, {
+            conversationId: id,
             content: "Please get hello.txt written.",
             requestId: "req-00001",
-          },
-          BACKGROUND_CONTEXT,
-        );
-      }
+          }),
+        BACKGROUND_CONTEXT,
+      );
       await started; // worker verified the script and is about to run its slow command
-      const childId = parseConversationId(
-        Number(
-          readObject(
-            readObject(readObject(Array.from(pods.values())[0]).metadata)
-              .annotations,
-          )["kaeno.io/conversation"],
+      expect(plans).toEqual({
+        orchestrator: ["demo/root:guide"],
+        worker: ["demo/worker:probe"],
+      });
+      const workerPod = required(
+        [...pods.values()].find(
+          (pod) => pod.metadata.labels["kaeno.io/template"] === "worker",
         ),
+      );
+      const childId = parseConversationId(
+        Number(workerPod.metadata.annotations["kaeno.io/conversation"]),
       );
       let running = false;
       for (let attempt = 0; attempt < 100; attempt++) {
@@ -551,23 +547,21 @@ describe("kaeno durable delegation", () => {
       expect(await readFile(join(workspace, "hello.txt"), "utf8")).toBe(
         "from the sandbox",
       ); // written via envd
+      expect(tokens.size).toBe(2);
+      // Each supervisor entry converges on its pod; repeats are 409 adoptions of the same two pods.
       expect(
-        calls.filter((content) => content.startsWith("POST")),
-      ).toHaveLength(1);
-      agentsReference.getValue().shutdown(); // the process is stopped mid-delegation (SIGTERM)…
-      await harnessReference.getHarness().close(BACKGROUND_CONTEXT);
-      expect(pods.size).toBe(1); // …and the paused delegation keeps its sandbox
+        new Set(calls.filter((content) => content.startsWith("POST"))).size,
+      ).toBe(2);
+      await harnessReference.getHarness().close(BACKGROUND_CONTEXT); // the process is stopped (SIGTERM)…
+      expect(pods.size).toBe(2); // …and the paused tree keeps both sandboxes
       if (recreate) {
         pods.clear();
         for (const name of await readdir(workspace)) {
           await rm(join(workspace, name), { recursive: true, force: true });
-        } // new pod loses workspace
+        } // new pods lose the workspace
       }
-      required(config.templates.worker).skills = []; // current selections changed; active conversations keep bindings
-      required(
-        // current selections changed; active conversations keep bindings
-        config.templates.kaeno,
-      ).skills = [];
+      required(config.templates.worker).skills = []; // current selections changed; active work keeps bindings
+      required(config.templates.orchestrator).skills = [];
       // The current catalogue no longer even contains these skills. Only immutable retained cache + SQLite bindings do.
       await rm(store, { recursive: true, force: true });
       await mkdir(store);
@@ -576,61 +570,26 @@ describe("kaeno durable delegation", () => {
         JSON.stringify({ ...manifest, entries: [] }),
       );
       await open(); // new process, same storage
-      await refreshThreads(deps); // busy root must keep its binding too
-      expect(
-        (
+      await refreshThreads(deps);
+      let answer: string | undefined;
+      for (
+        const end = Date.now() + 15000;
+        Date.now() < end && !answer;
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      ) {
+        answer = (
           await harnessReference
             .getHarness()
-            .snapshot(AgentState, id, BACKGROUND_CONTEXT)
-        )?.skills?.map((state) => state.id),
-      ).toEqual(background ? [] : ["demo/root:guide"]);
-      harnessReference.getHarness().resume();
-      const again = required(
-        await harnessReference
-          .getHarness()
-          .conversation(id, BACKGROUND_CONTEXT),
-      );
-      let answer: string;
-      if (background) {
-        let result: string | undefined;
-        for (
-          const end = Date.now() + 10000;
-          Date.now() < end && !result;
-          await new Promise((resolve) => setTimeout(resolve, 20))
-        ) {
-          result = (
-            await harnessReference
-              .getHarness()
-              .snapshot(TurnLedger, id, BACKGROUND_CONTEXT)
-          )?.replies.find((value) => value.source.kind === "work-result")?.text;
-        }
-        expect(result).toBeDefined();
-        answer = required(result);
-      } else {
-        const settled = await (
-          await again.submit(
-            {
-              type: "input",
-              content: "Please get hello.txt written.",
-              requestId: "req-00001",
-            },
-            BACKGROUND_CONTEXT,
-          )
-        ).wait(BACKGROUND_CONTEXT);
-        expect(settled.status).toBe("done");
-        answer = await answerText(
-          harnessReference.getHarness(),
-          required(settled.answer),
-        );
+            .snapshot(TurnLedger, id, BACKGROUND_CONTEXT)
+        )?.replies.find((value) => value.source.kind === "work-result")?.text;
       }
       expect(answer).toMatch(/^Worker reports: hello.txt written/);
       // The non-replay-safe bash call that the crash cut off is reported to the worker as interrupted, not rerun.
       expect(answer).toMatch(/interrupted/i);
       expect(answer).toContain("skill-probe-ok");
-      // Resumed in the same sandbox: the rerun's create hit 409 (no second pod), and the file is still there.
+      // Resumed in the same sandboxes: re-creates either hit 409 or replace a lost pod; never a third pod.
       const creates = calls.filter((content) => content.startsWith("POST"));
-      expect(creates).toHaveLength(2);
-      expect(new Set(creates).size).toBe(1);
+      expect(new Set(creates).size).toBe(2);
       if (!recreate) {
         expect(await readFile(join(workspace, "hello.txt"), "utf8")).toBe(
           "from the sandbox",
@@ -649,21 +608,15 @@ describe("kaeno durable delegation", () => {
           ),
         ).toContain("skill-probe-ok");
       }
-      // The delegation then completed and deleted its sandbox.
-      expect(
-        calls.some((content) => content.startsWith("DELETE kaeno-sb-")),
-      ).toBe(true);
+      // Every finished WORK deleted its sandbox.
+      for (let attempt = 0; attempt < 100 && pods.size > 0; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
       expect(pods.size).toBe(0);
-      await thread(deps, "test:1"); // next idle admission applies the new root selection
-      expect(
-        (
-          await harnessReference
-            .getHarness()
-            .snapshot(AgentState, id, BACKGROUND_CONTEXT)
-        )?.skills,
-      ).toEqual([]);
       await harnessReference.getHarness().close(BACKGROUND_CONTEXT);
-      await new Promise<void>((ok) => envd.close(() => ok()));
+      for (const { server } of envds.values()) {
+        await new Promise<void>((ok) => server.close(() => ok()));
+      }
       await new Promise<void>((ok) => kube.close(() => ok()));
       await rm(dir, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });

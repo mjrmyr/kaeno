@@ -13,28 +13,52 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
+import { randomBytes } from "node:crypto";
 import {
   readSkillDocument,
   skillPrompt,
   type SandboxImages,
+  type SkillCopySelection,
 } from "../skills/index.ts";
-import { readBlueprint, type WorkBlueprint } from "../work/index.ts";
+import type { WorkBlueprint } from "../work/index.ts";
 import { AgentFactory } from "./agent-factory.ts";
 import { agentLogHooks, type AgentTraceLogger } from "./agent-logs.ts";
-import { AgentState, persistAgentBinding } from "./agent-state.ts";
-import { AgentDelegation, type AgentSandboxes } from "./delegation.ts";
-export interface AgentRuntime extends Pick<Harness, "getTask" | "snapshot"> {}
+import { AgentState, persistAgentBinding, podName } from "./agent-state.ts";
+export interface AgentRuntime extends Pick<Harness, "snapshot"> {}
+export interface ManagedSandboxRecord {
+  pod: string;
+  token: string;
+  images: SandboxImages;
+  skillCacheClaim: string;
+}
+/** Agent-owned requirement, fulfilled structurally by SandboxManager. */
+export interface AgentSandboxes {
+  ensureSandbox(
+    launch: {
+      sandbox: ManagedSandboxRecord;
+      selection: SkillCopySelection;
+      conversationId: string;
+      taskId: TaskId;
+      template: string;
+    },
+    ctx: Context,
+  ): Promise<void>;
+  removeSandbox(pod: string): Promise<void>;
+  getExecutionEnvironment(
+    sandbox: ManagedSandboxRecord,
+    cwd: string,
+  ): ExecutionEnv;
+  sweepOrphanedSandboxes(): Promise<void>;
+}
 export class Agent {
   readonly extension: Extension;
   private readonly factory: AgentFactory;
-  private readonly delegation: AgentDelegation;
   private readonly harness: () => AgentRuntime;
   private readonly sandboxes: AgentSandboxes;
   private readonly images: SandboxImages;
   private readonly skillCacheClaim: string;
   constructor(
     factory: AgentFactory,
-    delegation: AgentDelegation,
     harness: () => AgentRuntime,
     sandboxes: AgentSandboxes,
     images: SandboxImages,
@@ -42,26 +66,10 @@ export class Agent {
     logger: AgentTraceLogger,
   ) {
     this.factory = factory;
-    this.delegation = delegation;
     this.harness = harness;
     this.sandboxes = sandboxes;
     this.images = images;
     this.skillCacheClaim = skillCacheClaim;
-    const delegate = defineTool({
-      name: "delegate",
-      description:
-        "Delegate a self-contained task to a new sub-agent created from an agent template and get its final report back. Sandboxed templates get their own isolated container, which is deleted when the task ends.",
-      parameters: Type.Object({
-        agent: Type.String({ description: "Agent template to use" }),
-        task: Type.String({
-          description:
-            "Complete, self-contained instructions; the sub-agent sees nothing else",
-        }),
-      }),
-      replay: "safe",
-      execute: (args, api, ctx) =>
-        this.delegation.executeDelegation(args, api, ctx, this.extension),
-    });
     const readSkill = defineTool({
       name: "read_skill",
       description:
@@ -92,7 +100,7 @@ export class Agent {
     });
     this.extension = defineExtension({
       name: "kaeno",
-      tools: [delegate, readSkill],
+      tools: [readSkill],
       hooks: agentLogHooks(AgentState, logger),
       sections: [
         section("skills", async ({ conversationId, read }, ctx) =>
@@ -109,27 +117,41 @@ export class Agent {
       agent,
       this.images,
       this.skillCacheClaim,
-      this.extension,
     );
   }
+  /** Configure a WORK conversation and reserve its sandbox identity; the pod starts in provisionWorkSandbox. */
   async configureWorkConversation(
     tx: Tx,
     id: ConversationId,
-    value: WorkBlueprint,
-    workId?: TaskId,
+    setup: {
+      blueprint: WorkBlueprint;
+      agent: string;
+      workId: TaskId;
+      orchestrate: boolean;
+    },
   ): Promise<void> {
-    const blueprint = readBlueprint(value);
     const binding = await this.factory.configureAgent(
       tx,
       id,
-      { role: "work", blueprint },
+      {
+        role: "work",
+        blueprint: setup.blueprint,
+        agent: setup.agent,
+        orchestrate: setup.orchestrate,
+      },
       this.extension,
     );
     await persistAgentBinding(tx, id, binding, {
       role: "work",
-      workId,
-      blueprint,
+      workId: setup.workId,
     });
+    const state = await tx.doc(AgentState, id);
+    state.sandbox = {
+      pod: podName(id),
+      token: randomBytes(24).toString("hex"),
+      images: { execution: setup.blueprint.images.execution },
+      skillCacheClaim: setup.blueprint.skillCacheClaim,
+    };
   }
   async configureChatConversation(tx: Tx, id: ConversationId): Promise<void> {
     const binding = await this.factory.configureAgent(
@@ -140,26 +162,36 @@ export class Agent {
     );
     await persistAgentBinding(tx, id, binding, { role: "chat" });
   }
-  async isWorkClean(workId: TaskId): Promise<boolean> {
-    for (const reservation of await this.sandboxes.listReservations()) {
-      const task = await this.harness().getTask(
-        reservation.id,
-        BACKGROUND_CONTEXT,
-      );
-      if (
-        task &&
-        (
-          await this.harness().snapshot(
-            AgentState,
-            task.conversationId,
-            BACKGROUND_CONTEXT,
-          )
-        )?.workId === workId
-      ) {
-        return false;
-      }
+  async provisionWorkSandbox(
+    id: ConversationId,
+    workId: TaskId,
+    ctx: Context,
+  ): Promise<void> {
+    const state = await this.harness().snapshot(AgentState, id, ctx);
+    if (!state?.sandbox || !state.template) {
+      throw new Error(`WORK conversation ${id} has no sandbox record`);
     }
-    return true;
+    await this.sandboxes.ensureSandbox(
+      {
+        sandbox: state.sandbox,
+        selection: (state.skills ?? []).map((skill) => ({
+          id: skill.id,
+          treeHash: skill.treeHash,
+        })),
+        conversationId: String(id),
+        taskId: workId,
+        template: state.template,
+      },
+      ctx,
+    );
+  }
+  async releaseWorkSandbox(id: ConversationId): Promise<void> {
+    const sandbox = (
+      await this.harness().snapshot(AgentState, id, BACKGROUND_CONTEXT)
+    )?.sandbox;
+    if (sandbox) {
+      await this.sandboxes.removeSandbox(sandbox.pod);
+    }
   }
   getExecutionEnvironment = async (
     { conversationId, cwd, read }: EnvTarget,
@@ -177,8 +209,5 @@ export class Agent {
   };
   sweepOrphanedSandboxes(): Promise<void> {
     return this.sandboxes.sweepOrphanedSandboxes();
-  }
-  shutdown(): void {
-    this.delegation.shutdown();
   }
 }

@@ -7,10 +7,8 @@ import {
   type RepositorySpec,
 } from "../skills/index.ts";
 export const PROVIDERS = ["anthropic", "openai"] as const;
-export const CODING_TOOLS = ["read", "write", "edit", "bash"] as const;
 const THINKING = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 export type Provider = (typeof PROVIDERS)[number];
-export type CodingTool = (typeof CODING_TOOLS)[number];
 export interface Template {
   name: string;
   description: string;
@@ -20,13 +18,14 @@ export interface Template {
   };
   thinkingLevel?: ModelThinkingLevel;
   instructions: string;
-  sandbox: boolean;
-  tools: CodingTool[];
   delegates: string[];
   skills: string[];
 }
 export interface Config {
   agent: string;
+  /** WORK levels below CHAT. 1: only CHAT starts work; 2: those WORK agents may start leaf WORK too. */
+  maxDepth: number;
+  sandboxCapacity: number;
   skillRepositories: RepositorySpec[];
   templates: Record<string, Template>;
   telegram: {
@@ -34,18 +33,21 @@ export interface Config {
   };
 }
 const nonempty = z.string().refine((value) => value.trim().length > 0);
-const templateSchema = z.object({
-  description: nonempty,
-  model: nonempty,
-  thinkingLevel: z.enum(THINKING).optional(),
-  instructions: nonempty,
-  sandbox: z.boolean().default(false),
-  tools: z.array(z.enum(CODING_TOOLS)).default([]),
-  delegates: z.array(z.string()).default([]),
-  skills: z.unknown().optional(),
-});
+// Strict: removed per-template execution switches (sandbox/tools) must fail loudly, not be ignored.
+const templateSchema = z
+  .object({
+    description: nonempty,
+    model: nonempty,
+    thinkingLevel: z.enum(THINKING).optional(),
+    instructions: nonempty,
+    delegates: z.array(z.string()).default([]),
+    skills: z.unknown().optional(),
+  })
+  .strict();
 const configSchema = z.object({
   agent: nonempty,
+  maxDepth: z.number().int().min(1).max(8).default(2),
+  sandboxCapacity: z.number().int().min(1).default(4),
   skillRepositories: z.unknown().optional(),
   templates: z.record(
     z.string().regex(/^[a-z][a-z0-9-]{0,30}$/),
@@ -78,19 +80,12 @@ export function parseConfig(raw: unknown): Config {
         `Invalid kaeno config: ${name}.model must be one of ${PROVIDERS.join(", ")}/<model-id>`,
       );
     }
-    if (template.tools.length > 0 && !template.sandbox) {
-      throw new Error(
-        `Invalid kaeno config: ${name}: coding tools require sandbox: true`,
-      );
-    }
     templates[name] = {
       name,
       description: template.description,
       model: { provider: provider.data, modelId: rest.join("/") },
       thinkingLevel: template.thinkingLevel,
       instructions: template.instructions,
-      sandbox: template.sandbox,
-      tools: template.tools,
       delegates: template.delegates,
       skills: parseSkillSelection(template.skills, skillRepositories),
     };
@@ -111,6 +106,8 @@ export function parseConfig(raw: unknown): Config {
   }
   return {
     agent: config.agent,
+    maxDepth: config.maxDepth,
+    sandboxCapacity: config.sandboxCapacity,
     skillRepositories,
     templates,
     telegram: config.telegram,

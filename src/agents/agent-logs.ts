@@ -70,7 +70,7 @@ export class AgentTraceLogger {
           event,
           conversationId: ctx.conversationId,
           taskId: ctx.taskId,
-          role: ctx.role ?? "legacy",
+          role: ctx.role ?? "unknown",
           agent: ctx.template,
           workId: ctx.workId,
           pod: ctx.sandbox?.pod,

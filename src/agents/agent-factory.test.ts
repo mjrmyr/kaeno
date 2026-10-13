@@ -14,9 +14,16 @@ vi.mock("@earendil-works/pi-durable", async () => {
   const { createMockSdk } = await import("../../test/mocks/sdk.ts");
   return createMockSdk();
 });
-vi.mock("@earendil-works/pi-durable/tools", () => ({
-  CodingTools: { name: "coding-tools", tools: [] },
-}));
+vi.mock("@earendil-works/pi-durable/tools", async () => {
+  const { Type } = await import("@earendil-works/pi-ai");
+  const bash = {
+    name: "bash",
+    description: "bash",
+    parameters: Type.Object({}),
+    execute: async () => ({ content: [] }),
+  };
+  return { CodingTools: { name: "coding-tools", tools: [bash] } };
+});
 vi.mock("../config/index.ts", () => ({
   eligibleWorkTemplates: (config: Config): Template[] =>
     Object.values(config.templates),
@@ -27,11 +34,8 @@ vi.mock("../work/index.ts", () => ({
     ...value,
     digest: "mocked-policy-digest",
   }),
-  storageCopy: <T>(value: T): T => value,
   frozenEntry: (snapshot: WorkBlueprint, name: string) =>
     snapshot.templates[name],
-  workRoot: (snapshot: WorkBlueprint) => snapshot.templates[snapshot.agent],
-  readBlueprint: (snapshot: WorkBlueprint): WorkBlueprint => snapshot,
 }));
 function tool(name: string): ToolRegistration {
   return {
@@ -45,6 +49,8 @@ function tool(name: string): ToolRegistration {
 function configuration(): Config {
   return {
     agent: "root",
+    maxDepth: 3,
+    sandboxCapacity: 4,
     skillRepositories: [],
     telegram: { allowedChatIds: [] },
     templates: {
@@ -53,8 +59,6 @@ function configuration(): Config {
         description: "front desk",
         model: { provider: "anthropic", modelId: "root-model" },
         instructions: "Root profile",
-        sandbox: false,
-        tools: [],
         skills: [],
         delegates: ["worker"],
       },
@@ -63,8 +67,6 @@ function configuration(): Config {
         description: "worker",
         model: { provider: "openai", modelId: "worker-model" },
         instructions: "Worker profile",
-        sandbox: true,
-        tools: [],
         skills: ["demo/skills:guide"],
         delegates: ["root"],
       },
@@ -72,46 +74,44 @@ function configuration(): Config {
   };
 }
 function workSurface(): WorkToolSurface {
-  const tools = [tool("start_work"), tool("list_work"), tool("cancel_work")];
-  return { extension: { name: "kaeno-work", tools }, tools };
+  const orchestrationTools = [tool("start_work"), tool("message_work")];
+  const parentTools = [tool("ask_parent")];
+  return {
+    extension: {
+      name: "kaeno-work",
+      tools: [...orchestrationTools, ...parentTools],
+    },
+    orchestrationTools,
+    parentTools,
+  };
 }
+const agentExtension = { name: "kaeno", tools: [tool("read_skill")] };
 it("binds through the injected skill contract and rejects unknown selections", () => {
   const skills: AgentSkills = {
     bindSkills: vi.fn<AgentSkills["bindSkills"]>().mockReturnValue([]),
   };
-  const factory = new AgentFactory(configuration(), skills);
+  const factory = new AgentFactory(configuration(), skills, workSurface());
   expect(factory.bindAgent("worker").template.name).toBe("worker");
   expect(skills.bindSkills).toHaveBeenCalledWith(["demo/skills:guide"]);
   expect(() => factory.bindAgent("missing")).toThrow(/Unknown agent/);
 });
-it("captures each reachable template once, including cycles, with injected image/cwd decisions", () => {
+it("captures each reachable template once, including cycles, with the injected image and the depth limit", () => {
   const skills: AgentSkills = {
     bindSkills: vi.fn<AgentSkills["bindSkills"]>().mockReturnValue([]),
   };
-  const factory = new AgentFactory(
-    configuration(),
-    skills,
-    workSurface(),
-    "/chosen-workspace",
-  );
+  const factory = new AgentFactory(configuration(), skills, workSurface());
   const snapshot = factory.captureWorkBlueprint(
     "root",
     { execution: "chosen-image" },
     "chosen-cache",
-    { name: "kaeno" },
   );
   expect(Object.keys(snapshot.templates).sort()).toEqual(["root", "worker"]);
   expect(skills.bindSkills).toHaveBeenCalledTimes(2);
+  expect(snapshot.maxDepth).toBe(3);
   expect(snapshot.images).toEqual({ execution: "chosen-image" });
   expect(snapshot.skillCacheClaim).toBe("chosen-cache");
-  expect(snapshot.templates.worker.settings.worker.cwd).toBe(
-    "/chosen-workspace",
-  );
-  expect(snapshot.templates.worker.settings.worker.tools).not.toContain(
-    "delegate",
-  );
 });
-it("passes explicit configuration fields to the SDK instead of inheriting settings", async () => {
+it("configures CHAT with orchestration only: no coding tools, no sandbox cwd", async () => {
   const factory = new AgentFactory(
     configuration(),
     { bindSkills: () => [] },
@@ -119,15 +119,11 @@ it("passes explicit configuration fields to the SDK instead of inheriting settin
   );
   const tx = createMockTransaction();
   const id = conversationId(12);
-  const extension = {
-    name: "kaeno",
-    tools: [tool("delegate"), tool("read_skill")],
-  };
   const bound = await factory.configureAgent(
     tx,
     id,
     { role: "chat" },
-    extension,
+    agentExtension,
   );
   expect(bound.template.name).toBe("root");
   expect(configure).toHaveBeenCalledWith(
@@ -137,23 +133,74 @@ it("passes explicit configuration fields to the SDK instead of inheriting settin
       model: { provider: "anthropic", modelId: "root-model" },
       thinkingLevel: null,
       cwd: null,
-      tools: workSurface().tools.map((registration) =>
-        expect.objectContaining({ name: registration.name }),
-      ),
-      extensions: expect.any(Array),
-      instructions: expect.stringContaining("Root profile"),
+      tools: [
+        expect.objectContaining({ name: "start_work" }),
+        expect.objectContaining({ name: "message_work" }),
+      ],
+      extensions: [
+        expect.objectContaining({ name: "kaeno" }),
+        expect.objectContaining({ name: "kaeno-work" }),
+      ],
+      instructions: expect.stringContaining("- worker: worker"),
     }),
   );
 });
-it("fails before SDK configuration when CHAT has no work capability provider", async () => {
-  const factory = new AgentFactory(configuration(), { bindSkills: () => [] });
-  await expect(
-    factory.configureAgent(
-      createMockTransaction(),
-      conversationId(12),
-      { role: "chat" },
-      { name: "kaeno" },
-    ),
-  ).rejects.toThrow(/WORK/);
-  expect(configure).not.toHaveBeenCalled();
-});
+it.each([
+  [true, ["bash", "ask_parent", "start_work", "message_work", "read_skill"]],
+  [false, ["bash", "ask_parent", "read_skill"]],
+])(
+  "configures WORK in its sandbox with coding tools and orchestration only when allowed (orchestrate=%s)",
+  async (orchestrate, tools) => {
+    const factory = new AgentFactory(
+      configuration(),
+      { bindSkills: () => [] },
+      workSurface(),
+      "/chosen-workspace",
+    );
+    const blueprint = factory.captureWorkBlueprint(
+      "root",
+      { execution: "image" },
+      "cache",
+    );
+    const tx = createMockTransaction();
+    await factory.configureAgent(
+      tx,
+      conversationId(13),
+      {
+        role: "work",
+        blueprint: {
+          ...blueprint,
+          templates: {
+            ...blueprint.templates,
+            worker: {
+              ...blueprint.templates.worker,
+              skills: [
+                {
+                  id: "demo/skills:guide",
+                  description: "guide",
+                  disableModelInvocation: false,
+                  repositoryCommit: "a",
+                  treeHash: "b",
+                  sandboxRoot: "/s",
+                  documents: { "SKILL.md": "x" },
+                },
+              ],
+            },
+          },
+        },
+        agent: "worker",
+        orchestrate,
+      },
+      agentExtension,
+    );
+    const change = vi.mocked(configure).mock.calls[0]?.[2];
+    expect(change?.cwd).toBe("/chosen-workspace");
+    expect(
+      Array.isArray(change?.tools) && change.tools.map((entry) => entry.name),
+    ).toEqual(tools);
+    expect(change?.instructions).toContain("Kaeno WORK");
+    expect(String(change?.instructions).includes("Child work templates")).toBe(
+      orchestrate,
+    );
+  },
+);

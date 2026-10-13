@@ -2,7 +2,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AgentDoc, configure, type Harness } from "@earendil-works/pi-durable";
 import { afterEach, expect, it, vi } from "vitest";
 import { AgentFactory, type AgentSelection } from "../../src/agents/index.ts";
-import { frozenEntry, storageCopy, workRoot } from "../../src/work/index.ts";
+import { frozenEntry } from "../../src/work/index.ts";
 import {
   createAgentFixture,
   guide,
@@ -20,51 +20,67 @@ async function open(): Promise<Harness> {
   opened.push(harness);
   return harness;
 }
+const orchestration = [
+  "start_work",
+  "list_work",
+  "inspect_work",
+  "message_work",
+  "cancel_work",
+];
+const coding = ["read", "write", "edit", "bash"];
 const matrix: {
   role: AgentSelection["role"];
   agent: string;
+  orchestrate?: boolean;
   tools: string[];
+  extensions: string[];
   cwd?: string;
 }[] = [
   {
     role: "chat",
     agent: "chat",
-    tools: ["start_work", "list_work", "cancel_work"],
+    tools: orchestration,
+    extensions: ["kaeno", "kaeno-work"],
   },
-  { role: "work", agent: "chat", tools: ["delegate"] },
-  { role: "work", agent: "swe", tools: ["read_skill", "delegate"] },
-  { role: "work", agent: "leaf", tools: [] },
-  { role: "worker", agent: "chat", tools: [] },
   {
-    role: "worker",
+    role: "work",
     agent: "swe",
-    tools: ["bash", "read", "write", "edit", "read_skill"],
+    orchestrate: true,
+    tools: [...coding, "ask_parent", ...orchestration, "read_skill"],
+    extensions: ["coding-tools", "kaeno", "kaeno-work"],
     cwd: "/custom-workspace",
   },
-  { role: "worker", agent: "leaf", tools: [] },
-  { role: "legacy", agent: "chat", tools: ["delegate"] },
   {
-    role: "legacy",
+    role: "work",
     agent: "swe",
-    tools: ["bash", "read", "write", "edit", "read_skill", "delegate"],
+    orchestrate: false,
+    tools: [...coding, "ask_parent", "read_skill"],
+    extensions: ["coding-tools", "kaeno", "kaeno-work"],
     cwd: "/custom-workspace",
   },
-  { role: "legacy", agent: "leaf", tools: [] },
+  {
+    role: "work",
+    agent: "leaf",
+    orchestrate: false,
+    tools: [...coding, "ask_parent"],
+    extensions: ["coding-tools", "kaeno", "kaeno-work"],
+    cwd: "/custom-workspace",
+  },
 ];
 it.each(matrix)(
-  "configures exact $role/$agent capabilities and clears inherited settings",
-  async ({ role, agent, tools, cwd }) => {
+  "configures exact $role/$agent (orchestrate=$orchestrate) capabilities and clears inherited settings",
+  async ({ role, agent, orchestrate, tools, extensions, cwd }) => {
     const { config, factory, agents } = createAgentFixture();
     const harness = await open();
-    const blueprint = agents.captureWorkBlueprint(agent);
-    let selection: AgentSelection;
-    if (role === "chat") {
-      selection = { role };
-    } else if (role === "work") {
-      selection = { role, blueprint };
-    } else {
-      selection = { role, agent };
-    }
+    const selection: AgentSelection =
+      role === "chat"
+        ? { role }
+        : {
+            role,
+            agent,
+            orchestrate: orchestrate ?? false,
+            blueprint: agents.captureWorkBlueprint("chat"),
+          };
     const id = await harness.commit(async (tx) => {
       const conversation = await tx.createConversation({
         ownership: { kind: "ownerless" },
@@ -89,7 +105,7 @@ it.each(matrix)(
     expect(stored).toMatchObject({
       model: config.templates[agent].model,
       tools,
-      extensions: ["coding-tools", "kaeno", "kaeno-work"],
+      extensions,
     });
     expect(stored?.thinkingLevel).toBe(config.templates[agent].thinkingLevel);
     expect(stored?.cwd).toBe(cwd);
@@ -98,16 +114,15 @@ it.each(matrix)(
     );
   },
 );
-it("replays saved role settings and skills after the live catalog/configuration/cwd change", async () => {
+it("configures WORK from its frozen blueprint after the live catalog and configuration change", async () => {
   const { config, catalog, agents, work } = createAgentFixture();
   const blueprint = agents.captureWorkBlueprint("swe");
   config.templates.swe.model = { provider: "anthropic", modelId: "changed" };
   config.templates.swe.instructions = "CHANGED";
-  config.templates.swe.tools = [];
   catalog.bindSkills = () => {
     throw new Error("Live catalog must not be consulted");
   };
-  const later = new AgentFactory(config, catalog, work, "/changed");
+  const later = new AgentFactory(config, catalog, work, "/custom-workspace");
   const harness = await open();
   const id = await harness.commit(async (tx) => {
     const conversation = await tx.createConversation({
@@ -116,72 +131,34 @@ it("replays saved role settings and skills after the live catalog/configuration/
     const bound = await later.configureAgent(
       tx,
       conversation.id,
-      { role: "worker", agent: "swe", blueprint },
+      { role: "work", agent: "swe", blueprint, orchestrate: true },
       agents.extension,
     );
     expect(bound.skills).toEqual(guide);
     return conversation.id;
   }, ctx);
-  expect(await harness.snapshot(AgentDoc, id, ctx)).toMatchObject({
+  const stored = await harness.snapshot(AgentDoc, id, ctx);
+  expect(stored).toMatchObject({
     model: { provider: "openai", modelId: "swe" },
     cwd: "/custom-workspace",
-    tools: ["bash", "read", "write", "edit", "read_skill"],
   });
-  expect(config.templates.swe.instructions).toBe("CHANGED");
+  expect(stored?.instructions).toContain("SWE PROFILE");
+  expect(stored?.instructions).not.toContain("CHANGED");
 });
-it("fails visibly when a saved tool or extension implementation is unavailable", async () => {
-  const { config, catalog, work, agents } = createAgentFixture();
-  const draft = storageCopy(agents.captureWorkBlueprint("swe"));
-  const harness = await open();
-  const noWork = new AgentFactory(config, catalog);
-  await expect(
-    harness.commit(async (tx) => {
-      const conversation = await tx.createConversation({
-        ownership: { kind: "ownerless" },
-      });
-      await noWork.configureAgent(
-        tx,
-        conversation.id,
-        { role: "work", blueprint: draft },
-        agents.extension,
-      );
-    }, ctx),
-  ).rejects.toThrow("extension");
-  const noDelegate = {
-    ...agents.extension,
-    tools: (agents.extension.tools ?? []).filter(
-      (tool) => tool.name !== "delegate",
-    ),
-  };
-  const factory = new AgentFactory(config, catalog, work);
-  await expect(
-    harness.commit(async (tx) => {
-      const conversation = await tx.createConversation({
-        ownership: { kind: "ownerless" },
-      });
-      await factory.configureAgent(
-        tx,
-        conversation.id,
-        { role: "work", blueprint: draft },
-        noDelegate,
-      );
-    }, ctx),
-  ).rejects.toThrow("tool");
-});
-it("takes one immutable reachable snapshot, resolves cycles, and keeps workers leaves", () => {
+it("takes one immutable reachable snapshot with the depth limit and resolves cycles", () => {
   const { config, agents } = createAgentFixture();
   const blueprint = agents.captureWorkBlueprint("swe");
   expect(Object.keys(blueprint.templates).sort()).toEqual(["leaf", "swe"]);
+  expect(blueprint.maxDepth).toBe(config.maxDepth);
   expect(Object.isFrozen(blueprint)).toBe(true);
   expect(Object.isFrozen(blueprint.templates.swe.skills[0].documents)).toBe(
     true,
-  );
-  expect(frozenEntry(blueprint, "swe").settings.worker.tools).not.toContain(
-    "delegate",
   );
   expect(
     Reflect.set(blueprint.templates.swe.template, "instructions", "changed"),
   ).toBe(false);
   config.templates.swe.instructions = "changed";
-  expect(workRoot(blueprint).template.instructions).toBe("SWE PROFILE");
+  expect(frozenEntry(blueprint, "swe").template.instructions).toBe(
+    "SWE PROFILE",
+  );
 });

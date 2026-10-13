@@ -138,7 +138,7 @@ it("admits four workers, preserves leases across allocator recreation, and relea
     }, ctx);
     await expect(
       slots.acquireSandbox(overflow, "overflow", ctx),
-    ).rejects.toThrow("128 pending delegates");
+    ).rejects.toThrow("128 pending works");
   } finally {
     await harness.close(ctx);
     vi.restoreAllMocks();

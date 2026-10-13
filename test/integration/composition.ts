@@ -7,7 +7,6 @@ import {
   watchEvents,
   type ConversationId,
   type Harness,
-  type TaskId,
   type Tx,
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
@@ -15,11 +14,9 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { readFile } from "node:fs/promises";
 import {
   Agent,
-  AgentDelegation,
   AgentFactory,
   AgentTraceLogger,
   persistAgentBinding,
-  type DelegationRuntime,
   type WorkToolSurface,
 } from "../../src/agents/index.ts";
 import { ApiServer } from "../../src/api/index.ts";
@@ -45,7 +42,7 @@ import {
 import {
   Work,
   type BoundAgent,
-  type WorkBlueprint,
+  type WorkAgents,
 } from "../../src/work/index.ts";
 import * as sandboxClient from "./sandbox-fixture.ts";
 interface AgentOptions {
@@ -74,8 +71,8 @@ export function createAgents(options: AgentOptions): Agent {
       cwd: string,
     ): ExecutionEnv =>
       new RemoteExecutionEnv(
-        options.sandboxUrl?.(pod) ??
-          `http://${pod}.kaeno-sandbox.kaeno.svc.cluster.local:7070`,
+        // Default: a closed local port, so tests without envd fail fast instead of waiting on cluster DNS.
+        options.sandboxUrl?.(pod) ?? "http://127.0.0.1:9",
         token,
         `pod:${pod}`,
         cwd,
@@ -87,21 +84,12 @@ export function createAgents(options: AgentOptions): Agent {
     client,
     capacity,
     environmentFactory,
-    options.images,
-    options.skillCacheClaim,
-  );
-  const delegation = new AgentDelegation(
-    options.factory,
-    sandboxes,
-    options.images,
-    options.skillCacheClaim,
   );
   const logSecrets = Object.entries(process.env)
     .filter(([name]) => /TOKEN|API_KEY|PASSWORD|SECRET|PRIVATE_KEY/i.test(name))
     .flatMap(([, value]) => (value ? [value] : []));
   return new Agent(
     options.factory,
-    delegation,
     options.harness,
     sandboxes,
     options.images,
@@ -114,14 +102,7 @@ interface WorkOptions {
   Turn: TurnTask;
   Control?: ControlTask;
   config: Config;
-  capture(agent: string): WorkBlueprint;
-  configure(
-    tx: Tx,
-    id: ConversationId,
-    blueprint: WorkBlueprint,
-    workId: TaskId,
-  ): Promise<void>;
-  clean?(id: TaskId): Promise<boolean>;
+  agents: () => WorkAgents;
   maxActive?: number;
 }
 export function createWork(options: WorkOptions): Work {
@@ -135,17 +116,11 @@ export function createWork(options: WorkOptions): Work {
     options.Turn,
     Control,
   );
-  const agents = {
-    configureWorkConversation: options.configure,
-    isWorkClean: options.clean ?? (async () => true),
-  };
-  const blueprints = { captureWorkBlueprint: options.capture };
   const work: Work = new Work(
     options.harness,
     turns,
     { listWorkTemplates: () => eligibleWorkTemplates(options.config) },
-    () => agents,
-    () => blueprints,
+    options.agents,
     options.maxActive,
   );
   return work;
@@ -221,50 +196,34 @@ export function createEnvServer(options: {
 export function sandboxSlots(harness: () => Harness): SandboxCapacity {
   return new SandboxCapacity(harness, sandboxClient);
 }
-export function createNoopWorkSurface(
-  names = ["start_work", "list_work", "cancel_work"],
-): WorkToolSurface {
-  const tools = names.map((name) =>
+export function createNoopWorkSurface(): WorkToolSurface {
+  const tool = (name: string) =>
     defineTool({
       name,
       description: name,
       parameters: Type.Object({}),
       replay: "safe",
       execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
-    }),
-  );
-  return { tools, extension: defineExtension({ name: "kaeno-work", tools }) };
-}
-export function createDelegationRuntime(
-  harness: Harness,
-  conversationId: ConversationId,
-  taskId: TaskId,
-): DelegationRuntime {
+    });
+  const orchestrationTools = [
+    "start_work",
+    "list_work",
+    "inspect_work",
+    "message_work",
+    "cancel_work",
+  ].map(tool);
+  const parentTools = [tool("ask_parent")];
   return {
-    conversationId,
-    taskId,
-    snapshot: harness.snapshot.bind(harness),
-    commit: harness.commit.bind(harness),
-    details: async () => {},
-    conversation: async (id, ctx) => {
-      const conversation = await harness.conversation(id, ctx);
-      if (!conversation) {
-        return undefined;
-      }
-      return {
-        id,
-        abort: conversation.abort.bind(conversation),
-        waitForIdle: conversation.waitForIdle.bind(conversation),
-        submit: async (input, context) => {
-          const submission = await conversation.submit(input, context);
-          await submission.abort(context);
-          return submission;
-        },
-      };
-    },
+    orchestrationTools,
+    parentTools,
+    extension: defineExtension({
+      name: "kaeno-work",
+      tools: [...orchestrationTools, ...parentTools],
+    }),
   };
 }
-export const historicalWorkTask = defineTask<
+/** Same identity as the production Work definition: lets a test store a queued Work task the real one executes. */
+export const queuedWorkTask = defineTask<
   unknown,
   {
     phase: "start";
@@ -272,7 +231,7 @@ export const historicalWorkTask = defineTask<
   unknown
 >({
   name: "kaeno.work",
-  version: 1,
+  version: 2,
   initial: () => ({ phase: "start" }),
   phases: { start: async () => {} },
   abort: async () => {},

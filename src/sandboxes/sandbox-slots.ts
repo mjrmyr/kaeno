@@ -95,7 +95,7 @@ export class SandboxCapacity {
       ) {
         if (slots.waiting.length >= 128) {
           throw new Error(
-            "Sandbox queue has 128 pending delegates; reduce fanout or retry later",
+            "Sandbox queue has 128 pending works; reduce fanout or retry later",
           );
         }
         slots.waiting.push({ id, pod });

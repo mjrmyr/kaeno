@@ -42,8 +42,8 @@ export function describeTool(name: string, raw: unknown): string {
   if (name === "start_work") {
     return `▸ starting work: ${oneLine(String(args?.title ?? ""))}`;
   }
-  if (name === "delegate") {
-    return `▸ delegating to ${args?.agent}: ${oneLine(String(args?.task ?? ""), 300)}`;
+  if (name === "message_work") {
+    return `▸ message to work #${args?.id}: ${oneLine(String(args?.text ?? ""))}`;
   }
   if (name === "read_skill") {
     return oneLine(
@@ -52,7 +52,7 @@ export function describeTool(name: string, raw: unknown): string {
   }
   return oneLine(`${name} ${String(args?.path ?? "")}`);
 }
-/** Follow a conversation and the sub-agents it delegates to, as human-readable trace lines. */
+/** Follow one conversation as human-readable trace lines. WORK runs after the turn; inspect it with list_work. */
 export interface ConversationEvents {
   watchConversation(
     id: ConversationId,
@@ -65,78 +65,41 @@ export async function traceConversation(
   emit: (line: string) => void,
   context: Context,
 ): Promise<() => Promise<unknown>> {
-  const streams: {
-    stop(): Promise<unknown>;
-  }[] = [];
-  const attached = new Set<ConversationId>();
-  const follow = async (id: ConversationId, prefix: string) => {
-    attached.add(id);
-    const stream = await events.watchConversation(id, context);
-    streams.push(stream);
-    let text = "";
-    stream.start(async (events: readonly AgentEvent[]) => {
-      for (const eventValue of events) {
-        if (eventValue.type === "message_update") {
-          for (const chunk of eventValue.changes) {
-            if (
-              chunk.type === "text_delta" ||
-              chunk.type === "thinking_delta"
-            ) {
-              text += chunk.delta;
-            }
+  const stream = await events.watchConversation(conversationId, context);
+  let text = "";
+  stream.start(async (events: readonly AgentEvent[]) => {
+    for (const eventValue of events) {
+      if (eventValue.type === "message_update") {
+        for (const chunk of eventValue.changes) {
+          if (chunk.type === "text_delta" || chunk.type === "thinking_delta") {
+            text += chunk.delta;
           }
-          // Flush complete lines so the trace reads like a log, not a token stream.
-          const nl = text.lastIndexOf("\n");
-          if (nl >= 0) {
-            for (const line of text.slice(0, nl).split("\n")) {
-              if (line.trim()) {
-                emit(`${prefix}${line}`);
-              }
-            }
-            text = text.slice(nl + 1);
-          }
-        } else if (eventValue.type === "message_end") {
-          if (text.trim()) {
-            emit(`${prefix}${text.trim()}`);
-          }
-          text = "";
-        } else if (eventValue.type === "tool_execution_start") {
-          emit(
-            `${prefix}${describeTool(eventValue.toolName, eventValue.args)}`,
-          );
-        } else if (eventValue.type === "tool_execution_update") {
-          const details = z
-            .object({
-              conversationId: z.custom<ConversationId>(
-                (value) =>
-                  typeof value === "number" &&
-                  Number.isSafeInteger(value) &&
-                  value > 0,
-              ),
-              agent: z.string(),
-            })
-            .safeParse(eventValue.details);
-          if (details.success && !attached.has(details.data.conversationId)) {
-            await follow(
-              details.data.conversationId,
-              `${prefix}  [${details.data.agent}] `,
-            );
-          }
-        } else if (
-          eventValue.type === "tool_execution_end" &&
-          eventValue.toolName === "delegate"
-        ) {
-          emit(`${prefix}✓ sub-agent finished`);
-        } else if (eventValue.type === "auto_retry_start") {
-          emit(
-            `${prefix}(retrying model request: ${oneLine(eventValue.errorMessage, 120)})`,
-          );
         }
+        // Flush complete lines so the trace reads like a log, not a token stream.
+        const nl = text.lastIndexOf("\n");
+        if (nl >= 0) {
+          for (const line of text.slice(0, nl).split("\n")) {
+            if (line.trim()) {
+              emit(line);
+            }
+          }
+          text = text.slice(nl + 1);
+        }
+      } else if (eventValue.type === "message_end") {
+        if (text.trim()) {
+          emit(text.trim());
+        }
+        text = "";
+      } else if (eventValue.type === "tool_execution_start") {
+        emit(describeTool(eventValue.toolName, eventValue.args));
+      } else if (eventValue.type === "auto_retry_start") {
+        emit(
+          `(retrying model request: ${oneLine(eventValue.errorMessage, 120)})`,
+        );
       }
-    });
-  };
-  await follow(conversationId, "");
-  return () => Promise.all(streams.map((state) => state.stop()));
+    }
+  });
+  return () => stream.stop();
 }
 export interface ApiThreads {
   getOrCreateConversation(key: string): Promise<ConversationId>;

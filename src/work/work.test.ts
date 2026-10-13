@@ -13,7 +13,6 @@ vi.mock("@earendil-works/pi-durable", async () => {
 });
 vi.mock("../config/index.ts", () => ({
   PROVIDERS: ["anthropic", "openai"],
-  CODING_TOOLS: ["read", "write", "edit", "bash"],
 }));
 function turns(): WorkTurns {
   return {
@@ -42,19 +41,18 @@ function setup(): {
   const runtime = createMockRuntime(createMockTransaction());
   const coordinator = turns();
   const agents: WorkAgents = {
+    captureWorkBlueprint: () => {
+      throw new Error("Unexpected blueprint capture");
+    },
     configureWorkConversation: vi.fn<WorkAgents["configureWorkConversation"]>(),
-    isWorkClean: vi.fn<WorkAgents["isWorkClean"]>().mockResolvedValue(true),
+    provisionWorkSandbox: vi.fn<WorkAgents["provisionWorkSandbox"]>(),
+    releaseWorkSandbox: vi.fn<WorkAgents["releaseWorkSandbox"]>(),
   };
   const work = new Work(
     () => runtime,
     coordinator,
     { listWorkTemplates: () => [{ name: "root", description: "Root" }] },
     () => agents,
-    () => ({
-      captureWorkBlueprint: () => {
-        throw new Error("Unexpected blueprint capture");
-      },
-    }),
   );
   return { work, runtime, turns: coordinator, agents };
 }
@@ -64,32 +62,97 @@ function pending(): TaskRecord<JsonValue, JsonValue, unknown> {
     conversationId: conversationId(12),
     kind: "kaeno.work",
     version: 1,
-    input: { title: "Job" },
+    input: { title: "Job", agent: "root" },
     background: true,
     abortRequested: false,
     state: { status: "pending", checkpoint: { phase: "start" } },
   };
 }
-it("publishes named work capabilities and reports an empty directory without crossing Agent", async () => {
+it("publishes orchestration and parent tools and reports an empty directory without crossing Agent", async () => {
   const { work, agents } = setup();
-  expect(work.tools.map((tool) => tool.name)).toEqual([
+  expect(work.orchestrationTools.map((tool) => tool.name)).toEqual([
     "start_work",
     "list_work",
+    "inspect_work",
+    "message_work",
     "cancel_work",
   ]);
+  expect(work.parentTools.map((tool) => tool.name)).toEqual(["ask_parent"]);
   expect(await work.listWork(conversationId(12))).toEqual([]);
-  expect(agents.isWorkClean).not.toHaveBeenCalled();
+  expect(agents.configureWorkConversation).not.toHaveBeenCalled();
 });
-it("lists only indexed work through the injected SDK runtime", async () => {
-  const { work, runtime } = setup();
-  vi.spyOn(runtime, "snapshot").mockResolvedValue({
-    launches: { request: taskId(24) },
-  });
-  vi.spyOn(runtime, "getTask").mockResolvedValue(pending());
-  expect(await work.listWork(conversationId(12))).toEqual([
-    { id: taskId(24), title: "Job", status: "pending" },
-  ]);
-});
+const states: [
+  TaskRecord<JsonValue, JsonValue, unknown>["state"],
+  boolean,
+  string,
+][] = [
+  [{ status: "pending", checkpoint: { phase: "start" } }, false, "starting"],
+  [
+    { status: "running", checkpoint: { phase: "supervise", asked: 0 } },
+    false,
+    "running",
+  ],
+  [
+    {
+      status: "running",
+      checkpoint: { phase: "ask", asked: 1, seen: 3, question: "Which?" },
+    },
+    false,
+    "needs-input",
+  ],
+  [
+    {
+      status: "running",
+      checkpoint: { phase: "supervise", asked: 1, awaiting: "reply" },
+    },
+    false,
+    "needs-input",
+  ],
+  [
+    {
+      status: "running",
+      checkpoint: { phase: "supervise", asked: 0, awaiting: "children" },
+    },
+    false,
+    "waiting-for-children",
+  ],
+  [
+    { status: "running", checkpoint: { phase: "supervise", asked: 0 } },
+    true,
+    "cancelling",
+  ],
+  [
+    {
+      status: "terminal",
+      outcome: {
+        status: "completed",
+        result: { status: "failed", text: "x" },
+      },
+    },
+    false,
+    "failed",
+  ],
+  [{ status: "terminal", outcome: { status: "aborted" } }, true, "aborted"],
+];
+it.each(states)(
+  "lists indexed work with a status derived from its durable state (%j)",
+  async (state, abortRequested, status) => {
+    const { work, runtime } = setup();
+    vi.spyOn(runtime, "snapshot").mockResolvedValue({
+      launches: { call: taskId(24) },
+    });
+    const { memos: _memos, ...record } = pending();
+    const base = { ...record, abortRequested };
+    vi.spyOn(runtime, "getTask").mockResolvedValue(
+      state.status === "terminal" || state.status === "completing"
+        ? { ...base, state }
+        : { ...base, state },
+    );
+    expect(await work.listWork(conversationId(12))).toEqual([
+      { id: taskId(24), title: "Job", agent: "root", status },
+    ]);
+  },
+);
 it("rejects cross-chat cancellation before suppressing reports or aborting a task", async () => {
   const { work, runtime, turns } = setup();
   await expect(work.cancelWork(conversationId(12), taskId(24))).rejects.toThrow(
@@ -116,22 +179,4 @@ it("suppresses reports in a transaction before requesting an abort", async () =>
     taskId(24),
   ]);
   expect(operations).toEqual(["suppress", "abort"]);
-});
-it("keeps terminal aborted work cancelling until the injected Agent confirms cleanup", async () => {
-  const { work, runtime, agents } = setup();
-  vi.spyOn(runtime, "snapshot").mockResolvedValue({
-    launches: { request: taskId(24) },
-  });
-  const { memos: _memos, ...record } = pending();
-  vi.spyOn(runtime, "getTask").mockResolvedValue({
-    ...record,
-    abortRequested: true,
-    state: { status: "terminal", outcome: { status: "aborted" } },
-  });
-  vi.mocked(agents.isWorkClean).mockResolvedValue(false);
-  expect((await work.listWork(conversationId(12)))[0].status).toBe(
-    "cancelling",
-  );
-  vi.mocked(agents.isWorkClean).mockResolvedValue(true);
-  expect((await work.listWork(conversationId(12)))[0].status).toBe("aborted");
 });

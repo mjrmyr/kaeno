@@ -4,24 +4,22 @@ export {
   readBlueprint,
   storageCopy,
   frozenEntry,
-  workRoot,
 } from "./work-blueprint.ts";
 export type {
   DeepReadonly,
   BoundAgent,
-  FrozenRole,
-  AgentSettings,
-  BlueprintEntry,
   WorkBlueprint,
 } from "./work-blueprint.ts";
-export { WorkIndex, Work } from "./work.ts";
+export { WorkIndex, WorkScope, Work } from "./work.ts";
 export type {
+  WorkParent,
   WorkRuntime,
   WorkView,
+  WorkDetails,
+  WorkSetup,
   WorkAgents,
   WorkTemplateChoice,
   WorkTemplateSource,
-  WorkBlueprintSource,
+  WorkReport,
   WorkTurns,
-  WorkController,
 } from "./work.ts";

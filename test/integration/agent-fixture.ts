@@ -50,8 +50,6 @@ export function createAgentFixture(): AgentFixture {
         model: "openai/swe",
         instructions: "SWE PROFILE",
         thinkingLevel: "high",
-        sandbox: true,
-        tools: ["bash", "read", "write", "edit"],
         delegates: ["swe", "leaf"],
         skills: ["demo/skills:guide"],
       },
