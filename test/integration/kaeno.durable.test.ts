@@ -279,7 +279,8 @@ describe("kaeno durable work tree", () => {
             request.messages.findLast((message) => message.role !== "system"),
           );
           const text = messageText(required(last));
-          if (system.includes("Kaeno CHAT")) {
+          // Only WORK is offered message_parent (a tool name, not prompt prose); anything else is CHAT.
+          if (!system.includes("message_parent")) {
             if (last.role === "toolResult") {
               return fauxAssistantMessage([fauxText("ACK: work accepted")]);
             }

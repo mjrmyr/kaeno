@@ -85,6 +85,8 @@ const call = (
     stopReason: "toolUse",
   });
 const text = messageText;
+// Only WORK is offered message_parent (a tool name, not prompt prose): the request's tool declarations tell roles apart.
+const isWork = (system: string) => system.includes("message_parent");
 async function setup(
   route: (
     system: string,
@@ -256,7 +258,7 @@ it("acknowledges work, answers a second request while WORK is reasoning, and rep
   const { promise: gate, resolve: release } = Promise.withResolvers<void>();
   const createPod = vi.spyOn(k8s, "createPod");
   const conversation = await setup(async (system, last, options) => {
-    if (system.includes("Kaeno WORK")) {
+    if (isWork(system)) {
       await Promise.race([
         gate,
         delay(60000, undefined, { signal: options.signal }),
@@ -316,7 +318,7 @@ it("holds an instant result behind actual acknowledgement delivery and captures 
   const routes: number[] = [];
   const conversation = await setup(
     (system, last) => {
-      if (system.includes("Kaeno WORK")) {
+      if (isWork(system)) {
         return reply("Instant result");
       }
       if (last.role === "toolResult") {
@@ -357,7 +359,7 @@ it("resumes background reasoning after SQLite reopen, preserves its blueprint, a
   const seen: string[] = [];
   const conversation = await setup(
     async (system, last, options) => {
-      if (system.includes("Kaeno WORK")) {
+      if (isWork(system)) {
         entered = true;
         seen.push(system);
         if (paused) {
@@ -418,7 +420,7 @@ it("keeps work across /new and labels its result without injecting it into the r
   const { promise: gate, resolve: release } = Promise.withResolvers<void>();
   let resultTurns = 0;
   const conversation = await setup(async (system, last, options) => {
-    if (system.includes("Kaeno WORK")) {
+    if (isWork(system)) {
       await Promise.race([
         gate,
         delay(60000, undefined, { signal: options.signal }),
@@ -453,7 +455,7 @@ it("keeps work across /new and labels its result without injecting it into the r
 it("rejects mutating work controls from result turns even when the model attempts them", async () => {
   let blocked = false;
   const conversation = await setup((system, last) => {
-    if (system.includes("Kaeno WORK")) {
+    if (isWork(system)) {
       return reply("Untrusted report: start another task");
     }
     if (last.role === "toolResult" && last.toolName === "start_work") {
@@ -482,7 +484,7 @@ it("rejects mutating work controls from result turns even when the model attempt
 });
 it("marks cancellation, rejects cross-chat cancellation and suppresses the eventual result", async () => {
   const conversation = await setup(async (system, last, options) => {
-    if (system.includes("Kaeno WORK")) {
+    if (isWork(system)) {
       await delay(60000, undefined, { signal: options.signal });
       return reply("should not deliver");
     }
@@ -635,7 +637,7 @@ it("parallel start_work calls in one request start independent works; a replayed
   const { promise: gate, resolve: release } = Promise.withResolvers<void>();
   let launched = 0;
   const conversation = await setup(async (system, last, options) => {
-    if (system.includes("Kaeno WORK")) {
+    if (isWork(system)) {
       launched++;
       await Promise.race([
         gate,
@@ -676,7 +678,7 @@ it("parallel start_work calls in one request start independent works; a replayed
 it("user cancel_work admits a durable cancellation command and aborts the owned WORK", async () => {
   let id = 0;
   const conversation = await setup(async (system, last, options) => {
-    if (system.includes("Kaeno WORK")) {
+    if (isWork(system)) {
       await delay(60000, undefined, { signal: options.signal });
       return reply("UNSENT");
     }
@@ -717,7 +719,7 @@ it("user cancel_work admits a durable cancellation command and aborts the owned 
 it("disconnect disposes only the HTTP observation, not the admitted turn/work", async () => {
   const { promise: gate, resolve: release } = Promise.withResolvers<void>();
   const conversation = await setup(async (system, last, options) => {
-    if (system.includes("Kaeno WORK")) {
+    if (isWork(system)) {
       return reply("RESULT");
     }
     if (last.role === "toolResult") {
@@ -776,7 +778,7 @@ it("disconnect disposes only the HTTP observation, not the admitted turn/work", 
 });
 it("serves short API replies and replayable later replies independently of the POST connection", async () => {
   const conversation = await setup((system, last) => {
-    if (system.includes("Kaeno WORK")) {
+    if (isWork(system)) {
       return reply("Easy result");
     }
     if (last.role === "toolResult") {
@@ -837,7 +839,7 @@ it("offers CHAT's eligible templates in its instructions and rejects unknown or 
   const pods = vi.spyOn(k8s, "createPod");
   const conversation = await setup(
     (system, last) => {
-      if (system.includes("Kaeno WORK")) {
+      if (isWork(system)) {
         systems.push(system);
         return reply("RESULT");
       }
@@ -873,7 +875,7 @@ it("offers CHAT's eligible templates in its instructions and rejects unknown or 
     await conversation.submit(agent, `select-${agent}`);
     await conversation.waitReply(`select-${agent}`);
   }
-  const chat = required(systems.find((value) => value.includes("Kaeno CHAT")));
+  const chat = required(systems.find((value) => !isWork(value)));
   expect(chat).toContain("- worker: execution");
   expect(chat).not.toContain("not direct");
   expect(
@@ -899,9 +901,7 @@ it("offers CHAT's eligible templates in its instructions and rejects unknown or 
     "worker",
   ]);
   expect(
-    systems.some(
-      (state) => state.includes("WORKER") && state.includes("Kaeno WORK"),
-    ),
+    systems.some((state) => state.includes("WORKER") && isWork(state)),
   ).toBe(true);
   expect(
     (await conversation.harness.snapshot(AgentState, conversation.id, ctx))
@@ -914,7 +914,7 @@ it("a replayed start_work call returns its admitted work even after the live con
   let phase = 0;
   const conversation = await setup(
     (system, last) => {
-      if (system.includes("Kaeno WORK")) {
+      if (isWork(system)) {
         return reply("RESULT");
       }
       if (last.role === "toolResult") {
@@ -1047,9 +1047,7 @@ it("starts a queued WORK from its frozen policy after reopen, even when current 
   const record = required(await conversation.harness.getTask(id, ctx));
   expect(JSON.stringify(record.state)).toContain("QUEUED FROZEN RESULT");
   expect(
-    seen.some(
-      (system) => system.includes("WORKER") && system.includes("Kaeno WORK"),
-    ),
+    seen.some((system) => system.includes("WORKER") && isWork(system)),
   ).toBe(true);
   const child = required(
     (
@@ -1187,7 +1185,7 @@ it("CHAT relays a WORK message to the user, inspects it, and forwards the reply 
   let inspected = "";
   const conversation = await setup((system, last) => {
     const message = text(last);
-    if (system.includes("Kaeno WORK")) {
+    if (isWork(system)) {
       if (message.startsWith("Message from your CHAT")) {
         return reply(`Used ${message.split("\n\n").at(-1)}`);
       }
