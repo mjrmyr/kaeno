@@ -212,7 +212,7 @@ export function createNoopWorkSurface(): WorkToolSurface {
     "message_work",
     "cancel_work",
   ].map(tool);
-  const parentTools = [tool("ask_parent")];
+  const parentTools = [tool("message_parent")];
   return {
     orchestrationTools,
     parentTools,

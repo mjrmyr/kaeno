@@ -77,7 +77,7 @@ it("publishes orchestration and parent tools and reports an empty directory with
     "message_work",
     "cancel_work",
   ]);
-  expect(work.parentTools.map((tool) => tool.name)).toEqual(["ask_parent"]);
+  expect(work.parentTools.map((tool) => tool.name)).toEqual(["message_parent"]);
   expect(await work.listWork(conversationId(12))).toEqual([]);
   expect(agents.configureWorkConversation).not.toHaveBeenCalled();
 });
@@ -88,36 +88,36 @@ const states: [
 ][] = [
   [{ status: "pending", checkpoint: { phase: "start" } }, false, "starting"],
   [
-    { status: "running", checkpoint: { phase: "supervise", asked: 0 } },
+    { status: "running", checkpoint: { phase: "supervise", sent: 0 } },
     false,
     "running",
   ],
   [
     {
       status: "running",
-      checkpoint: { phase: "ask", asked: 1, seen: 3, question: "Which?" },
+      checkpoint: { phase: "message", sent: 1, seen: 3, message: "Which?" },
     },
     false,
-    "needs-input",
+    "awaiting-reply",
   ],
   [
     {
       status: "running",
-      checkpoint: { phase: "supervise", asked: 1, awaiting: "reply" },
+      checkpoint: { phase: "supervise", sent: 1, awaiting: "reply" },
     },
     false,
-    "needs-input",
+    "awaiting-reply",
   ],
   [
     {
       status: "running",
-      checkpoint: { phase: "supervise", asked: 0, awaiting: "children" },
+      checkpoint: { phase: "supervise", sent: 0, awaiting: "children" },
     },
     false,
     "waiting-for-children",
   ],
   [
-    { status: "running", checkpoint: { phase: "supervise", asked: 0 } },
+    { status: "running", checkpoint: { phase: "supervise", sent: 0 } },
     true,
     "cancelling",
   ],

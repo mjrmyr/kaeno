@@ -115,7 +115,7 @@ export class TurnCoordinator {
   ): Promise<void> {
     return suppressReports(tx, id, ids);
   }
-  /** A WORK question or final report, delivered to its CHAT as a read-only work-result turn. */
+  /** A WORK message or final report, delivered to its CHAT as a read-only work-result turn. */
   admitWorkReport(
     tx: Tx,
     report: {

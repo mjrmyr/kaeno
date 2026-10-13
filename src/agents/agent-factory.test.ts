@@ -75,7 +75,7 @@ function configuration(): Config {
 }
 function workSurface(): WorkToolSurface {
   const orchestrationTools = [tool("start_work"), tool("message_work")];
-  const parentTools = [tool("ask_parent")];
+  const parentTools = [tool("message_parent")];
   return {
     extension: {
       name: "kaeno-work",
@@ -146,8 +146,11 @@ it("configures CHAT with orchestration only: no coding tools, no sandbox cwd", a
   );
 });
 it.each([
-  [true, ["bash", "ask_parent", "start_work", "message_work", "read_skill"]],
-  [false, ["bash", "ask_parent", "read_skill"]],
+  [
+    true,
+    ["bash", "message_parent", "start_work", "message_work", "read_skill"],
+  ],
+  [false, ["bash", "message_parent", "read_skill"]],
 ])(
   "configures WORK in its sandbox with coding tools and orchestration only when allowed (orchestrate=%s)",
   async (orchestrate, tools) => {

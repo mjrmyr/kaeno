@@ -150,10 +150,9 @@ describe("kaeno durable work tree", () => {
       });
       const pods = new Map<string, z.infer<typeof podSchema>>();
       const tokens = new Set<string>();
-      // One envd per pod, all on the shared workspace, each accepting only its own pod's token.
+      // One envd per pod, each with its own filesystem and accepting only its pod's token. The worker's is `workspace`.
       const envds = new Map<string, { server: Server; url: string }>();
       const plans: Record<string, string[]> = {};
-      let materializing = Promise.resolve();
       const kube = createServer(async (req, res) => {
         let raw = "";
         for await (const chunk of req) {
@@ -179,8 +178,13 @@ describe("kaeno durable work tree", () => {
               )?.value,
             ); // as the pod would get it
           tokens.add(token);
+          const root =
+            pod.metadata.labels["kaeno.io/template"] === "worker"
+              ? workspace
+              : join(dir, "pods", pod.metadata.name);
+          await mkdir(root, { recursive: true });
           if (!envds.has(pod.metadata.name)) {
-            const server = createEnvServer({ token, root: workspace });
+            const server = createEnvServer({ token, root });
             envds.set(pod.metadata.name, { server, url: await listen(server) });
           }
           expect(pod.spec.containers[0].image).toBe("execution-v1");
@@ -199,15 +203,11 @@ describe("kaeno durable work tree", () => {
           plans[required(pod.metadata.labels["kaeno.io/template"])] = plan.map(
             (entry) => entry.id,
           );
-          // Real pods materialize into their own filesystems; this shared workspace needs one copy at a time.
-          materializing = materializing.then(() =>
-            materializeSkillSelection(
-              cache,
-              plan,
-              join(workspace, ".agents/skills"),
-            ),
+          await materializeSkillSelection(
+            cache,
+            plan,
+            join(root, ".agents/skills"),
           );
-          await materializing;
           pods.set(pod.metadata.name, pod);
           res.writeHead(201).end(raw);
           return;

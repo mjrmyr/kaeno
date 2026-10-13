@@ -1069,9 +1069,15 @@ it("starts a queued WORK from its frozen policy after reopen, even when current 
   );
   expect(saved.instructions).toContain("WORKER");
   expect(saved.instructions).not.toContain("LATER POLICY");
-  expect(saved.tools).toEqual(["read", "write", "edit", "bash", "ask_parent"]);
+  expect(saved.tools).toEqual([
+    "read",
+    "write",
+    "edit",
+    "bash",
+    "message_parent",
+  ]);
 });
-it("WORK starts an allowed child, answers its question, and reports only after the child finished", async () => {
+it("WORK starts an allowed child, replies to its message, and reports only after the child finished", async () => {
   const order: string[] = [];
   let childId = 0;
   const conversation = await setup(
@@ -1079,9 +1085,9 @@ it("WORK starts an allowed child, answers its question, and reports only after t
       const message = text(last);
       if (system.includes("COORDINATOR")) {
         if (last.role === "user" && message.startsWith("Child Work #")) {
-          if (message.includes("asks")) {
+          if (message.includes("waits for a reply")) {
             childId = Number(/#(\d+)/.exec(message)?.[1]);
-            order.push("question");
+            order.push("child-message");
             return call(
               "message_work",
               { id: childId, text: "Blue" },
@@ -1123,7 +1129,7 @@ it("WORK starts an allowed child, answers its question, and reports only after t
           return reply(`LEAF DONE: ${message.split("\n\n").at(-1)}`);
         }
         if (last.role === "user") {
-          return call("ask_parent", { question: "Which color?" });
+          return call("message_parent", { text: "Which color?" });
         }
         return reply("unreachable after terminate");
       }
@@ -1161,7 +1167,7 @@ it("WORK starts an allowed child, answers its question, and reports only after t
   );
   expect(order).toEqual([
     "interim",
-    "question",
+    "child-message",
     "answer-received",
     "child-report",
     "chat-report",
@@ -1176,7 +1182,7 @@ it("WORK starts an allowed child, answers its question, and reports only after t
   expect(readObject(child.input)).toMatchObject({ agent: "leaf", depth: 2 });
   expect(k8s.runningPods()).toEqual([]);
 });
-it("CHAT relays a WORK question to the user, inspects it, and forwards the answer with message_work", async () => {
+it("CHAT relays a WORK message to the user, inspects it, and forwards the reply with message_work", async () => {
   let workId = 0;
   let inspected = "";
   const conversation = await setup((system, last) => {
@@ -1185,7 +1191,7 @@ it("CHAT relays a WORK question to the user, inspects it, and forwards the answe
       if (message.startsWith("Message from your CHAT")) {
         return reply(`Used ${message.split("\n\n").at(-1)}`);
       }
-      return call("ask_parent", { question: "Which file?" });
+      return call("message_parent", { text: "Which file?" });
     }
     if (last.role === "toolResult" && last.toolName === "inspect_work") {
       inspected = message;
@@ -1194,9 +1200,9 @@ it("CHAT relays a WORK question to the user, inspects it, and forwards the answe
     if (last.role === "toolResult") {
       return reply(last.toolName === "message_work" ? "Forwarded." : "ACK");
     }
-    if (message.startsWith("Work #") && message.includes("needs input")) {
+    if (message.startsWith("Work #") && message.includes("waits for a reply")) {
       workId = Number(/#(\d+)/.exec(message)?.[1]);
-      return reply(`Question: ${message.split("\n\n").at(-1)}`);
+      return reply(`Relay: ${message.split("\n\n").at(-1)}`);
     }
     if (message.startsWith("Work #")) {
       return reply(`DONE: ${message.split("\n\n").at(-1)}`);
@@ -1210,15 +1216,15 @@ it("CHAT relays a WORK question to the user, inspects it, and forwards the answe
     return call("start_work", { agent: "kaeno", title: "Ask", brief: "Ask" });
   });
   await conversation.submit("first", "ask-start");
-  await until(async () => conversation.sent.includes("Question: Which file?"));
+  await until(async () => conversation.sent.includes("Relay: Which file?"));
   expect(
     required((await conversation.work.listWork(conversation.id))[0]).status,
-  ).toBe("needs-input");
+  ).toBe("awaiting-reply");
   await conversation.submit("status?", "ask-status");
   await conversation.waitReply("ask-status");
   expect(readObject(JSON.parse(inspected))).toMatchObject({
     id: workId,
-    status: "needs-input",
+    status: "awaiting-reply",
     children: [],
   });
   await conversation.submit("answer: a.txt", "ask-answer");
@@ -1226,7 +1232,7 @@ it("CHAT relays a WORK question to the user, inspects it, and forwards the answe
   await until(async () => conversation.sent.includes("DONE: Used a.txt"));
   expect(conversation.sent).toEqual([
     "ACK",
-    "Question: Which file?",
+    "Relay: Which file?",
     "It waits for your answer.",
     "Forwarded.",
     "DONE: Used a.txt",
