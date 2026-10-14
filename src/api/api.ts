@@ -4,6 +4,7 @@
 //   POST /v1/threads/:key/turn   {text, requestId}  → NDJSON: {type:"trace",text} … then {type:"done",text} | {type:"error",message}
 //   POST /v1/threads/:key/abort
 //   GET  /v1/threads
+//   GET  /v1/threads/:key/work/:workId/artifacts[/<path>]   run evidence (listing / file)
 //   GET  /healthz
 import type { Context } from "@earendil-works/chord";
 import {
@@ -26,9 +27,14 @@ import {
   type ServerResponse,
 } from "node:http";
 import { z } from "zod";
+import { parseTaskId } from "../durable/index.ts";
 import type { ThreadInfo } from "../threads/index.ts";
 import type { ReplyPage } from "../turns/index.ts";
-import type { WorkView } from "../work/index.ts";
+import type {
+  ArtifactFile,
+  ArtifactsListing,
+  WorkView,
+} from "../work/index.ts";
 const oneLine = (state: string, max = 200) => {
   const file = state.replace(/\s+/g, " ").trim();
   return file.length > max ? file.slice(0, max - 1) + "…" : file;
@@ -121,6 +127,15 @@ export interface ApiTurns {
 }
 export interface ApiWork {
   listWork(id: ConversationId): Promise<WorkView[]>;
+  readArtifacts(
+    caller: ConversationId,
+    workId: TaskId,
+  ): Promise<ArtifactsListing | undefined>;
+  readArtifactFile(
+    caller: ConversationId,
+    workId: TaskId,
+    path: string,
+  ): Promise<ArtifactFile | undefined>;
 }
 export interface ApiRuntime extends Pick<Harness, "commit" | "waitForTask"> {}
 export class ApiServer {
@@ -163,6 +178,37 @@ export class ApiServer {
         }
         if (req.method === "GET" && path === "/v1/threads") {
           return json(res, 200, await threads.listConversations());
+        }
+        const artifacts =
+          /^\/v1\/threads\/([A-Za-z0-9:_.-]{1,200})\/work\/(\d+)\/artifacts(?:\/(.*))?$/.exec(
+            path,
+          );
+        if (artifacts && req.method === "GET") {
+          const caller = await threads.getOrCreateConversation(artifacts[1]);
+          const workId = parseTaskId(Number(artifacts[2]));
+          const file = artifacts[3];
+          if (file === undefined) {
+            const listing = await work.readArtifacts(caller, workId);
+            if (!listing) {
+              return json(res, 404, { error: "No artifacts for this work" });
+            }
+            return json(res, 200, listing);
+          }
+          let name: string;
+          try {
+            name = decodeURIComponent(file);
+          } catch {
+            return json(res, 400, { error: "Bad artifact path" });
+          }
+          const content = await work.readArtifactFile(caller, workId, name);
+          if (!content) {
+            return json(res, 404, { error: "No such artifact" });
+          }
+          if (content.text !== undefined) {
+            res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+            return res.end(content.text);
+          }
+          return json(res, 200, { path: content.path, base64: content.base64 });
         }
         const message =
           /^\/v1\/threads\/([A-Za-z0-9:_.-]{1,200})\/(turn|abort|replies|work)$/.exec(

@@ -23,6 +23,7 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import { z } from "zod";
+import { ArtifactStore, type RunManifest } from "../artifacts/index.ts";
 import { parseTaskId, requireConversation } from "../durable/index.ts";
 import type { Origin, Source } from "../turns/index.ts";
 import {
@@ -50,7 +51,7 @@ interface WorkInput {
   parent: WorkParent;
   blueprint: Stored<WorkBlueprint>;
 }
-interface WorkResult {
+export interface WorkResult {
   status: "completed" | "failed";
   text: string;
 }
@@ -119,16 +120,31 @@ export const WorkScope = defineDoc<Stored<WorkScopeState>>({
   fork: "initial",
   initial: () => ({ depth: 0 }),
 });
+export interface WorkArtifactsSummary {
+  present: boolean;
+  truncated: boolean;
+  bytes: number;
+}
 export interface WorkView {
   id: TaskId;
   title: string;
   agent: string;
   status: string;
+  artifacts?: WorkArtifactsSummary;
 }
 export interface WorkDetails extends WorkView {
   message?: string;
   latest?: string;
   children: WorkView[];
+}
+export interface ArtifactsListing {
+  manifest: RunManifest;
+  files: string[];
+}
+export interface ArtifactFile {
+  path: string;
+  text?: string;
+  base64?: string;
 }
 export interface WorkSetup {
   blueprint: WorkBlueprint;
@@ -283,18 +299,21 @@ export class Work {
   private readonly turns: WorkTurns;
   private readonly templates: WorkTemplateSource;
   private readonly agents: () => WorkAgents;
+  private readonly artifacts?: ArtifactStore;
   private readonly maxActive: number;
   constructor(
     harness: () => WorkRuntime,
     turns: WorkTurns,
     templates: WorkTemplateSource,
     agents: () => WorkAgents,
+    artifacts?: ArtifactStore,
     maxActive = 32,
   ) {
     this.harness = harness;
     this.turns = turns;
     this.templates = templates;
     this.agents = agents;
+    this.artifacts = artifacts;
     this.maxActive = maxActive;
     const WorkTask = defineTask<
       Stored<WorkInput>,
@@ -770,7 +789,90 @@ export class Work {
       title: input.title,
       agent: input.agent,
       status: describeWork(record),
+      artifacts: await this.artifactsSummary(id),
     };
+  }
+  /** Artifacts summary for a WorkView; absent when nothing was collected or no store is wired. */
+  private async artifactsSummary(
+    id: TaskId,
+  ): Promise<WorkArtifactsSummary | undefined> {
+    const store = this.artifacts;
+    if (!store) {
+      return undefined;
+    }
+    try {
+      const manifest = await store.readManifest({ workId: id, taskId: id });
+      return {
+        present: true,
+        truncated: manifest.capture.truncated,
+        bytes: manifest.capture.bytes,
+      };
+    } catch {
+      return undefined;
+    }
+  }
+  /**
+   * Retrieval access: the CHAT root (depth 0, or no scope yet) reads every run; a WORK
+   * agent reads only its own run and the runs it started — parent↔child edges only.
+   */
+  private async artifactsReadable(
+    caller: ConversationId,
+    id: TaskId,
+  ): Promise<boolean> {
+    const scope = await this.harness().snapshot(
+      WorkScope,
+      caller,
+      BACKGROUND_CONTEXT,
+    );
+    if (!scope || scope.depth === 0) {
+      return true;
+    }
+    if (scope.workId === id) {
+      return true;
+    }
+    const index = await this.harness().snapshot(
+      WorkIndex,
+      caller,
+      BACKGROUND_CONTEXT,
+    );
+    return Object.values(index?.launches ?? {}).some((child) => child === id);
+  }
+  async readArtifacts(
+    caller: ConversationId,
+    id: TaskId,
+  ): Promise<ArtifactsListing | undefined> {
+    const store = this.artifacts;
+    if (!store || !(await this.artifactsReadable(caller, id))) {
+      return undefined;
+    }
+    try {
+      return {
+        manifest: await store.readManifest({ workId: id, taskId: id }),
+        files: await store.list({ workId: id, taskId: id }),
+      };
+    } catch {
+      return undefined;
+    }
+  }
+  async readArtifactFile(
+    caller: ConversationId,
+    id: TaskId,
+    path: string,
+  ): Promise<ArtifactFile | undefined> {
+    const store = this.artifacts;
+    if (!store || !(await this.artifactsReadable(caller, id))) {
+      return undefined;
+    }
+    try {
+      const data = await store.readFile({ workId: id, taskId: id }, path);
+      const text = Buffer.from(data).toString("utf8");
+      if (Buffer.compare(Buffer.from(text, "utf8"), Buffer.from(data)) === 0) {
+        return { path, text };
+      }
+      return { path, base64: Buffer.from(data).toString("base64") };
+    } catch {
+      return undefined;
+    }
   }
   private async inspectWork(
     caller: ConversationId,

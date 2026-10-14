@@ -155,11 +155,16 @@ export async function startApplication(): Promise<void> {
     turnTask,
     controlTask,
   );
+  // Artifacts are optional: unset KAENO_ARTIFACTS disables evidence collection.
+  const artifactsRoot = readEnvironment("KAENO_ARTIFACTS");
+  const artifacts =
+    artifactsRoot === undefined ? undefined : new ArtifactStore(artifactsRoot);
   const work = new Work(
     harnessReference.getHarness,
     turns,
     { listWorkTemplates: () => eligibleWorkTemplates(config) },
     agentReference.getValue,
+    artifacts,
   );
   workReference.initialize(work);
   const factory = new AgentFactory(config, skills, work);
@@ -194,10 +199,6 @@ export async function startApplication(): Promise<void> {
         fetch,
       ),
   };
-  // Artifacts are optional: unset KAENO_ARTIFACTS disables evidence collection.
-  const artifactsRoot = readEnvironment("KAENO_ARTIFACTS");
-  const artifacts =
-    artifactsRoot === undefined ? undefined : new ArtifactStore(artifactsRoot);
   const sandboxes = new SandboxManager(
     harnessReference.getHarness,
     kubernetes,

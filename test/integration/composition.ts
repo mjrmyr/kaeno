@@ -125,6 +125,7 @@ interface WorkOptions {
   Control?: ControlTask;
   config: Config;
   agents: () => WorkAgents;
+  artifacts?: ArtifactStore;
   maxActive?: number;
 }
 export function createWork(options: WorkOptions): Work {
@@ -143,6 +144,7 @@ export function createWork(options: WorkOptions): Work {
     turns,
     { listWorkTemplates: () => eligibleWorkTemplates(options.config) },
     options.agents,
+    options.artifacts,
     options.maxActive,
   );
   return work;

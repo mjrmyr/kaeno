@@ -14,8 +14,12 @@ export { WorkIndex, WorkScope, Work } from "./work.ts";
 export type {
   WorkParent,
   WorkRuntime,
+  WorkResult,
   WorkView,
+  WorkArtifactsSummary,
   WorkDetails,
+  ArtifactsListing,
+  ArtifactFile,
   WorkSetup,
   WorkAgents,
   WorkTemplateChoice,
