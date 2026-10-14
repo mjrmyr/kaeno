@@ -116,6 +116,7 @@ function scriptedRoute(
 async function bootRig(
   dir: string,
   real: boolean,
+  provider: string,
 ): Promise<{
   harness: Harness;
   work: ReturnType<typeof createWork>;
@@ -127,20 +128,21 @@ async function bootRig(
   sent: string[];
   agents: ReturnType<typeof createAgents>;
 }> {
+  const model = real ? cheapModel(provider) : "anthropic/faux-1";
   const config = parseConfig({
     agent: "kaeno",
     sandboxCapacity: 1,
     templates: {
       kaeno: {
         description: "Rig orchestrator",
-        model: real ? "anthropic/claude-haiku-4-5" : "anthropic/faux-1",
+        model,
         instructions:
           "You are the rig orchestrator. Delegate every user task to the worker template with start_work, then report the worker's result verbatim.",
         delegates: ["worker"],
       },
       worker: {
         description: "Rig worker",
-        model: real ? "anthropic/claude-haiku-4-5" : "anthropic/faux-1",
+        model,
         instructions:
           "You create files exactly as instructed with the write tool, using paths relative to the workspace. Then reply with DONE and the exact path you wrote.",
       },
@@ -242,21 +244,48 @@ async function bootRig(
   };
 }
 
+/** First configured provider wins; all provider keys are optional. */
+function rigProvider(): string | undefined {
+  if (process.env.ANTHROPIC_API_KEY !== undefined) {
+    return "anthropic";
+  }
+  if (process.env.OPENAI_API_KEY !== undefined) {
+    return "openai";
+  }
+  if (process.env.OPENROUTER_API_KEY !== undefined) {
+    return "openrouter";
+  }
+  return undefined;
+}
+
+function cheapModel(provider: string): string {
+  if (provider === "openai") {
+    return "openai/gpt-5-nano";
+  }
+  if (provider === "openrouter") {
+    return "openrouter/anthropic/claude-haiku-4.5";
+  }
+  return "anthropic/claude-haiku-4-5";
+}
+
 async function runScenario(): Promise<number> {
   const clean = process.argv.includes("--clean");
   const forced = process.argv.includes("--faux");
-  const anthropic = process.env.ANTHROPIC_API_KEY;
-  const openai = process.env.OPENAI_API_KEY;
-  const real = !forced && (anthropic !== undefined || openai !== undefined);
+  const provider = rigProvider();
+  const real = !forced && provider !== undefined;
   console.log(
     real
-      ? "rig: real LLM pass (cheap models, one delegation)"
-      : "rig: scripted LLM pass — set ANTHROPIC_API_KEY or OPENAI_API_KEY for the real pass, --faux silences this note",
+      ? `rig: real LLM pass via ${provider} (cheap models, one delegation)`
+      : "rig: scripted LLM pass — set ANTHROPIC_API_KEY, OPENAI_API_KEY or OPENROUTER_API_KEY for the real pass; --faux silences this note",
   );
 
   const dir = await mkdtemp(join(tmpdir(), "kaeno-rig-"));
   console.log(`rig: evidence root ${dir}`);
-  const rig = await bootRig(dir, real);
+  const rig = await bootRig(
+    dir,
+    real,
+    process.env.KAENO_RIG_CHAT_MODEL?.split("/")[0] ?? provider ?? "anthropic",
+  );
   const { work, cluster, store, sent, agents } = rig;
 
   const deps = createThreadFixture(() => rig.harness, {
@@ -342,7 +371,11 @@ async function runScenario(): Promise<number> {
     workId,
     runDirectory,
     scopeConversation,
-    keys: [anthropic, openai].filter((key) => key !== undefined),
+    keys: [
+      process.env.ANTHROPIC_API_KEY,
+      process.env.OPENAI_API_KEY,
+      process.env.OPENROUTER_API_KEY,
+    ].filter((key) => key !== undefined),
   });
 
   await rig.harness.waitForTask(turn, ctx);

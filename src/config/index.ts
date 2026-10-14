@@ -1,5 +1,6 @@
 export {
   PROVIDERS,
+  PROVIDER_KEYS,
   eligibleWorkTemplates,
   parseConfig,
   loadConfig,

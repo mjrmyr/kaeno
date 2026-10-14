@@ -6,9 +6,15 @@ import {
   parseSkillSelection,
   type RepositorySpec,
 } from "../skills/index.ts";
-export const PROVIDERS = ["anthropic", "openai"] as const;
+export const PROVIDERS = ["anthropic", "openai", "openrouter"] as const;
 const THINKING = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 export type Provider = (typeof PROVIDERS)[number];
+/** Providers are optional: a missing key only makes templates using it unavailable. */
+export const PROVIDER_KEYS: Record<Provider, string> = {
+  anthropic: "ANTHROPIC_API_KEY",
+  openai: "OPENAI_API_KEY",
+  openrouter: "OPENROUTER_API_KEY",
+};
 export interface Template {
   name: string;
   description: string;

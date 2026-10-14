@@ -14,6 +14,7 @@
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
+    "rig": "node test/rig/scenario.ts",
     "verify": "npm run check && npm test",
     "deploy": "scripts/deploy.sh"
   },

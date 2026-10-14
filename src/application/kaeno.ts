@@ -2,6 +2,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
+import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import {
   createRegistry,
   defineExtension,
@@ -21,7 +22,11 @@ import {
 } from "../agents/index.ts";
 import { ApiServer } from "../api/index.ts";
 import { ArtifactStore } from "../artifacts/index.ts";
-import { eligibleWorkTemplates, loadConfig } from "../config/index.ts";
+import {
+  PROVIDER_KEYS,
+  eligibleWorkTemplates,
+  loadConfig,
+} from "../config/index.ts";
 import { HarnessReference } from "../durable/index.ts";
 import { RemoteExecutionEnv } from "../execution/index.ts";
 import {
@@ -64,15 +69,16 @@ export async function startApplication(): Promise<void> {
   const config = await loadConfig(
     readEnvironment("KAENO_CONFIG") ?? "/etc/kaeno/config.json",
   );
-  const needed = new Set(
+  // Providers are optional: a missing key never blocks boot, it only makes the
+  // templates using that provider fail per-request at use time.
+  const providers = new Set(
     Object.values(config.templates).map((template) => template.model.provider),
   );
-  for (const [provider, key] of [
-    ["anthropic", "ANTHROPIC_API_KEY"],
-    ["openai", "OPENAI_API_KEY"],
-  ] as const) {
-    if (needed.has(provider) && !readEnvironment(key)) {
-      throw new Error(`${key} is required by a template using ${provider}`);
+  for (const provider of providers) {
+    if (readEnvironment(PROVIDER_KEYS[provider]) === undefined) {
+      console.warn(
+        `kaeno: ${PROVIDER_KEYS[provider]} is not set; templates using ${provider} will fail at request time`,
+      );
     }
   }
   const namespace = (
@@ -134,6 +140,7 @@ export async function startApplication(): Promise<void> {
   const models = createModels();
   models.setProvider(anthropicProvider());
   models.setProvider(openaiProvider());
+  models.setProvider(openrouterProvider());
   const harnessReference = new HarnessReference();
   const agentReference = new StartupDependency<Agent>();
   const workReference = new StartupDependency<Work>();
