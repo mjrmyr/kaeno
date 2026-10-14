@@ -3,3 +3,4 @@ node_modules/
 .kaeno-next/
 .DS_Store
 .playwright-mcp/
+.rig.env

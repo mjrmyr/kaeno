@@ -6,10 +6,12 @@
 // the run left behind. Same primitive in production and in the rig, exactly as
 // docs/artifacts.md prescribes.
 //
-// LLM: real API calls when ANTHROPIC_API_KEY or OPENAI_API_KEY is set (budget:
-// one delegation on cheap models — override with KAENO_RIG_CHAT_MODEL /
-// KAENO_RIG_WORK_MODEL). Without a key the rig runs the scripted faux provider,
-// which still exercises every non-LLM part for free. Force it with --faux.
+// LLM: real API calls when a provider key is set (budget: one delegation on
+// cheap models — override with KAENO_RIG_CHAT_MODEL / KAENO_RIG_WORK_MODEL).
+// Keys come from the environment; a local gitignored .rig.env (KEY=VALUE lines)
+// is loaded only into unset variables. Without any key the rig runs the
+// scripted faux provider, which still exercises every non-LLM part for free.
+// Force it with --faux.
 //
 // The temp root (sqlite, artifacts, sandbox workspace) is kept after the run so
 // the evidence can be inspected; remove it yourself or pass --clean.
@@ -37,7 +39,7 @@ import {
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { admitTurn, defineControl, defineTurn } from "../../src/turns/index.ts";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -58,6 +60,39 @@ import { artifactChecks, createRigChecks, httpChecks } from "./assertions.ts";
 import { createRigCluster } from "./cluster.ts";
 
 const FAUX_TURNS = 150;
+
+/**
+ * Load local secrets from a gitignored .rig.env next to the scenario into
+ * UNSET environment variables only — real environment always wins, and the
+ * file's values never appear in output or captured evidence.
+ */
+async function loadRigEnv(): Promise<void> {
+  const file = join(import.meta.dirname, ".rig.env");
+  const raw = await readFile(file, "utf8").catch((error: unknown) => {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  });
+  if (raw === null) {
+    return;
+  }
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0 || trimmed.startsWith("#")) {
+      continue;
+    }
+    const separator = trimmed.indexOf("=");
+    if (separator <= 0) {
+      throw new Error(`.rig.env: expected KEY=VALUE, got: ${trimmed}`);
+    }
+    const key = trimmed.slice(0, separator).trim();
+    const value = trimmed.slice(separator + 1).trim();
+    if (process.env[key] === undefined && value.length > 0) {
+      process.env[key] = value;
+    }
+  }
+}
 const FAUX_TIMEOUT_MS = 30_000;
 const REAL_TIMEOUT_MS = 180_000;
 
@@ -390,4 +425,5 @@ async function runScenario(): Promise<number> {
   return ok ? 0 : 1;
 }
 
+await loadRigEnv();
 process.exit(await runScenario());
