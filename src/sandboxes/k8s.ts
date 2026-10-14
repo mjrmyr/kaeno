@@ -19,15 +19,28 @@ const containerStatusSchema = z.object({
     })
     .optional(),
 });
-const podSchema = z.object({
+export const podSchema = z.object({
   metadata: z.object({
     name: z.string(),
     annotations: z.record(z.string(), z.string()).optional(),
+    labels: z.record(z.string(), z.string()).optional(),
   }),
   spec: z
     .object({
       containers: z
-        .array(z.object({ image: z.string().optional() }))
+        .array(
+          z.object({
+            image: z.string().optional(),
+            env: z
+              .array(
+                z.object({
+                  name: z.string(),
+                  value: z.string().optional(),
+                }),
+              )
+              .optional(),
+          }),
+        )
         .optional(),
       volumes: z
         .array(
@@ -60,6 +73,8 @@ export interface SandboxClient {
   createPod(pod: unknown): Promise<void>;
   deletePod(name: string): Promise<void>;
   listSandboxPods(): Promise<Pod[]>;
+  /** Container logs; undefined once the pod is gone. */
+  getPodLog(name: string): Promise<string | undefined>;
 }
 export const SANDBOX_LABEL = "app.kubernetes.io/name=kaeno-sandbox";
 export class KubernetesClient {
@@ -125,6 +140,23 @@ export class KubernetesClient {
   }
   async deletePod(name: string): Promise<void> {
     await this.call("DELETE", `${this.pods}/${name}?gracePeriodSeconds=5`);
+  }
+  /** Pod logs are plain text, not JSON — fetched outside the JSON `call` helper. */
+  async getPodLog(name: string): Promise<string | undefined> {
+    const token = (await this.readToken()).trim();
+    const response = await this.fetch(`${this.api}${this.pods}/${name}/log`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (response.status === 404) {
+      return undefined;
+    }
+    if (!response.ok) {
+      const payload = await response.text();
+      throw new Error(
+        `GET ${this.pods}/${name}/log → ${response.status}: ${payload.slice(0, 300)}`,
+      );
+    }
+    return response.text();
   }
   async listSandboxPods(): Promise<Pod[]> {
     const value = await this.call(

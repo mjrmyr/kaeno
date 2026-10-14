@@ -14,6 +14,8 @@ const manifestSchema = z.strictObject({
     truncated: z.boolean(),
     bytes: z.number().int().nonnegative(),
     skippedByBlacklist: z.number().int().nonnegative(),
+    /** Set when the capture stream died mid-run; evidence is partial. */
+    error: z.string().optional(),
   }),
   envdLog: z.boolean(),
   podLog: z.boolean(),
@@ -32,6 +34,7 @@ export interface RunManifest {
     truncated: boolean;
     bytes: number;
     skippedByBlacklist: number;
+    error?: string;
   };
   envdLog: boolean;
   podLog: boolean;

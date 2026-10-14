@@ -20,6 +20,7 @@ import {
   type WorkToolSurface,
 } from "../../src/agents/index.ts";
 import { ApiServer } from "../../src/api/index.ts";
+import { ArtifactStore } from "../../src/artifacts/index.ts";
 import { eligibleWorkTemplates, type Config } from "../../src/config/index.ts";
 import {
   EnvironmentServer,
@@ -52,6 +53,7 @@ interface AgentOptions {
   skillCacheClaim: string;
   sandboxUrl?: (pod: string) => string;
   client?: SandboxClient;
+  artifacts?: ArtifactStore;
 }
 export function createAgents(options: AgentOptions): Agent {
   let client = options.client ?? sandboxClient;
@@ -78,12 +80,25 @@ export function createAgents(options: AgentOptions): Agent {
         cwd,
         fetch,
       ),
+    createCaptureEnvironment: (
+      pod: string,
+      token: string,
+      cwd: string,
+    ): RemoteExecutionEnv =>
+      new RemoteExecutionEnv(
+        options.sandboxUrl?.(pod) ?? "http://127.0.0.1:9",
+        token,
+        `capture:${pod}`,
+        cwd,
+        fetch,
+      ),
   };
   const sandboxes = new SandboxManager(
     options.harness,
     client,
     capacity,
     environmentFactory,
+    options.artifacts,
   );
   const logSecrets = Object.entries(process.env)
     .filter(([name]) => /TOKEN|API_KEY|PASSWORD|SECRET|PRIVATE_KEY/i.test(name))

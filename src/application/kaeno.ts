@@ -15,6 +15,7 @@ import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { Agent, AgentFactory, AgentTraceLogger } from "../agents/index.ts";
 import { ApiServer } from "../api/index.ts";
+import { ArtifactStore } from "../artifacts/index.ts";
 import { eligibleWorkTemplates, loadConfig } from "../config/index.ts";
 import { HarnessReference } from "../durable/index.ts";
 import { RemoteExecutionEnv } from "../execution/index.ts";
@@ -175,12 +176,27 @@ export async function startApplication(): Promise<void> {
         cwd,
         fetch,
       ),
+    createCaptureEnvironment: (
+      pod: string,
+      token: string,
+      cwd: string,
+    ): RemoteExecutionEnv =>
+      new RemoteExecutionEnv(
+        `http://${pod}.kaeno-sandbox.${namespace}.svc.cluster.local:7070`,
+        token,
+        `capture:${pod}`,
+        cwd,
+        fetch,
+      ),
   };
+  // Artifacts are optional: unset KAENO_ARTIFACTS disables evidence collection.
+  const artifactsRoot = readEnvironment("KAENO_ARTIFACTS");
   const sandboxes = new SandboxManager(
     harnessReference.getHarness,
     kubernetes,
     capacity,
     environmentFactory,
+    artifactsRoot === undefined ? undefined : new ArtifactStore(artifactsRoot),
   );
   const logSecrets = Object.entries(process.env)
     .filter(([name]) => /TOKEN|API_KEY|PASSWORD|SECRET|PRIVATE_KEY/i.test(name))

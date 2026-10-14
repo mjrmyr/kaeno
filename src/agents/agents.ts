@@ -14,6 +14,7 @@ import {
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { randomBytes } from "node:crypto";
+import type { SandboxCapture } from "../sandboxes/index.ts";
 import {
   readSkillDocument,
   skillPrompt,
@@ -43,7 +44,7 @@ export interface AgentSandboxes {
     },
     ctx: Context,
   ): Promise<void>;
-  removeSandbox(pod: string): Promise<void>;
+  removeSandbox(pod: string, capture?: SandboxCapture): Promise<void>;
   getExecutionEnvironment(
     sandbox: ManagedSandboxRecord,
     cwd: string,
@@ -186,11 +187,29 @@ export class Agent {
     );
   }
   async releaseWorkSandbox(id: ConversationId): Promise<void> {
-    const sandbox = (
-      await this.harness().snapshot(AgentState, id, BACKGROUND_CONTEXT)
-    )?.sandbox;
+    const state = await this.harness().snapshot(
+      AgentState,
+      id,
+      BACKGROUND_CONTEXT,
+    );
+    const sandbox = state?.sandbox;
     if (sandbox) {
-      await this.sandboxes.removeSandbox(sandbox.pod);
+      // The capture identity lives on the conversation state; without it there is
+      // nothing to key the artifacts directory on, so skip collection entirely.
+      const workId = state?.workId;
+      await this.sandboxes.removeSandbox(
+        sandbox.pod,
+        workId === undefined || state?.template === undefined
+          ? undefined
+          : {
+              identity: { workId, taskId: workId },
+              header: {
+                conversationId: id,
+                pod: sandbox.pod,
+                template: state.template,
+              },
+            },
+      );
     }
   }
   getExecutionEnvironment = async (

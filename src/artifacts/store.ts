@@ -67,6 +67,10 @@ export class RunHandle {
     this.manifest.capture.truncated = true;
   }
 
+  markFailed(error: string): void {
+    this.manifest.capture.error = error;
+  }
+
   async finish(): Promise<RunManifest> {
     this.manifest = {
       ...this.manifest,
