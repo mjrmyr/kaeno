@@ -16,6 +16,7 @@ import type {
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { decode, encode, type Handle, type WireCallback } from "./codec.ts";
+import { captureFrameSchema, type CaptureFrame } from "./collect.ts";
 import {
   RemoteBinaryReader,
   RemoteDirectoryReader,
@@ -212,6 +213,56 @@ export class RemoteExecutionEnv {
     return parse(
       await this.request("/handle", { handle: id, method }, args, ctx),
     );
+  }
+  /**
+   * Streams one run's capture frames until the terminal stat frame. Collection is
+   * bounded only by the server-side cap and the connection lifetime.
+   */
+  async *collect(signal?: AbortSignal): AsyncGenerator<CaptureFrame, void> {
+    const response = await this.post("/collect", { method: "collect" }, signal);
+    const stream = response.body;
+    if (!response.ok || !stream) {
+      throw new Error(
+        `remote env /collect: HTTP ${response.status} ${await response.text()}`,
+      );
+    }
+    const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
+    let buffer = "";
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) {
+          throw new Error(
+            "remote env /collect: stream ended without a stat frame",
+          );
+        }
+        buffer += value;
+        let newline: number;
+        while ((newline = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, newline);
+          buffer = buffer.slice(newline + 1);
+          if (!line) {
+            continue;
+          }
+          const raw: unknown = JSON.parse(line);
+          const frame = z.record(z.string(), z.unknown()).parse(raw);
+          if (Object.hasOwn(frame, "ret")) {
+            const parsed = captureFrameSchema.parse(frame.ret);
+            if (parsed.type === "stat") {
+              yield parsed;
+              return;
+            }
+            yield parsed;
+          } else if (Object.hasOwn(frame, "err")) {
+            throw decode(frame.err);
+          } else {
+            throw new Error("Invalid remote response frame");
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
   }
   private createHandleProxy(
     handle: Handle,

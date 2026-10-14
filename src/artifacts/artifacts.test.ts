@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { CaptureFrame } from "../execution/index.ts";
 vi.mock("../skills/index.ts", () => ({
   SKILL_ROOT: "/workspace/.agents/skills",
 }));
@@ -9,8 +10,11 @@ import {
   ArtifactStore,
   ENVD_LOG_FILE,
   MANIFEST_FILE,
+  WORKSPACE_MANIFEST_FILE,
+  collectArtifacts,
   isBlacklisted,
   parseManifest,
+  type CaptureTransport,
   type RunIdentity,
 } from "./index.ts";
 
@@ -74,6 +78,126 @@ describe("manifest", () => {
     expect(() => parseManifest({ ...manifest, workId: 0 })).toThrow(
       /Invalid run manifest/,
     );
+  });
+});
+
+describe("collector", () => {
+  let root: string;
+  const identity: RunIdentity = { workId: 9, taskId: 4 };
+  const header = {
+    conversationId: 12,
+    pod: "sandbox-collect",
+    template: "swe",
+  };
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "kaeno-artifacts-"));
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const transport = (frames: CaptureFrame[]): CaptureTransport => ({
+    async *collect(): AsyncGenerator<CaptureFrame> {
+      yield* frames;
+    },
+  });
+  const text = (store: ArtifactStore, path: string): Promise<string> =>
+    store
+      .readFile(identity, path)
+      .then((content) => Buffer.from(content).toString("utf8"));
+
+  it("drains capture frames into complete files with a workspace manifest", async () => {
+    const store = new ArtifactStore(root);
+    const handle = await store.createRun(identity, header);
+    await collectArtifacts(
+      transport([
+        {
+          type: "file",
+          target: ENVD_LOG_FILE,
+          size: 4,
+          mode: 0o100644,
+          mtimeMs: 1000,
+        },
+        {
+          type: "chunk",
+          target: ENVD_LOG_FILE,
+          data: Buffer.from("req\n").toString("base64"),
+        },
+        {
+          type: "file",
+          target: "workspace/src/main.ts",
+          size: 5,
+          mode: 0o100644,
+          mtimeMs: 2000,
+        },
+        {
+          type: "chunk",
+          target: "workspace/src/main.ts",
+          data: Buffer.from("hel").toString("base64"),
+        },
+        {
+          type: "chunk",
+          target: "workspace/src/main.ts",
+          data: Buffer.from("lo").toString("base64"),
+        },
+        {
+          type: "symlink",
+          target: "workspace/link",
+          pointsTo: "/etc/kaeno/ssh",
+        },
+        { type: "stat", truncated: false, bytes: 9, skipped: 3 },
+      ]),
+      handle,
+    );
+    await handle.finish();
+    expect(await text(store, "workspace/src/main.ts")).toBe("hello");
+    expect(await text(store, ENVD_LOG_FILE)).toBe("req\n");
+    const manifestText = await text(store, WORKSPACE_MANIFEST_FILE);
+    expect(manifestText).toContain("workspace/src/main.ts");
+    expect(manifestText).toContain("symlink\tworkspace/link -> /etc/kaeno/ssh");
+    expect(manifestText).not.toContain(ENVD_LOG_FILE);
+    const manifest = await store.readManifest(identity);
+    expect(manifest.capture.skippedByBlacklist).toBe(3);
+    expect(manifest.capture.truncated).toBe(false);
+  });
+  it("drops an interrupted file and rejects streams without a terminal stat", async () => {
+    const store = new ArtifactStore(root);
+    const handle = await store.createRun(identity, header);
+    await expect(
+      collectArtifacts(
+        transport([
+          {
+            type: "file",
+            target: "workspace/half.txt",
+            size: 4,
+            mode: 0o100644,
+            mtimeMs: 1,
+          },
+          {
+            type: "chunk",
+            target: "workspace/half.txt",
+            data: Buffer.from("half").toString("base64"),
+          },
+        ]),
+        handle,
+      ),
+    ).rejects.toThrow(/without a stat frame/);
+    await handle.finish();
+    expect(await store.list(identity)).toEqual([MANIFEST_FILE]);
+    const manifest = await store.readManifest(identity);
+    expect(manifest.capture.bytes).toBe(0);
+  });
+  it("records truncation from the terminal stat", async () => {
+    const store = new ArtifactStore(root);
+    const handle = await store.createRun(identity, header);
+    await collectArtifacts(
+      transport([{ type: "stat", truncated: true, bytes: 1, skipped: 0 }]),
+      handle,
+    );
+    await handle.finish();
+    const manifest = await store.readManifest(identity);
+    expect(manifest.capture.truncated).toBe(true);
   });
 });
 

@@ -6,6 +6,7 @@ export {
   isBlacklisted,
   type CaptureRoot,
 } from "./blacklist.ts";
+export { collectArtifacts, type CaptureTransport } from "./collector.ts";
 export { parseManifest, type RunManifest } from "./manifest.ts";
 export {
   ArtifactStore,
