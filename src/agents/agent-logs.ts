@@ -8,8 +8,34 @@ import {
   type HookRegistration,
   type ToolExecutionResult,
 } from "@earendil-works/pi-durable";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import {
+  ArtifactStore,
+  TRACE_FILE,
+  type RunIdentity,
+} from "../artifacts/index.ts";
 import type { AgentState } from "./agent-state.ts";
 const MAX_CONTENT = 8192;
+/** Durable second destination for trace events: one line per event under the run's artifact directory. */
+export interface AgentTraceSink {
+  append(identity: RunIdentity, line: string): void;
+}
+export class AgentTraceFileSink implements AgentTraceSink {
+  private readonly store: ArtifactStore;
+  constructor(store: ArtifactStore) {
+    this.store = store;
+  }
+  append(identity: RunIdentity, line: string): void {
+    try {
+      const directory = this.store.runDirectory(identity);
+      mkdirSync(directory, { recursive: true });
+      appendFileSync(join(directory, TRACE_FILE), `${line}\n`);
+    } catch {
+      // Recovery: discard an observability failure; never turn it into an agent/task failure.
+    }
+  }
+}
 export interface AgentTraceContext {
   conversationId: number;
   taskId: number;
@@ -48,9 +74,15 @@ export function redactAgentLog(
 export class AgentTraceLogger {
   private readonly write: (line: string) => void;
   private readonly secrets: readonly string[];
-  constructor(write: (line: string) => void, secrets: readonly string[]) {
+  private readonly durable?: AgentTraceSink;
+  constructor(
+    write: (line: string) => void,
+    secrets: readonly string[],
+    durable?: AgentTraceSink,
+  ) {
     this.write = write;
     this.secrets = secrets;
+    this.durable = durable;
   }
   private writeEvent(
     ctx: AgentTraceContext,
@@ -63,26 +95,35 @@ export class AgentTraceLogger {
         ...this.secrets,
         ctx.sandbox?.token ?? "",
       ]);
-      this.write(
-        JSON.stringify({
-          type: "agent_trace",
-          time: new Date().toISOString(),
-          event,
-          conversationId: ctx.conversationId,
-          taskId: ctx.taskId,
-          role: ctx.role ?? "unknown",
-          agent: ctx.template,
-          workId: ctx.workId,
-          pod: ctx.sandbox?.pod,
-          ...fields,
-          ...(safe
-            ? {
-                content: safe.slice(0, MAX_CONTENT),
-                ...(safe.length > MAX_CONTENT ? { truncated: true } : {}),
-              }
-            : {}),
-        }),
-      );
+      const base = {
+        type: "agent_trace",
+        time: new Date().toISOString(),
+        event,
+        conversationId: ctx.conversationId,
+        taskId: ctx.taskId,
+        role: ctx.role ?? "unknown",
+        agent: ctx.template,
+        workId: ctx.workId,
+        pod: ctx.sandbox?.pod,
+        ...fields,
+      };
+      const line = (limit?: number): string => {
+        let content: Record<string, unknown> = {};
+        if (safe !== "") {
+          if (limit === undefined || safe.length <= limit) {
+            content = { content: safe };
+          } else {
+            content = { content: safe.slice(0, limit), truncated: true };
+          }
+        }
+        return JSON.stringify({ ...base, ...content });
+      };
+      this.write(line(MAX_CONTENT));
+      // The durable sink keeps the full event; conversations without a work id have
+      // no artifacts directory, so there is nowhere to append them.
+      if (this.durable !== undefined && ctx.workId !== undefined) {
+        this.durable.append({ workId: ctx.workId, taskId: ctx.taskId }, line());
+      }
     } catch {
       // Recovery: discard an observability failure; never turn it into an agent/task failure.
     }

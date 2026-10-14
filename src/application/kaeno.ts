@@ -13,7 +13,12 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
-import { Agent, AgentFactory, AgentTraceLogger } from "../agents/index.ts";
+import {
+  Agent,
+  AgentFactory,
+  AgentTraceFileSink,
+  AgentTraceLogger,
+} from "../agents/index.ts";
 import { ApiServer } from "../api/index.ts";
 import { ArtifactStore } from "../artifacts/index.ts";
 import { eligibleWorkTemplates, loadConfig } from "../config/index.ts";
@@ -191,17 +196,23 @@ export async function startApplication(): Promise<void> {
   };
   // Artifacts are optional: unset KAENO_ARTIFACTS disables evidence collection.
   const artifactsRoot = readEnvironment("KAENO_ARTIFACTS");
+  const artifacts =
+    artifactsRoot === undefined ? undefined : new ArtifactStore(artifactsRoot);
   const sandboxes = new SandboxManager(
     harnessReference.getHarness,
     kubernetes,
     capacity,
     environmentFactory,
-    artifactsRoot === undefined ? undefined : new ArtifactStore(artifactsRoot),
+    artifacts,
   );
   const logSecrets = Object.entries(process.env)
     .filter(([name]) => /TOKEN|API_KEY|PASSWORD|SECRET|PRIVATE_KEY/i.test(name))
     .flatMap(([, value]) => (value ? [value] : []));
-  const logger = new AgentTraceLogger((line) => console.log(line), logSecrets);
+  const logger = new AgentTraceLogger(
+    (line) => console.log(line),
+    logSecrets,
+    artifacts === undefined ? undefined : new AgentTraceFileSink(artifacts),
+  );
   const agent = new Agent(
     factory,
     harnessReference.getHarness,

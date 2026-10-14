@@ -15,6 +15,7 @@ import { readFile } from "node:fs/promises";
 import {
   Agent,
   AgentFactory,
+  AgentTraceFileSink,
   AgentTraceLogger,
   persistAgentBinding,
   type WorkToolSurface,
@@ -109,7 +110,13 @@ export function createAgents(options: AgentOptions): Agent {
     sandboxes,
     options.images,
     options.skillCacheClaim,
-    new AgentTraceLogger((line) => console.log(line), logSecrets),
+    new AgentTraceLogger(
+      (line) => console.log(line),
+      logSecrets,
+      options.artifacts === undefined
+        ? undefined
+        : new AgentTraceFileSink(options.artifacts),
+    ),
   );
 }
 interface WorkOptions {

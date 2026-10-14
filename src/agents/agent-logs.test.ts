@@ -1,11 +1,29 @@
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai";
 import type { ToolExecutionResult } from "@earendil-works/pi-durable";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { z } from "zod";
+import { ArtifactStore, type RunIdentity } from "../artifacts/index.ts";
+vi.mock("../artifacts/index.ts", () => {
+  class ArtifactStore {
+    public readonly root: string;
+    constructor(root: string) {
+      this.root = root;
+    }
+    runDirectory(identity: { workId: number; taskId: number }): string {
+      return `${this.root}/work-${identity.workId}/task-${identity.taskId}`;
+    }
+  }
+  return { ArtifactStore, TRACE_FILE: "trace.log" };
+});
 import {
+  AgentTraceFileSink,
   AgentTraceLogger,
   redactAgentLog,
   type AgentTraceContext,
+  type AgentTraceSink,
 } from "./index.ts";
 vi.mock("@earendil-works/pi-durable", async () => {
   const { createMockSdk } = await import("../../test/mocks/sdk.ts");
@@ -41,7 +59,7 @@ function message(content: AssistantMessage["content"]): AssistantMessage {
     },
   };
 }
-function setup(): {
+function setup(sink?: AgentTraceSink): {
   logger: AgentTraceLogger;
   records: Record<string, unknown>[];
 } {
@@ -50,8 +68,24 @@ function setup(): {
     (line) =>
       records.push(z.record(z.string(), z.unknown()).parse(JSON.parse(line))),
     ["known-provider-secret"],
+    sink,
   );
   return { logger, records };
+}
+function captureSink(): {
+  sink: AgentTraceSink;
+  appended: { identity: RunIdentity; line: Record<string, unknown> }[];
+} {
+  const appended: { identity: RunIdentity; line: Record<string, unknown> }[] =
+    [];
+  const sink: AgentTraceSink = {
+    append: (identity, line) =>
+      appended.push({
+        identity,
+        line: z.record(z.string(), z.unknown()).parse(JSON.parse(line)),
+      }),
+  };
+  return { sink, appended };
 }
 it("logs correlation and public content, but not opaque signatures, images or private details", () => {
   const { logger, records } = setup();
@@ -157,4 +191,62 @@ it("recovers from a failed log sink without failing the caller", () => {
       message([{ type: "text", text: "response" }]),
     ),
   ).not.toThrow();
+});
+it("mirrors full events to the durable sink, keyed by the run identity", () => {
+  const { sink, appended } = captureSink();
+  const { logger, records } = setup(sink);
+  const long = "x".repeat(9000) + "known-provider-secret";
+  logger.logModelResponse(context, message([{ type: "text", text: long }]));
+  // logModelResponse emits the text block plus the closing model_response event.
+  expect(appended).toHaveLength(2);
+  // Console keeps its truncation; the durable line is full and equally redacted.
+  expect(records[0].content).toHaveLength(8192);
+  expect(records[0].truncated).toBe(true);
+  expect(appended[0].identity).toEqual({ workId: 56, taskId: 34 });
+  const durableContent = z.string().parse(appended[0].line.content);
+  expect(durableContent.length).toBeGreaterThan(9000);
+  expect(durableContent).not.toContain("known-provider-secret");
+  expect(appended[0].line).toMatchObject({
+    type: "agent_trace",
+    event: "text",
+    conversationId: 12,
+    taskId: 34,
+    workId: 56,
+    pod: "kaeno-sb-test",
+  });
+  expect(appended[0].line.truncated).toBeUndefined();
+  expect(appended[1].line).toMatchObject({ event: "model_response" });
+});
+it("mirrors nothing for conversations without a work id", () => {
+  const { sink, appended } = captureSink();
+  const { logger } = setup(sink);
+  logger.logModelRequest({
+    conversationId: 12,
+    taskId: 34,
+    role: "chat",
+  });
+  expect(appended).toEqual([]);
+});
+it("AgentTraceFileSink appends lines under the run directory and survives failures", async () => {
+  const root = await mkdtemp(join(tmpdir(), "kaeno-trace-"));
+  try {
+    const identity: RunIdentity = { workId: 56, taskId: 34 };
+    const sink = new AgentTraceFileSink(new ArtifactStore(root));
+    sink.append(identity, "{}\n");
+    sink.append(identity, '{"event":"text"}');
+    const content = await readFile(
+      join(root, "work-56", "task-34", "trace.log"),
+      "utf8",
+    );
+    expect(content).toBe('{}\n\n{"event":"text"}\n');
+    class BrokenStore extends ArtifactStore {
+      override runDirectory(): string {
+        throw new Error("broken store");
+      }
+    }
+    const broken = new AgentTraceFileSink(new BrokenStore(""));
+    expect(() => broken.append(identity, "{}")).not.toThrow();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
