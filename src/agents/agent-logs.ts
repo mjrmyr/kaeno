@@ -122,7 +122,10 @@ export class AgentTraceLogger {
       // The durable sink keeps the full event; conversations without a work id have
       // no artifacts directory, so there is nowhere to append them.
       if (this.durable !== undefined && ctx.workId !== undefined) {
-        this.durable.append({ workId: ctx.workId, taskId: ctx.taskId }, line());
+        // The run directory is keyed by the work's own task id (captureForPod uses
+        // {workId, taskId: workId}); ctx.taskId is the ephemeral per-turn generation
+        // task and would fragment the trace across throwaway directories.
+        this.durable.append({ workId: ctx.workId, taskId: ctx.workId }, line());
       }
     } catch {
       // Recovery: discard an observability failure; never turn it into an agent/task failure.

@@ -3,7 +3,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ArtifactStore,
   ENVD_LOG_FILE,
@@ -33,14 +33,11 @@ import {
 import { createMockRuntime } from "../mocks/durable.ts";
 import {
   createPod,
-  deletePod,
-  getPod,
-  getPodLog,
-  listSandboxPods,
   namespace,
   resetCluster,
   runningPods,
 } from "./sandbox-fixture.ts";
+import * as k8s from "./sandbox-fixture.ts";
 import { serverPort } from "./values.ts";
 
 const envdToken = "e".repeat(40);
@@ -88,13 +85,15 @@ async function startRig(
     capBytes: 64 * 1024 * 1024,
     root: join(root, "workspace"),
   });
+  // Call-time indirection through the module namespace: vi.spyOn on the fixture
+  // must be visible to the manager under test.
   const client: SandboxClient = {
     namespace,
-    getPod,
-    createPod,
-    deletePod,
-    listSandboxPods,
-    getPodLog,
+    getPod: (name) => k8s.getPod(name),
+    createPod: (pod) => k8s.createPod(pod),
+    deletePod: (name) => k8s.deletePod(name),
+    listSandboxPods: () => k8s.listSandboxPods(),
+    getPodLog: (name) => k8s.getPodLog(name),
   };
   const harness = (): SandboxRuntime => ({ getTask: async () => undefined });
   const capacity = new SandboxCapacity(() => createMockRuntime(), client);
@@ -258,8 +257,8 @@ describe("sandbox teardown artifact collection", () => {
           labels: { "kaeno.io/template": "swe" },
         },
       };
-      listSandboxPods.mockImplementationOnce(async () => [
-        ...(await listSandboxPods()),
+      vi.spyOn(k8s, "listSandboxPods").mockImplementationOnce(async () => [
+        ...(await k8s.listSandboxPods()),
         ghost,
       ]);
       await rig.manager.sweepOrphanedSandboxes();

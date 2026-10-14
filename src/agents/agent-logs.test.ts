@@ -202,7 +202,8 @@ it("mirrors full events to the durable sink, keyed by the run identity", () => {
   // Console keeps its truncation; the durable line is full and equally redacted.
   expect(records[0].content).toHaveLength(8192);
   expect(records[0].truncated).toBe(true);
-  expect(appended[0].identity).toEqual({ workId: 56, taskId: 34 });
+  // The run directory is keyed by the work's own task id, not the per-turn generation task.
+  expect(appended[0].identity).toEqual({ workId: 56, taskId: 56 });
   const durableContent = z.string().parse(appended[0].line.content);
   expect(durableContent.length).toBeGreaterThan(9000);
   expect(durableContent).not.toContain("known-provider-secret");
