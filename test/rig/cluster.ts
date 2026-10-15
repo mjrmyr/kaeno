@@ -2,7 +2,7 @@
 // real envd server on localhost speaking the production protocol. The pod spec is
 // the real `sandboxPod` manifest and the envd token is extracted from it — the
 // same extraction production artifact collection performs at teardown.
-import { mkdir } from "node:fs/promises";
+import { mkdir, realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { CAPTURE_CAP_BYTES } from "../../src/artifacts/index.ts";
@@ -39,7 +39,9 @@ export function createRigCluster(root: string): RigCluster {
       const pod = podSchema.parse(input);
       const name = pod.metadata.name;
       if (running.has(name)) {
-        throw new Error(`Rig pod ${name} already exists`);
+        // Production treats 409 AlreadyExists as success: a restarted WORK
+        // re-runs ensureSandbox and adopts its existing pod (k8s.ts).
+        return;
       }
       const token = pod.spec?.containers
         ?.flatMap((container) => container.env ?? [])
@@ -47,13 +49,32 @@ export function createRigCluster(root: string): RigCluster {
       if (token === undefined) {
         throw new Error(`Rig pod ${name} carries no KAENO_ENV_TOKEN`);
       }
+      // Production pods get a fresh emptyDir workspace/home at a fixed path
+      // (/workspace) that equals the client's cwd. The rig keeps the client's
+      // path (root/workspace == the factory's sandboxCwd) and gives it emptyDir
+      // semantics by wiping it per pod. envd re-applies the request cwd on every
+      // call, so a per-pod path different from the client cwd would split writes
+      // across two directories. One live pod at a time keeps the path unshared.
+      if (running.size > 0) {
+        throw new Error(
+          "Rig cluster runs one sandbox at a time (sandboxCapacity: 1)",
+        );
+      }
       const workspace = join(root, "workspace");
       const home = join(root, "home");
+      await rm(workspace, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
       await mkdir(workspace, { recursive: true });
       await mkdir(home, { recursive: true });
+      const shell = await sandboxShell(workspace, home);
       const server = new EnvironmentServer(
         token,
-        (cwd: string) => new NodeExecutionEnv({ cwd }),
+        (cwd: string) =>
+          new NodeExecutionEnv({
+            cwd,
+            shellPath: shell.shellPath,
+            shellEnv: shell.shellEnv,
+          }),
         workspace,
         {
           roots: [
@@ -95,6 +116,37 @@ export function createRigCluster(root: string): RigCluster {
         server.closeAllConnections();
         await new Promise<void>((resolve) => server.close(() => resolve()));
       }
+    },
+  };
+}
+
+/**
+ * A pod's shell sees a container: its own workspace and home, a minimal
+ * environment (no host variables, no LLM keys), and no host user data. On
+ * macOS the rig confines bash with sandbox-exec (test/rig/sandbox.sb); elsewhere
+ * only the environment is reduced. File tools (read/write via envd) stay
+ * unconfined — absolute host paths remain reachable through them.
+ */
+async function sandboxShell(
+  workspace: string,
+  home: string,
+): Promise<{ shellPath: string | undefined; shellEnv: NodeJS.ProcessEnv }> {
+  const shellEnv: NodeJS.ProcessEnv = {
+    PATH: "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    HOME: home,
+    LANG: "C.UTF-8",
+    TMPDIR: home,
+  };
+  if (process.platform !== "darwin") {
+    return { shellPath: undefined, shellEnv };
+  }
+  return {
+    shellPath: join(import.meta.dirname, "sandbox-shell.sh"),
+    shellEnv: {
+      ...shellEnv,
+      RIG_PROFILE: join(import.meta.dirname, "sandbox.sb"),
+      RIG_WS: await realpath(workspace),
+      RIG_HOME: await realpath(home),
     },
   };
 }

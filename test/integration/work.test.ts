@@ -312,6 +312,60 @@ it("acknowledges work, answers a second request while WORK is reasoning, and rep
   await delay(50);
   expect(conversation.sent).toHaveLength(3);
 });
+it.each(["", "Partial answer from the failed model response"])(
+  "fails work when provider failure follows intermediate assistant narration (error text: %j)",
+  async (errorText) => {
+    const reports: string[] = [];
+    const narration = "I will inspect child work before producing the result.";
+    let workerCalls = 0;
+    const conversation = await setup((system, last) => {
+      if (isWork(system)) {
+        workerCalls++;
+        if (workerCalls === 1) {
+          return fauxAssistantMessage(
+            [fauxText(narration), fauxToolCall("list_work", {})],
+            { stopReason: "toolUse" },
+          );
+        }
+        return fauxAssistantMessage(errorText, {
+          stopReason: "error",
+          errorMessage: "Synthetic non-retryable provider failure",
+        });
+      }
+      if (last.role === "toolResult") {
+        return reply("ACK");
+      }
+      if (text(last).startsWith("Work #")) {
+        reports.push(text(last));
+        return reply("The worker failed to produce a verified result.");
+      }
+      return call("start_work", {
+        agent: "worker",
+        title: "Provider failure after narration",
+        brief: "Inspect child work, then provide the final result.",
+      });
+    });
+    await conversation.submit("first", "request-provider-failure");
+    await until(async () => {
+      const status = (await conversation.work.listWork(conversation.id))[0]
+        ?.status;
+      return status === "completed" || status === "failed";
+    });
+    const view = required(
+      (await conversation.work.listWork(conversation.id))[0],
+    );
+    expect(workerCalls).toBeGreaterThanOrEqual(2);
+    expect(view.status).toBe("failed");
+    await until(async () => reports.length > 0);
+    expect(reports[0]).toContain(
+      "Work failed: Synthetic non-retryable provider failure",
+    );
+    expect(reports[0]).not.toContain(narration);
+    if (errorText.length > 0) {
+      expect(reports[0]).not.toContain(errorText);
+    }
+  },
+);
 it("holds an instant result behind actual acknowledgement delivery and captures the originating route", async () => {
   const { promise: ackGate, resolve: ackRelease } =
     Promise.withResolvers<void>();

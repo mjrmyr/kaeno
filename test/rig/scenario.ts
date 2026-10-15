@@ -21,6 +21,9 @@ import type {
   SimpleStreamOptions,
   TranscriptContext,
 } from "@earendil-works/pi-ai";
+import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
+import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
+import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
   fauxAssistantMessage,
@@ -67,7 +70,7 @@ const FAUX_TURNS = 150;
  * file's values never appear in output or captured evidence.
  */
 async function loadRigEnv(): Promise<void> {
-  const file = join(import.meta.dirname, ".rig.env");
+  const file = join(import.meta.dirname, "../../.rig.env");
   const raw = await readFile(file, "utf8").catch((error: unknown) => {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return null;
@@ -163,7 +166,7 @@ async function bootRig(
   sent: string[];
   agents: ReturnType<typeof createAgents>;
 }> {
-  const model = real ? cheapModel(provider) : "anthropic/faux-1";
+  const model = real ? rigModel(provider) : "anthropic/faux-1";
   const config = parseConfig({
     agent: "kaeno",
     sandboxCapacity: 1,
@@ -185,6 +188,9 @@ async function bootRig(
   });
 
   const models = createModels();
+  models.setProvider(anthropicProvider());
+  models.setProvider(openaiProvider());
+  models.setProvider(openrouterProvider());
   if (!real) {
     const faux = fauxProvider({ provider: "anthropic" });
     models.setProvider(faux.provider);
@@ -246,6 +252,7 @@ async function bootRig(
     client: cluster.client,
     sandboxUrl: (pod: string) => required(cluster.pod(pod)).url,
     artifacts: store,
+    sandboxCapacity: config.sandboxCapacity,
   });
 
   const registry = createRegistry();
@@ -293,14 +300,14 @@ function rigProvider(): string | undefined {
   return undefined;
 }
 
-function cheapModel(provider: string): string {
+function rigModel(provider: string): string {
   if (provider === "openai") {
-    return "openai/gpt-5-nano";
+    return "openai/gpt-5.4";
   }
   if (provider === "openrouter") {
-    return "openrouter/anthropic/claude-haiku-4.5";
+    return "openrouter/anthropic/claude-sonnet-5.5";
   }
-  return "anthropic/claude-haiku-4-5";
+  return "anthropic/claude-sonnet-5-5";
 }
 
 async function runScenario(): Promise<number> {
@@ -310,7 +317,7 @@ async function runScenario(): Promise<number> {
   const real = !forced && provider !== undefined;
   console.log(
     real
-      ? `rig: real LLM pass via ${provider} (cheap models, one delegation)`
+      ? `rig: real LLM pass via ${provider} (Sonnet-grade models, one delegation)`
       : "rig: scripted LLM pass — set ANTHROPIC_API_KEY, OPENAI_API_KEY or OPENROUTER_API_KEY for the real pass; --faux silences this note",
   );
 

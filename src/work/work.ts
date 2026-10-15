@@ -237,13 +237,13 @@ async function latestAnswer(
   }
   return undefined;
 }
-/** Newest model turn of a conversation; compactions and other bookkeeping entries do not count. */
-async function latestTurn(
+/** Newest model response; compactions and other bookkeeping entries do not count. */
+async function latestResponse(
   tx: Tx,
   conversationId: ConversationId,
-): Promise<number | undefined> {
+): Promise<EntryRecord | undefined> {
   const { items } = await tx.scanEntries({ conversationId }, 64);
-  return items.find((entry) => entry.kind === AssistantEntry.kind)?.id;
+  return items.find((entry) => entry.kind === AssistantEntry.kind);
 }
 async function liveChildren(
   tx: Tx,
@@ -1013,7 +1013,8 @@ export class Work {
         ) {
           return undefined;
         }
-        const latest = await latestTurn(tx, conversationId);
+        const response = await latestResponse(tx, conversationId);
+        const latest = response?.id;
         const live = (await liveChildren(tx, conversationId)).length > 0;
         if (latest === checkpoint.seen) {
           if (latest === undefined && briefStatus.status === "unanswered") {
@@ -1056,13 +1057,24 @@ export class Work {
             checkpoint: { ...checkpoint, seen: latest, awaiting: "children" },
           };
         }
-        const text = await latestAnswer(tx, conversationId);
+        // A prior tool-round narration is not a final report. Match the
+        // durable harness's answer boundary, and never skip a newer error.
+        const message = response?.model?.[0];
+        const answered =
+          message?.role === "assistant" &&
+          ["stop", "length", "toolUse"].includes(message.stopReason) &&
+          !message.content.some((block) => block.type === "toolCall");
+        const text = answered && response ? assistantText(response) : undefined;
+        const failure =
+          message?.role === "assistant" && message.stopReason === "error"
+            ? `Work failed: ${message.errorMessage ?? "model_error"}`
+            : "Work ended without a report.";
         return {
           status: "running",
           checkpoint: {
             phase: "report",
             conversation: conversationId,
-            text: text ?? "Work ended without a report.",
+            text: text ?? failure,
             failed: text === undefined,
           },
         };
