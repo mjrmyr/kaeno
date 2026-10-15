@@ -17,6 +17,7 @@ import * as k8s from "./sandbox-fixture.ts";
 import { required } from "./values.ts";
 it("admits four workers, preserves leases across allocator recreation, and releases only after confirmed pod removal", async () => {
   const pods = new Map<string, Pod>();
+  k8s.setSandboxQuota({ "limits.cpu": "8" }); // four 2-CPU sandboxes
   vi.spyOn(k8s, "getPod").mockImplementation(async (name) => pods.get(name));
   vi.spyOn(k8s, "listSandboxPods").mockImplementation(async () => [
     ...pods.values(),
