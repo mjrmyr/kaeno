@@ -184,7 +184,6 @@ async function bootStack(dir: string): Promise<Stack> {
 
   const rawConfig: Record<string, unknown> = {
     agent: "kaeno",
-    sandboxCapacity: 1,
     ...(skillSelectors === undefined
       ? {}
       : { skillRepositories: ["mjrmyr/myriad"] }),
@@ -277,7 +276,6 @@ async function bootStack(dir: string): Promise<Stack> {
       return podRecord.url;
     },
     artifacts: store,
-    sandboxCapacity: config.sandboxCapacity,
   });
 
   const registry = createRegistry();

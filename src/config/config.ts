@@ -2,6 +2,10 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import {
+  parseSandboxResources,
+  type SandboxResources,
+} from "../sandboxes/index.ts";
+import {
   parseSkillRepositories,
   parseSkillSelection,
   type RepositorySpec,
@@ -31,7 +35,8 @@ export interface Config {
   agent: string;
   /** WORK levels below CHAT. 1: only CHAT starts work; 2: those WORK agents may start leaf WORK too. */
   maxDepth: number;
-  sandboxCapacity: number;
+  /** Size of every sandbox pod. How many run at once derives from the sandbox ResourceQuota. */
+  sandboxResources: SandboxResources;
   skillRepositories: RepositorySpec[];
   templates: Record<string, Template>;
   telegram: {
@@ -50,21 +55,24 @@ const templateSchema = z
     skills: z.unknown().optional(),
   })
   .strict();
-const configSchema = z.object({
-  agent: nonempty,
-  maxDepth: z.number().int().min(1).max(8).default(2),
-  sandboxCapacity: z.number().int().min(1).default(4),
-  skillRepositories: z.unknown().optional(),
-  templates: z.record(
-    z.string().regex(/^[a-z][a-z0-9-]{0,30}$/),
-    templateSchema,
-  ),
-  telegram: z
-    .object({
-      allowedChatIds: z.array(z.coerce.number().int().safe()).default([]),
-    })
-    .default({ allowedChatIds: [] }),
-});
+// Strict: removed settings (sandboxCapacity) and typos must fail loudly, not be ignored.
+const configSchema = z
+  .object({
+    agent: nonempty,
+    maxDepth: z.number().int().min(1).max(8).default(2),
+    sandboxResources: z.unknown().optional(),
+    skillRepositories: z.unknown().optional(),
+    templates: z.record(
+      z.string().regex(/^[a-z][a-z0-9-]{0,30}$/),
+      templateSchema,
+    ),
+    telegram: z
+      .object({
+        allowedChatIds: z.array(z.coerce.number().int().safe()).default([]),
+      })
+      .default({ allowedChatIds: [] }),
+  })
+  .strict();
 export function eligibleWorkTemplates(config: Config): Template[] {
   return [
     ...new Set([config.agent, ...config.templates[config.agent].delegates]),
@@ -77,6 +85,9 @@ export function parseConfig(raw: unknown): Config {
   }
   const config = parsed.data;
   const skillRepositories = parseSkillRepositories(config.skillRepositories);
+  const sandboxResources = boundary(() =>
+    parseSandboxResources(config.sandboxResources),
+  );
   const templates: Record<string, Template> = {};
   for (const [name, template] of Object.entries(config.templates)) {
     const [providerName, ...rest] = template.model.split("/");
@@ -113,11 +124,20 @@ export function parseConfig(raw: unknown): Config {
   return {
     agent: config.agent,
     maxDepth: config.maxDepth,
-    sandboxCapacity: config.sandboxCapacity,
+    sandboxResources,
     skillRepositories,
     templates,
     telegram: config.telegram,
   };
+}
+function boundary<T>(parse: () => T): T {
+  try {
+    return parse();
+  } catch (error) {
+    throw new Error(
+      `Invalid kaeno config: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 export async function loadConfig(path: string): Promise<Config> {
   const raw: unknown = JSON.parse(await readFile(path, "utf8"));

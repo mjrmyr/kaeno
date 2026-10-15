@@ -169,7 +169,6 @@ async function bootRig(
   const model = real ? rigModel(provider) : "anthropic/faux-1";
   const config = parseConfig({
     agent: "kaeno",
-    sandboxCapacity: 1,
     templates: {
       kaeno: {
         description: "Rig orchestrator",
@@ -252,7 +251,6 @@ async function bootRig(
     client: cluster.client,
     sandboxUrl: (pod: string) => required(cluster.pod(pod)).url,
     artifacts: store,
-    sandboxCapacity: config.sandboxCapacity,
   });
 
   const registry = createRegistry();

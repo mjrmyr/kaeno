@@ -3,6 +3,7 @@ import {
   type SandboxImages,
   type SkillCopySelection,
 } from "../skills/index.ts";
+import type { SandboxResources } from "./resources.ts";
 export interface SandboxInput {
   name: string;
   images: SandboxImages;
@@ -12,6 +13,7 @@ export interface SandboxInput {
   conversationId: string;
   taskId: string;
   template: string;
+  resources: SandboxResources;
 }
 export interface PodEnvironmentVariable {
   name: string;
@@ -30,10 +32,6 @@ export interface ContainerSecurity {
   readOnlyRootFilesystem: boolean;
   capabilities: { drop: string[] };
 }
-export interface ContainerResources {
-  requests: { cpu: string; memory: string };
-  limits: { cpu: string; memory: string };
-}
 export interface PodContainer {
   name: string;
   image: string;
@@ -42,7 +40,7 @@ export interface PodContainer {
   workingDir?: string;
   env: PodEnvironmentVariable[];
   securityContext: ContainerSecurity;
-  resources: ContainerResources;
+  resources: SandboxResources;
   volumeMounts: PodVolumeMount[];
   ports?: { name: string; containerPort: number }[];
   readinessProbe?: {
@@ -115,10 +113,8 @@ function skillInitContainers(options: SandboxInput): PodContainer[] {
         readOnlyRootFilesystem: true,
         capabilities: { drop: ["ALL"] },
       },
-      resources: {
-        requests: { cpu: "50m", memory: "64Mi" },
-        limits: { cpu: "500m", memory: "256Mi" },
-      },
+      // Same as envd: the pod is charged max(sum(app), max(init)), so this costs nothing extra.
+      resources: options.resources,
       volumeMounts,
       terminationMessagePolicy: "FallbackToLogsOnError",
     },
@@ -199,10 +195,7 @@ export function sandboxPod(
             readOnlyRootFilesystem: true,
             capabilities: { drop: ["ALL"] },
           },
-          resources: {
-            requests: { cpu: "250m", memory: "256Mi" },
-            limits: { cpu: "2", memory: "2Gi" },
-          },
+          resources: options.resources,
           volumeMounts: [
             { name: "workspace", mountPath: "/workspace" },
             { name: "skills", mountPath: SKILL_ROOT, readOnly: true },

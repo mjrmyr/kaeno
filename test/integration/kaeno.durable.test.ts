@@ -51,6 +51,10 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Config } from "../../src/config/index.ts";
 import {
+  DEFAULT_SANDBOX_RESOURCES,
+  SANDBOX_QUOTA,
+} from "../../src/sandboxes/index.ts";
+import {
   copySkillTree,
   inspectSkill,
   INSTALLER,
@@ -217,6 +221,14 @@ describe("kaeno durable work tree", () => {
           res.writeHead(200).end("{}");
           return;
         }
+        if (name === SANDBOX_QUOTA) {
+          res.writeHead(200).end(
+            JSON.stringify({
+              spec: { scopes: ["Terminating"], hard: { "limits.cpu": "8" } },
+            }),
+          );
+          return;
+        }
         if (name === "pods") {
           res.writeHead(200).end(JSON.stringify({ items: [...pods.values()] }));
           return;
@@ -234,7 +246,7 @@ describe("kaeno durable work tree", () => {
       const config: Config = {
         agent: "kaeno",
         maxDepth: 2,
-        sandboxCapacity: 4,
+        sandboxResources: DEFAULT_SANDBOX_RESOURCES,
         skillRepositories: [{ id: "demo/root" }, { id: "demo/worker" }],
         templates: {
           kaeno: {

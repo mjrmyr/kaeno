@@ -2,7 +2,11 @@
 // resetCluster between tests. Deliberately vitest-free so runtime tools (the rig)
 // can import the integration composition from plain Node; tests reach in with
 // vi.spyOn when they need to observe or override.
-import { podSchema, type Pod } from "../../src/sandboxes/index.ts";
+import {
+  podSchema,
+  type Pod,
+  type QuotaLimits,
+} from "../../src/sandboxes/index.ts";
 
 const pods = new Map<string, Pod>();
 
@@ -26,6 +30,11 @@ export async function deletePod(name: string): Promise<void> {
 
 export async function listSandboxPods(): Promise<Pod[]> {
   return [...pods.values()];
+}
+
+// Four default-size (2 CPU limit) sandboxes, like production.
+export async function readSandboxQuota(): Promise<QuotaLimits> {
+  return { pods: "8", "limits.cpu": "8", "limits.memory": "16Gi" };
 }
 
 export async function getPodLog(name: string): Promise<string | undefined> {

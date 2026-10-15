@@ -29,6 +29,7 @@ import {
   type SandboxCapture,
   type SandboxClient,
   type SandboxRuntime,
+  DEFAULT_SANDBOX_RESOURCES,
 } from "../../src/sandboxes/index.ts";
 import { createMockRuntime } from "../mocks/durable.ts";
 import {
@@ -94,6 +95,7 @@ async function startRig(
     deletePod: (name) => k8s.deletePod(name),
     listSandboxPods: () => k8s.listSandboxPods(),
     getPodLog: (name) => k8s.getPodLog(name),
+    readSandboxQuota: () => k8s.readSandboxQuota(),
   };
   const harness = (): SandboxRuntime => ({ getTask: async () => undefined });
   const capacity = new SandboxCapacity(() => createMockRuntime(), client);
@@ -117,6 +119,7 @@ async function startRig(
         conversationId: "7",
         taskId: "5",
         template: "swe",
+        resources: DEFAULT_SANDBOX_RESOURCES,
       },
       namespace,
     ),

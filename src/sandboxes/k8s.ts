@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SANDBOX_QUOTA, type QuotaLimits } from "./resources.ts";
 const containerStatusSchema = z.object({
   name: z.string(),
   state: z
@@ -75,6 +76,8 @@ export interface SandboxClient {
   listSandboxPods(): Promise<Pod[]>;
   /** Container logs; undefined once the pod is gone. */
   getPodLog(name: string): Promise<string | undefined>;
+  /** `spec.hard` of the sandbox ResourceQuota, verified to charge sandboxes only. */
+  readSandboxQuota(): Promise<QuotaLimits>;
 }
 export const SANDBOX_LABEL = "app.kubernetes.io/name=kaeno-sandbox";
 export class KubernetesClient {
@@ -157,6 +160,36 @@ export class KubernetesClient {
       );
     }
     return response.text();
+  }
+  async readSandboxQuota(): Promise<QuotaLimits> {
+    const path = `/api/v1/namespaces/${this.namespace}/resourcequotas/${SANDBOX_QUOTA}`;
+    const value = await this.call("GET", path);
+    if (value === undefined) {
+      throw new Error(
+        `ResourceQuota ${SANDBOX_QUOTA} not found; kaeno sizes its sandbox pool from it`,
+      );
+    }
+    const quota = z
+      .object({
+        spec: z.object({
+          scopes: z.array(z.string()).default([]),
+          scopeSelector: z.unknown().optional(),
+          hard: z.record(z.string(), z.string()).default({}),
+        }),
+      })
+      .parse(value).spec;
+    // Terminating = pods with activeDeadlineSeconds = sandboxes. Any other scope would also
+    // charge the orchestrator (or miss sandboxes), so the derived pool size would be wrong.
+    if (
+      quota.scopes.length !== 1 ||
+      quota.scopes[0] !== "Terminating" ||
+      quota.scopeSelector !== undefined
+    ) {
+      throw new Error(
+        `ResourceQuota ${SANDBOX_QUOTA} must have exactly scopes: ["Terminating"]`,
+      );
+    }
+    return quota.hard;
   }
   async listSandboxPods(): Promise<Pod[]> {
     const value = await this.call(

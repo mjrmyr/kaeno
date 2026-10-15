@@ -178,7 +178,7 @@ export async function startApplication(): Promise<void> {
   const capacity = new SandboxCapacity(
     harnessReference.getHarness,
     kubernetes,
-    config.sandboxCapacity,
+    config.sandboxResources,
   );
   const environmentFactory = {
     createEnvironment: (
@@ -295,10 +295,17 @@ export async function startApplication(): Promise<void> {
       .sweepOrphanedSandboxes()
       .catch((error) => console.error("sweeper:", error));
   };
+  // Best effort: a missing or misconfigured quota fails each WORK with the same message.
+  const fit = await capacity
+    .fitSandboxes()
+    .then((value) => value.summary)
+    .catch((error: unknown) =>
+      error instanceof Error ? error.message : String(error),
+    );
   const sweeper = setInterval(sweep, 5 * 60000);
   const initialSweep = setTimeout(sweep, 30000);
   console.log(
-    `kaeno listening on :${port} · agent ${config.agent} · max depth ${config.maxDepth} · sandboxes ${config.sandboxCapacity} · templates ${Object.keys(config.templates).join(", ")} · sandbox image ${images.execution}`,
+    `kaeno listening on :${port} · agent ${config.agent} · max depth ${config.maxDepth} · sandboxes ${fit} · templates ${Object.keys(config.templates).join(", ")} · sandbox image ${images.execution}`,
   );
   for (const signal of ["SIGTERM", "SIGINT"] as const) {
     process.once(signal, async () => {

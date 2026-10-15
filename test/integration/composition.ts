@@ -55,7 +55,6 @@ interface AgentOptions {
   sandboxUrl?: (pod: string) => string;
   client?: SandboxClient;
   artifacts?: ArtifactStore;
-  sandboxCapacity?: number;
 }
 export function createAgents(options: AgentOptions): Agent {
   let client = options.client ?? sandboxClient;
@@ -67,11 +66,7 @@ export function createAgents(options: AgentOptions): Agent {
       process.env.KUBERNETES_API,
     );
   }
-  const capacity = new SandboxCapacity(
-    options.harness,
-    client,
-    options.sandboxCapacity,
-  );
+  const capacity = new SandboxCapacity(options.harness, client);
   const environmentFactory = {
     createEnvironment: (
       pod: string,

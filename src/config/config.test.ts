@@ -4,6 +4,14 @@ vi.mock("../skills/index.ts", () => ({
   parseSkillRepositories: vi.fn<(raw: unknown) => []>().mockReturnValue([]),
   parseSkillSelection: vi.fn<(raw: unknown) => []>().mockReturnValue([]),
 }));
+vi.mock("../sandboxes/index.ts", () => ({
+  parseSandboxResources: vi.fn<(raw: unknown) => unknown>((raw) => {
+    if (raw === "bad") {
+      throw new Error("sandboxResources: bad");
+    }
+    return raw ?? "defaults";
+  }),
+}));
 const base = {
   agent: "kaeno",
   templates: {
@@ -28,10 +36,10 @@ describe("config", () => {
       modelId: "gpt-5.4-mini",
     });
     expect(content.maxDepth).toBe(2);
-    expect(content.sandboxCapacity).toBe(4);
+    expect(content.sandboxResources).toBe("defaults");
     expect(
-      parseConfig({ ...base, maxDepth: 1, sandboxCapacity: 12 }),
-    ).toMatchObject({ maxDepth: 1, sandboxCapacity: 12 });
+      parseConfig({ ...base, maxDepth: 1, sandboxResources: "custom" }),
+    ).toMatchObject({ maxDepth: 1, sandboxResources: "custom" });
   });
   it("rejects unknown providers, unknown delegates, removed execution switches and invalid limits", () => {
     expect(() =>
@@ -71,5 +79,12 @@ describe("config", () => {
       }),
     ).toThrow(/sandbox/);
     expect(() => parseConfig({ ...base, maxDepth: 0 })).toThrow(/maxDepth/);
+    expect(() => parseConfig({ ...base, sandboxResources: "bad" })).toThrow(
+      "Invalid kaeno config: sandboxResources: bad",
+    );
+    // Removed and misspelled top-level settings fail loudly instead of being ignored.
+    expect(() => parseConfig({ ...base, sandboxCapacity: 4 })).toThrow(
+      /sandboxCapacity/,
+    );
   });
 });
