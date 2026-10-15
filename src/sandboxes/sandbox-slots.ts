@@ -49,9 +49,21 @@ export class SandboxCapacity {
     this.client = client;
     this.resources = resources;
   }
-  /** Read live on every grant attempt: quota edits apply without a restart. */
+  /**
+   * Read live on every admission and grant attempt: quota edits apply without a restart.
+   * Throws a fix-it message when the quota fits no sandbox at all.
+   */
   async fitSandboxes(): Promise<SandboxFit> {
-    return fitSandboxes(await this.client.readSandboxQuota(), this.resources);
+    const fit = fitSandboxes(
+      await this.client.readSandboxQuota(),
+      this.resources,
+    );
+    if (fit.slots === 0) {
+      throw new Error(
+        `ResourceQuota ${SANDBOX_QUOTA} fits no sandbox of ${JSON.stringify(this.resources)}; raise the quota or lower sandboxResources in config.json`,
+      );
+    }
+    return fit;
   }
   async releaseSandbox(pod: string): Promise<boolean> {
     if (await this.client.getPod(pod)) {
@@ -115,11 +127,6 @@ export class SandboxCapacity {
     for (;;) {
       await this.reconcileReservations();
       const { slots: capacity } = await this.fitSandboxes();
-      if (capacity === 0) {
-        throw new Error(
-          `ResourceQuota ${SANDBOX_QUOTA} fits no sandbox of ${JSON.stringify(this.resources)}; raise the quota or lower sandboxResources in config.json`,
-        );
-      }
       const pods = await this.client.listSandboxPods();
       const granted = await this.harness().commit(async (tx) => {
         const slots = await tx.doc(SandboxSlots);

@@ -19,6 +19,7 @@ import { parseTaskId } from "../durable/index.ts";
 import type { SandboxImages, SkillCopySelection } from "../skills/index.ts";
 import { failedReason, isReady, type Pod, type SandboxClient } from "./k8s.ts";
 import { sandboxPod } from "./pod-spec.ts";
+import type { SandboxFit } from "./resources.ts";
 import { SandboxCapacity, type SandboxReservation } from "./sandbox-slots.ts";
 export interface SandboxRuntime extends Pick<Harness, "getTask"> {}
 export interface EnvironmentFactory {
@@ -241,6 +242,9 @@ export class SandboxManager {
         await this.removeSandbox(pod.metadata.name, this.captureForPod(pod));
       }
     }
+  }
+  sandboxPool(): Promise<SandboxFit> {
+    return this.capacity.fitSandboxes();
   }
   listReservations(): Promise<SandboxReservation[]> {
     return this.capacity.listReservations();

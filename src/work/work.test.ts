@@ -82,6 +82,7 @@ function setup(artifacts?: ArtifactStore): {
     configureWorkConversation: vi.fn<WorkAgents["configureWorkConversation"]>(),
     provisionWorkSandbox: vi.fn<WorkAgents["provisionWorkSandbox"]>(),
     releaseWorkSandbox: vi.fn<WorkAgents["releaseWorkSandbox"]>(),
+    sandboxPool: async () => ({ slots: 4, summary: "4 (test)" }),
   };
   const work = new Work(
     () => runtime,
