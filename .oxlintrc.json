@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "import", "vitest"],
+  "categories": { "correctness": "error" },
+  "overrides": [
+    {
+      "files": ["test/integration/**"],
+      "rules": {
+        "vitest/no-conditional-expect": "off",
+        "vitest/require-to-throw-message": "off"
+      }
+    }
+  ],
+  "rules": {
+    "curly": ["error", "all"],
+    "eqeqeq": ["error", "always"],
+    "no-nested-ternary": "error",
+    "no-else-return": "error",
+    "vitest/require-to-throw-message": "off",
+    "typescript/no-explicit-any": "error",
+    "typescript/no-non-null-assertion": "error",
+    "typescript/consistent-type-definitions": ["error", "interface"]
+  },
+  "ignorePatterns": ["node_modules", "coverage"]
+}

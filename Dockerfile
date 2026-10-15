@@ -20,7 +20,7 @@ USER 10001:10001
 CMD ["node", "src/envd.ts"]
 
 FROM runtime-base AS kaeno
-# deploy.sh computes this digest from the sandbox target before building this target.
+# The image build supplies the sandbox image's digest-pinned reference.
 ARG SANDBOX_IMAGE
 USER root
 RUN node --input-type=module -e 'import {writeFileSync} from "node:fs"; const ref=process.env.SANDBOX_IMAGE; if (!/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[a-f0-9]{64}$/.test(ref ?? "")) throw Error("SANDBOX_IMAGE must be pinned by digest"); writeFileSync("/app/build-info.json", JSON.stringify({sandboxImage:ref}));'

@@ -1,20 +1,17 @@
 {
   "compilerOptions": {
-    "target": "ES2023",
+    "target": "ES2024",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "types": [
-      "node"
-    ],
+    "types": ["node"],
     "allowImportingTsExtensions": true,
     "erasableSyntaxOnly": true
   },
-  "include": [
-    "src/**/*.ts",
-    "scripts/**/*.ts",
-    "test/**/*.ts"
-  ]
+  "include": ["src/**/*.ts", "scripts/**/*.ts", "test/**/*.ts"]
 }
