@@ -1,9 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  DEFAULT_SANDBOX_RESOURCES,
-  fitSandboxes,
-  parseSandboxResources,
-} from "./index.ts";
+import { fitSandboxes, parseSandboxResources } from "./index.ts";
 vi.mock("@earendil-works/pi-durable", async () => {
   const { createMockSdk } = await import("../../test/mocks/sdk.ts");
   return createMockSdk();
@@ -11,13 +7,17 @@ vi.mock("@earendil-works/pi-durable", async () => {
 vi.mock("../skills/index.ts", () => ({
   SKILL_ROOT: "/workspace/.agents/skills",
 }));
+const twoCpu = {
+  requests: { cpu: "250m", memory: "256Mi" },
+  limits: { cpu: "2", memory: "2Gi" },
+};
 const oneCpu = {
   requests: { cpu: "250m", memory: "256Mi" },
   limits: { cpu: "1", memory: "1536Mi" },
 };
 describe("sandbox resources", () => {
-  it("defaults when absent and keeps a complete block verbatim", () => {
-    expect(parseSandboxResources(undefined)).toBe(DEFAULT_SANDBOX_RESOURCES);
+  it("requires a complete block and keeps it verbatim", () => {
+    expect(() => parseSandboxResources(undefined)).toThrow(/sandboxResources/);
     expect(parseSandboxResources(oneCpu)).toEqual(oneCpu);
   });
   it("rejects incomplete blocks, invalid quantities and requests above limits", () => {
@@ -41,7 +41,7 @@ describe("sandbox resources", () => {
 describe("fitSandboxes", () => {
   it("derives the pool from the binding quota dimension", () => {
     const quota = { pods: "8", "limits.cpu": "8", "limits.memory": "16Gi" };
-    expect(fitSandboxes(quota, DEFAULT_SANDBOX_RESOURCES)).toEqual({
+    expect(fitSandboxes(quota, twoCpu)).toEqual({
       slots: 4,
       summary: "4 (limits.cpu 8 / 2 per sandbox)",
     });
@@ -51,28 +51,20 @@ describe("fitSandboxes", () => {
   });
   it("handles request aliases, fractional and decimal quantities exactly", () => {
     expect(
-      fitSandboxes(
-        { cpu: "1.5", "requests.memory": "1G" },
-        DEFAULT_SANDBOX_RESOURCES,
-      ).slots,
+      fitSandboxes({ cpu: "1.5", "requests.memory": "1G" }, twoCpu).slots,
     ).toBe(3); // memory: 1e9 / 268435456 = 3.7 → 3; cpu: 1500m / 250m = 6
     expect(fitSandboxes({ "limits.cpu": "1999m" }, oneCpu).slots).toBe(1);
   });
   it("reports zero slots instead of guessing, and rejects quotas it cannot reason about", () => {
-    expect(
-      fitSandboxes({ "limits.cpu": "1" }, DEFAULT_SANDBOX_RESOURCES).slots,
-    ).toBe(0);
+    expect(fitSandboxes({ "limits.cpu": "1" }, twoCpu).slots).toBe(0);
+    expect(() => fitSandboxes({ services: "2" }, twoCpu)).toThrow(
+      /bounds none of pods, cpu or memory/,
+    );
     expect(() =>
-      fitSandboxes({ services: "2" }, DEFAULT_SANDBOX_RESOURCES),
-    ).toThrow(/bounds none of pods, cpu or memory/);
-    expect(() =>
-      fitSandboxes(
-        { pods: "4", "requests.ephemeral-storage": "10Gi" },
-        DEFAULT_SANDBOX_RESOURCES,
-      ),
+      fitSandboxes({ pods: "4", "requests.ephemeral-storage": "10Gi" }, twoCpu),
     ).toThrow(/ephemeral-storage/);
-    expect(() =>
-      fitSandboxes({ pods: "four" }, DEFAULT_SANDBOX_RESOURCES),
-    ).toThrow(/not a Kubernetes quantity/);
+    expect(() => fitSandboxes({ pods: "four" }, twoCpu)).toThrow(
+      /not a Kubernetes quantity/,
+    );
   });
 });

@@ -24,10 +24,6 @@ export interface SandboxFit {
   readonly summary: string;
 }
 
-export const DEFAULT_SANDBOX_RESOURCES: SandboxResources = {
-  requests: { cpu: "250m", memory: "256Mi" },
-  limits: { cpu: "2", memory: "2Gi" },
-};
 export const SANDBOX_QUOTA = "kaeno-sandbox";
 
 const compute = z.object({ cpu: z.string(), memory: z.string() }).strict();
@@ -35,11 +31,8 @@ const resourcesSchema = z
   .object({ requests: compute, limits: compute })
   .strict();
 
-/** Config boundary for `sandboxResources`. Absent means the defaults; present must be complete. */
+/** Config boundary for `sandboxResources`: required and complete, kaeno guesses no pod size. */
 export function parseSandboxResources(raw: unknown): SandboxResources {
-  if (raw === undefined) {
-    return DEFAULT_SANDBOX_RESOURCES;
-  }
   const parsed = resourcesSchema.safeParse(raw);
   if (!parsed.success) {
     throw new Error(`sandboxResources: ${parsed.error.message}`);

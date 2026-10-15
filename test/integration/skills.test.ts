@@ -14,11 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseConfig } from "../../src/config/index.ts";
-import {
-  DEFAULT_SANDBOX_RESOURCES,
-  failedReason,
-  sandboxPod,
-} from "../../src/sandboxes/index.ts";
+import { failedReason, sandboxPod } from "../../src/sandboxes/index.ts";
 import {
   copySkillTree,
   inspectSkill,
@@ -34,7 +30,7 @@ import {
   splitSkillId,
   type SkillManifest,
 } from "../../src/skills/index.ts";
-import { required, serverPort } from "./values.ts";
+import { required, SANDBOX_RESOURCES, serverPort } from "./values.ts";
 const dirs: string[] = [];
 const temporary = async () => {
   const dir = await mkdtemp(join(tmpdir(), "kaeno-skills-"));
@@ -107,6 +103,7 @@ async function bundle() {
 }
 const base = {
   agent: "kaeno",
+  sandboxResources: SANDBOX_RESOURCES,
   templates: {
     kaeno: { description: "d", model: "anthropic/model", instructions: "i" },
   },
@@ -425,7 +422,7 @@ describe("catalogue and selected-only materialization", () => {
       conversationId: "1",
       taskId: "2",
       template: "worker",
-      resources: DEFAULT_SANDBOX_RESOURCES,
+      resources: SANDBOX_RESOURCES,
     }).spec;
     expect(required(spec.containers[0]).image).toBe(images.execution);
     expect(required(spec.containers[0]).env).toContainEqual({
@@ -492,7 +489,7 @@ describe("catalogue and selected-only materialization", () => {
         conversationId: "1",
         taskId: "2",
         template: "worker",
-        resources: DEFAULT_SANDBOX_RESOURCES,
+        resources: SANDBOX_RESOURCES,
       }).spec.initContainers,
     ).toBeUndefined();
     // Existing image-backed children replay their stored source, with no cache mount or initializer credentials.
@@ -505,7 +502,7 @@ describe("catalogue and selected-only materialization", () => {
       conversationId: "1",
       taskId: "2",
       template: "worker",
-      resources: DEFAULT_SANDBOX_RESOURCES,
+      resources: SANDBOX_RESOURCES,
     }).spec;
     expect(required(required(legacy.initContainers)[0]).image).toBe(
       "old-source",

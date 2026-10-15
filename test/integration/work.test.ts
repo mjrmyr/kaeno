@@ -55,6 +55,7 @@ import {
   readObject,
   replyPage,
   required,
+  SANDBOX_RESOURCES,
   serverPort,
   storedBlueprint,
   type ReplyPage,
@@ -103,6 +104,7 @@ async function setup(
   cleanup.push(() => rm(dir, { recursive: true, force: true }));
   const config = parseConfig({
     agent: "kaeno",
+    sandboxResources: SANDBOX_RESOURCES,
     templates: {
       kaeno: {
         description: "chat",

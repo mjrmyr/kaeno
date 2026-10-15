@@ -44,7 +44,7 @@ import {
   thread,
   type ThreadFixture,
 } from "../integration/composition.ts";
-import { serverPort } from "../integration/values.ts";
+import { SANDBOX_RESOURCES, serverPort } from "../integration/values.ts";
 import { createRigCluster } from "./cluster.ts";
 
 const DIR = "/tmp/kaeno-explore";
@@ -184,6 +184,7 @@ async function bootStack(dir: string): Promise<Stack> {
 
   const rawConfig: Record<string, unknown> = {
     agent: "kaeno",
+    sandboxResources: SANDBOX_RESOURCES,
     ...(skillSelectors === undefined
       ? {}
       : { skillRepositories: ["mjrmyr/myriad"] }),

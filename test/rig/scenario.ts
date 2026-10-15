@@ -58,7 +58,12 @@ import {
   createWork,
   thread,
 } from "../integration/composition.ts";
-import { messageText, required, serverPort } from "../integration/values.ts";
+import {
+  messageText,
+  required,
+  SANDBOX_RESOURCES,
+  serverPort,
+} from "../integration/values.ts";
 import { artifactChecks, createRigChecks, httpChecks } from "./assertions.ts";
 import { createRigCluster } from "./cluster.ts";
 
@@ -169,6 +174,7 @@ async function bootRig(
   const model = real ? rigModel(provider) : "anthropic/faux-1";
   const config = parseConfig({
     agent: "kaeno",
+    sandboxResources: SANDBOX_RESOURCES,
     templates: {
       kaeno: {
         description: "Rig orchestrator",

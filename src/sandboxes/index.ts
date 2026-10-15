@@ -27,7 +27,6 @@ export type {
 export { SandboxSlots, SandboxCapacity } from "./sandbox-slots.ts";
 export type { CapacityRuntime, SandboxReservation } from "./sandbox-slots.ts";
 export {
-  DEFAULT_SANDBOX_RESOURCES,
   SANDBOX_QUOTA,
   fitSandboxes,
   parseSandboxResources,

@@ -9,11 +9,12 @@ vi.mock("../sandboxes/index.ts", () => ({
     if (raw === "bad") {
       throw new Error("sandboxResources: bad");
     }
-    return raw ?? "defaults";
+    return raw;
   }),
 }));
 const base = {
   agent: "kaeno",
+  sandboxResources: "sized",
   templates: {
     kaeno: {
       description: "d",
@@ -36,7 +37,7 @@ describe("config", () => {
       modelId: "gpt-5.4-mini",
     });
     expect(content.maxDepth).toBe(2);
-    expect(content.sandboxResources).toBe("defaults");
+    expect(content.sandboxResources).toBe("sized");
     expect(
       parseConfig({ ...base, maxDepth: 1, sandboxResources: "custom" }),
     ).toMatchObject({ maxDepth: 1, sandboxResources: "custom" });
@@ -82,6 +83,8 @@ describe("config", () => {
     expect(() => parseConfig({ ...base, sandboxResources: "bad" })).toThrow(
       "Invalid kaeno config: sandboxResources: bad",
     );
+    const { sandboxResources: _, ...unsized } = base;
+    expect(() => parseConfig(unsized)).toThrow(/sandboxResources/);
     // Removed and misspelled top-level settings fail loudly instead of being ignored.
     expect(() => parseConfig({ ...base, sandboxCapacity: 4 })).toThrow(
       /sandboxCapacity/,

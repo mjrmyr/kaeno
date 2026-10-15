@@ -60,7 +60,7 @@ const configSchema = z
   .object({
     agent: nonempty,
     maxDepth: z.number().int().min(1).max(8).default(2),
-    sandboxResources: z.unknown().optional(),
+    sandboxResources: z.unknown(),
     skillRepositories: z.unknown().optional(),
     templates: z.record(
       z.string().regex(/^[a-z][a-z0-9-]{0,30}$/),

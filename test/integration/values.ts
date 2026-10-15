@@ -1,7 +1,13 @@
 import type { TranscriptContext } from "@earendil-works/pi-ai";
 import type { Server } from "node:http";
 import { z } from "zod";
+import type { SandboxResources } from "../../src/sandboxes/index.ts";
 import { readBlueprint, type WorkBlueprint } from "../../src/work/index.ts";
+/** Sandbox size for fixtures. Tests size the pool themselves via setSandboxQuota. */
+export const SANDBOX_RESOURCES: SandboxResources = {
+  requests: { cpu: "250m", memory: "256Mi" },
+  limits: { cpu: "2", memory: "2Gi" },
+};
 export function required<T>(value: T | undefined | null): T {
   if (value === undefined || value === null) {
     throw new Error("Expected fixture value");

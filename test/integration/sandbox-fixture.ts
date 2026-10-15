@@ -32,9 +32,20 @@ export async function listSandboxPods(): Promise<Pod[]> {
   return [...pods.values()];
 }
 
-// Four default-size (2 CPU limit) sandboxes, like production.
+// Like a real namespace: no sandbox quota until the test creates one (resourcequota.yaml in production).
+let quota: QuotaLimits | undefined;
+
+export function setSandboxQuota(hard: QuotaLimits): void {
+  quota = hard;
+}
+
 export async function readSandboxQuota(): Promise<QuotaLimits> {
-  return { pods: "8", "limits.cpu": "8", "limits.memory": "16Gi" };
+  if (quota === undefined) {
+    throw new Error(
+      "ResourceQuota kaeno-sandbox not found; call setSandboxQuota first",
+    );
+  }
+  return quota;
 }
 
 export async function getPodLog(name: string): Promise<string | undefined> {
@@ -43,6 +54,7 @@ export async function getPodLog(name: string): Promise<string | undefined> {
 
 export function resetCluster(): void {
   pods.clear();
+  quota = undefined;
 }
 
 export function runningPods(): string[] {

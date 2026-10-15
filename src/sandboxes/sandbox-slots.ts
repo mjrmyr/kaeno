@@ -9,7 +9,6 @@ import { setTimeout as delay } from "node:timers/promises";
 import { parseTaskId, type Stored } from "../durable/index.ts";
 import type { SandboxClient } from "./k8s.ts";
 import {
-  DEFAULT_SANDBOX_RESOURCES,
   fitSandboxes,
   SANDBOX_QUOTA,
   type SandboxFit,
@@ -44,7 +43,7 @@ export class SandboxCapacity {
   constructor(
     harness: () => CapacityRuntime,
     client: SandboxClient,
-    resources = DEFAULT_SANDBOX_RESOURCES,
+    resources: SandboxResources,
   ) {
     this.harness = harness;
     this.client = client;
