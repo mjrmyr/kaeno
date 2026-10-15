@@ -1,3 +1,4 @@
+import { SANDBOX_RESOURCES } from "./values.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
@@ -37,6 +38,7 @@ export interface AgentFixture {
 export function createAgentFixture(): AgentFixture {
   const config = parseConfig({
     agent: "chat",
+    sandboxResources: SANDBOX_RESOURCES,
     skillRepositories: ["demo/skills"],
     templates: {
       chat: {

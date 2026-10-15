@@ -12,7 +12,6 @@ export type {
   PodEnvironmentVariable,
   PodVolumeMount,
   ContainerSecurity,
-  ContainerResources,
   PodContainer,
   PodVolume,
   SandboxPodManifest,
@@ -27,3 +26,14 @@ export type {
 } from "./sandbox-manager.ts";
 export { SandboxSlots, SandboxCapacity } from "./sandbox-slots.ts";
 export type { CapacityRuntime, SandboxReservation } from "./sandbox-slots.ts";
+export {
+  SANDBOX_QUOTA,
+  fitSandboxes,
+  parseSandboxResources,
+} from "./resources.ts";
+export type {
+  ComputeResources,
+  QuotaLimits,
+  SandboxFit,
+  SandboxResources,
+} from "./resources.ts";

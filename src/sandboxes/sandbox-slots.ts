@@ -8,6 +8,12 @@ import {
 import { setTimeout as delay } from "node:timers/promises";
 import { parseTaskId, type Stored } from "../durable/index.ts";
 import type { SandboxClient } from "./k8s.ts";
+import {
+  fitSandboxes,
+  SANDBOX_QUOTA,
+  type SandboxFit,
+  type SandboxResources,
+} from "./resources.ts";
 interface SlotState {
   waiting: {
     id: TaskId;
@@ -32,15 +38,20 @@ export interface SandboxReservation {
 export class SandboxCapacity {
   private readonly harness: () => CapacityRuntime;
   private readonly client: SandboxClient;
-  private readonly capacity: number;
+  /** The size of every sandbox this process creates; the pool size derives from it. */
+  readonly resources: SandboxResources;
   constructor(
     harness: () => CapacityRuntime,
     client: SandboxClient,
-    capacity = 4,
+    resources: SandboxResources,
   ) {
     this.harness = harness;
     this.client = client;
-    this.capacity = capacity;
+    this.resources = resources;
+  }
+  /** Read live on every grant attempt: quota edits apply without a restart. */
+  async fitSandboxes(): Promise<SandboxFit> {
+    return fitSandboxes(await this.client.readSandboxQuota(), this.resources);
   }
   async releaseSandbox(pod: string): Promise<boolean> {
     if (await this.client.getPod(pod)) {
@@ -103,6 +114,12 @@ export class SandboxCapacity {
     }, ctx);
     for (;;) {
       await this.reconcileReservations();
+      const { slots: capacity } = await this.fitSandboxes();
+      if (capacity === 0) {
+        throw new Error(
+          `ResourceQuota ${SANDBOX_QUOTA} fits no sandbox of ${JSON.stringify(this.resources)}; raise the quota or lower sandboxResources in config.json`,
+        );
+      }
       const pods = await this.client.listSandboxPods();
       const granted = await this.harness().commit(async (tx) => {
         const slots = await tx.doc(SandboxSlots);
@@ -117,7 +134,7 @@ export class SandboxCapacity {
         const [next] = slots.waiting;
         if (
           !physical.includes(pod) &&
-          (next?.id !== id || reserved.size + foreign >= this.capacity)
+          (next?.id !== id || reserved.size + foreign >= capacity)
         ) {
           return false;
         }

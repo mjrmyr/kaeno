@@ -31,7 +31,7 @@ import {
   TelegramPoller,
 } from "../../src/telegram/index.ts";
 import { defineControl, TurnCoordinator } from "../../src/turns/index.ts";
-import { messageText, serverPort } from "./values.ts";
+import { messageText, SANDBOX_RESOURCES, serverPort } from "./values.ts";
 const until = async (check: () => boolean, ms = 10000) => {
   for (
     const end = Date.now() + ms;
@@ -121,6 +121,7 @@ describe("channels", () => {
     const template = required(
       parseConfig({
         agent: "kaeno",
+        sandboxResources: SANDBOX_RESOURCES,
         templates: {
           kaeno: {
             description: "chat",

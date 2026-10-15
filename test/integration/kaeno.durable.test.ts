@@ -16,7 +16,12 @@ import {
   thread,
 } from "./composition.ts";
 import { FixtureReference } from "./reference.ts";
-import { messageText, required, serverPort } from "./values.ts";
+import {
+  messageText,
+  required,
+  SANDBOX_RESOURCES,
+  serverPort,
+} from "./values.ts";
 // End to end without cloud or cluster: CHAT (faux model) starts an orchestrating WORK, which starts a worker WORK; both
 // run in sandboxes whose tools go through a real envd. The process "crashes" while the worker's command runs, and a
 // new Harness on the same SQLite file finishes the tree in the same sandboxes, reports up to CHAT, and deletes them.
@@ -50,6 +55,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Config } from "../../src/config/index.ts";
+import { SANDBOX_QUOTA } from "../../src/sandboxes/index.ts";
 import {
   copySkillTree,
   inspectSkill,
@@ -217,6 +223,14 @@ describe("kaeno durable work tree", () => {
           res.writeHead(200).end("{}");
           return;
         }
+        if (name === SANDBOX_QUOTA) {
+          res.writeHead(200).end(
+            JSON.stringify({
+              spec: { scopes: ["Terminating"], hard: { "limits.cpu": "8" } },
+            }),
+          );
+          return;
+        }
         if (name === "pods") {
           res.writeHead(200).end(JSON.stringify({ items: [...pods.values()] }));
           return;
@@ -234,7 +248,7 @@ describe("kaeno durable work tree", () => {
       const config: Config = {
         agent: "kaeno",
         maxDepth: 2,
-        sandboxCapacity: 4,
+        sandboxResources: SANDBOX_RESOURCES,
         skillRepositories: [{ id: "demo/root" }, { id: "demo/worker" }],
         templates: {
           kaeno: {

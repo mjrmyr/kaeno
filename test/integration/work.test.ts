@@ -26,7 +26,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AgentFactory, AgentState } from "../../src/agents/index.ts";
 import { parseConfig } from "../../src/config/index.ts";
 import { parseTaskId } from "../../src/durable/index.ts";
@@ -55,11 +55,15 @@ import {
   readObject,
   replyPage,
   required,
+  SANDBOX_RESOURCES,
   serverPort,
   storedBlueprint,
   type ReplyPage,
 } from "./values.ts";
 const cleanup: (() => Promise<void>)[] = [];
+beforeEach(() => {
+  k8s.setSandboxQuota({ pods: "4" });
+});
 afterEach(async () => {
   vi.restoreAllMocks();
   for (const fn of cleanup.splice(0).reverse()) {
@@ -103,6 +107,7 @@ async function setup(
   cleanup.push(() => rm(dir, { recursive: true, force: true }));
   const config = parseConfig({
     agent: "kaeno",
+    sandboxResources: SANDBOX_RESOURCES,
     templates: {
       kaeno: {
         description: "chat",

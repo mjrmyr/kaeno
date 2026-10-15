@@ -17,6 +17,7 @@ import * as k8s from "./sandbox-fixture.ts";
 import { required } from "./values.ts";
 it("admits four workers, preserves leases across allocator recreation, and releases only after confirmed pod removal", async () => {
   const pods = new Map<string, Pod>();
+  k8s.setSandboxQuota({ "limits.cpu": "8" }); // four 2-CPU sandboxes
   vi.spyOn(k8s, "getPod").mockImplementation(async (name) => pods.get(name));
   vi.spyOn(k8s, "listSandboxPods").mockImplementation(async () => [
     ...pods.values(),
@@ -139,6 +140,23 @@ it("admits four workers, preserves leases across allocator recreation, and relea
     await expect(
       slots.acquireSandbox(overflow, "overflow", ctx),
     ).rejects.toThrow("128 pending works");
+    // A quota that cannot fit one sandbox fails the WORK with a fix, instead of queueing forever.
+    vi.spyOn(k8s, "readSandboxQuota").mockResolvedValue({ "limits.cpu": "1" });
+    const tooSmall = await harness.commit(
+      (tx) =>
+        tx.createTask(Hold, null, {
+          ownership: { kind: "conversation" },
+          conversationId: root.id,
+          background: true,
+        }),
+      ctx,
+    );
+    await harness.commit(async (tx) => {
+      (await tx.doc(SandboxSlots)).waiting = [];
+    }, ctx);
+    await expect(
+      slots.acquireSandbox(tooSmall, "too-small", ctx),
+    ).rejects.toThrow(/fits no sandbox.*lower sandboxResources/);
   } finally {
     await harness.close(ctx);
     vi.restoreAllMocks();

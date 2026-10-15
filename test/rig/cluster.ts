@@ -10,6 +10,7 @@ import { EnvironmentServer } from "../../src/execution/index.ts";
 import {
   podSchema,
   type Pod,
+  type QuotaLimits,
   type SandboxClient,
 } from "../../src/sandboxes/index.ts";
 import { serverPort } from "../integration/values.ts";
@@ -57,7 +58,7 @@ export function createRigCluster(root: string): RigCluster {
       // across two directories. One live pod at a time keeps the path unshared.
       if (running.size > 0) {
         throw new Error(
-          "Rig cluster runs one sandbox at a time (sandboxCapacity: 1)",
+          "Rig cluster runs one sandbox at a time (quota pods: 1)",
         );
       }
       const workspace = join(root, "workspace");
@@ -106,6 +107,10 @@ export function createRigCluster(root: string): RigCluster {
     },
     async getPodLog(name: string): Promise<string | undefined> {
       return running.get(name)?.log;
+    },
+    // One live pod at a time keeps the shared workspace path unshared (see createPod).
+    async readSandboxQuota(): Promise<QuotaLimits> {
+      return { pods: "1" };
     },
   };
   return {

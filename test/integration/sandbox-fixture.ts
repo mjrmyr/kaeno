@@ -2,7 +2,11 @@
 // resetCluster between tests. Deliberately vitest-free so runtime tools (the rig)
 // can import the integration composition from plain Node; tests reach in with
 // vi.spyOn when they need to observe or override.
-import { podSchema, type Pod } from "../../src/sandboxes/index.ts";
+import {
+  podSchema,
+  type Pod,
+  type QuotaLimits,
+} from "../../src/sandboxes/index.ts";
 
 const pods = new Map<string, Pod>();
 
@@ -28,12 +32,29 @@ export async function listSandboxPods(): Promise<Pod[]> {
   return [...pods.values()];
 }
 
+// Like a real namespace: no sandbox quota until the test creates one (resourcequota.yaml in production).
+let quota: QuotaLimits | undefined;
+
+export function setSandboxQuota(hard: QuotaLimits): void {
+  quota = hard;
+}
+
+export async function readSandboxQuota(): Promise<QuotaLimits> {
+  if (quota === undefined) {
+    throw new Error(
+      "ResourceQuota kaeno-sandbox not found; call setSandboxQuota first",
+    );
+  }
+  return quota;
+}
+
 export async function getPodLog(name: string): Promise<string | undefined> {
   return pods.has(name) ? `sandbox container log for ${name}\n` : undefined;
 }
 
 export function resetCluster(): void {
   pods.clear();
+  quota = undefined;
 }
 
 export function runningPods(): string[] {

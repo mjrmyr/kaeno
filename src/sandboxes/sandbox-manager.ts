@@ -82,6 +82,7 @@ export class SandboxManager {
         conversationId: launch.conversationId,
         taskId: String(launch.taskId),
         template: launch.template,
+        resources: this.capacity.resources,
       },
       this.client.namespace,
     );

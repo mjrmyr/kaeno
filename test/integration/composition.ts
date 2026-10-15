@@ -1,3 +1,4 @@
+import { SANDBOX_RESOURCES } from "./values.ts";
 import type { Context } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
 import {
@@ -55,7 +56,6 @@ interface AgentOptions {
   sandboxUrl?: (pod: string) => string;
   client?: SandboxClient;
   artifacts?: ArtifactStore;
-  sandboxCapacity?: number;
 }
 export function createAgents(options: AgentOptions): Agent {
   let client = options.client ?? sandboxClient;
@@ -70,7 +70,7 @@ export function createAgents(options: AgentOptions): Agent {
   const capacity = new SandboxCapacity(
     options.harness,
     client,
-    options.sandboxCapacity,
+    SANDBOX_RESOURCES,
   );
   const environmentFactory = {
     createEnvironment: (
@@ -223,7 +223,7 @@ export function createEnvServer(options: {
   ).server;
 }
 export function sandboxSlots(harness: () => Harness): SandboxCapacity {
-  return new SandboxCapacity(harness, sandboxClient);
+  return new SandboxCapacity(harness, sandboxClient, SANDBOX_RESOURCES);
 }
 export function createNoopWorkSurface(): WorkToolSurface {
   const tool = (name: string) =>

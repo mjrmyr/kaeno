@@ -38,7 +38,7 @@ import {
   runningPods,
 } from "./sandbox-fixture.ts";
 import * as k8s from "./sandbox-fixture.ts";
-import { serverPort } from "./values.ts";
+import { SANDBOX_RESOURCES, serverPort } from "./values.ts";
 
 const envdToken = "e".repeat(40);
 const servers: EnvironmentServer["server"][] = [];
@@ -94,9 +94,14 @@ async function startRig(
     deletePod: (name) => k8s.deletePod(name),
     listSandboxPods: () => k8s.listSandboxPods(),
     getPodLog: (name) => k8s.getPodLog(name),
+    readSandboxQuota: () => k8s.readSandboxQuota(),
   };
   const harness = (): SandboxRuntime => ({ getTask: async () => undefined });
-  const capacity = new SandboxCapacity(() => createMockRuntime(), client);
+  const capacity = new SandboxCapacity(
+    () => createMockRuntime(),
+    client,
+    SANDBOX_RESOURCES,
+  );
   const store = new ArtifactStore(join(root, "artifacts"));
   const manager = new SandboxManager(
     harness,
@@ -117,6 +122,7 @@ async function startRig(
         conversationId: "7",
         taskId: "5",
         template: "swe",
+        resources: SANDBOX_RESOURCES,
       },
       namespace,
     ),

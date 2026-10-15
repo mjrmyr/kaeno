@@ -17,6 +17,10 @@ function input(): SandboxInput {
     conversationId: "12",
     taskId: "24",
     template: "worker",
+    resources: {
+      requests: { cpu: "100m", memory: "128Mi" },
+      limits: { cpu: "1", memory: "1Gi" },
+    },
   };
 }
 it("builds an isolated non-root pod without Kubernetes credentials", () => {
@@ -56,4 +60,16 @@ it("mounts frozen skills read-only into the main container and keeps the cache i
 });
 it("does not provision a skill init container when no skills were assigned", () => {
   expect(sandboxPod(input()).spec.initContainers).toBeUndefined();
+});
+it("sizes envd and the skills init container from the configured resources", () => {
+  const pod = sandboxPod({
+    ...input(),
+    skills: [{ id: "demo/skills:guide", treeHash: "a".repeat(64) }],
+  });
+  for (const container of [
+    ...pod.spec.containers,
+    ...(pod.spec.initContainers ?? []),
+  ]) {
+    expect(container.resources).toEqual(input().resources);
+  }
 });

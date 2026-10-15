@@ -50,7 +50,10 @@ function configuration(): Config {
   return {
     agent: "root",
     maxDepth: 3,
-    sandboxCapacity: 4,
+    sandboxResources: {
+      requests: { cpu: "250m", memory: "256Mi" },
+      limits: { cpu: "2", memory: "2Gi" },
+    },
     skillRepositories: [],
     telegram: { allowedChatIds: [] },
     templates: {

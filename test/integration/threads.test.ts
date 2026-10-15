@@ -12,7 +12,7 @@ import {
 import { expect, it } from "vitest";
 import { parseConfig } from "../../src/config/index.ts";
 import { createThreadFixture, refreshThreads, thread } from "./composition.ts";
-import { required } from "./values.ts";
+import { required, SANDBOX_RESOURCES } from "./values.ts";
 it("refreshes an idle thread even before its first model submission, without duplicating it", async () => {
   const harness = await Harness.open(
     new MemoryStorage(),
@@ -23,6 +23,7 @@ it("refreshes an idle thread even before its first model submission, without dup
   const template = required(
     parseConfig({
       agent: "kaeno",
+      sandboxResources: SANDBOX_RESOURCES,
       templates: {
         kaeno: {
           description: "chat",
