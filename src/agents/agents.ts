@@ -50,6 +50,7 @@ export interface AgentSandboxes {
     cwd: string,
   ): ExecutionEnv;
   sweepOrphanedSandboxes(): Promise<void>;
+  sandboxPool(): Promise<{ slots: number; summary: string }>;
 }
 export class Agent {
   readonly extension: Extension;
@@ -228,5 +229,8 @@ export class Agent {
   };
   sweepOrphanedSandboxes(): Promise<void> {
     return this.sandboxes.sweepOrphanedSandboxes();
+  }
+  sandboxPool(): Promise<{ slots: number; summary: string }> {
+    return this.sandboxes.sandboxPool();
   }
 }

@@ -165,6 +165,8 @@ export interface WorkAgents {
     ctx: Context,
   ): Promise<void>;
   releaseWorkSandbox(id: ConversationId): Promise<void>;
+  /** How many sandboxes the cluster grants (the given resources); throws when it cannot say. */
+  sandboxPool(): Promise<{ slots: number; summary: string }>;
 }
 export interface WorkTemplateChoice {
   name: string;
@@ -245,9 +247,10 @@ async function latestResponse(
   const { items } = await tx.scanEntries({ conversationId }, 64);
   return items.find((entry) => entry.kind === AssistantEntry.kind);
 }
-async function liveChildren(
+/** Unfinished WORK started by one conversation, or by anyone when no conversation is given. */
+async function liveWork(
   tx: Tx,
-  conversationId: ConversationId,
+  conversationId?: ConversationId,
 ): Promise<TaskId[]> {
   const ids: TaskId[] = [];
   for (const status of LIVE) {
@@ -437,7 +440,7 @@ export class Work {
         if (conversation) {
           // Children are background tasks of this WORK conversation: cascade explicitly, deepest first.
           const children = await this.harness().commit(
-            (tx) => liveChildren(tx, conversation.id),
+            (tx) => liveWork(tx, conversation.id),
             context,
           );
           for (const child of children) {
@@ -485,6 +488,15 @@ export class Work {
                 origin: await this.resolveAuthorizedOrigin(api, context),
               }
             : { kind: "work", conversationId: api.conversationId };
+        // Given resources: read before the commit (it is a Kubernetes call). A replayed call that
+        // already launched its work must not depend on the cluster, so it skips the read.
+        const launched = (
+          await api.snapshot(WorkIndex, api.conversationId, context)
+        )?.launches[String(api.taskId)];
+        const pool =
+          launched === undefined
+            ? await this.agents().sandboxPool()
+            : undefined;
         const id = await api.commit(async (tx) => {
           if (
             parent.kind === "chat" &&
@@ -527,7 +539,19 @@ export class Work {
             }
             depth = caller.depth + 1;
           }
-          const live = await liveChildren(tx, api.conversationId);
+          // Admission: every unfinished WORK holds one sandbox until it is terminal, and a parent keeps
+          // its sandbox while it waits for children. Starting work only when a sandbox is free for it
+          // now means no WORK ever waits for a slot, so parents and children cannot deadlock.
+          // Counted inside this commit, so concurrent start_work calls cannot overbook the pool.
+          if (pool !== undefined) {
+            const used = (await liveWork(tx)).length;
+            if (used >= pool.slots) {
+              throw new Error(
+                `No free sandbox: ${used} of ${pool.slots} are in use by unfinished works. Wait for a running work to report or cancel one, then retry. Pool: ${pool.summary}`,
+              );
+            }
+          }
+          const live = await liveWork(tx, api.conversationId);
           if (live.length >= this.maxActive) {
             throw new Error(
               `${this.maxActive} works are already active here; cancel or wait before adding more`,
@@ -1015,7 +1039,7 @@ export class Work {
         }
         const response = await latestResponse(tx, conversationId);
         const latest = response?.id;
-        const live = (await liveChildren(tx, conversationId)).length > 0;
+        const live = (await liveWork(tx, conversationId)).length > 0;
         if (latest === checkpoint.seen) {
           if (latest === undefined && briefStatus.status === "unanswered") {
             changed = true;

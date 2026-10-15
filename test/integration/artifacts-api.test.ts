@@ -106,6 +106,7 @@ beforeAll(async () => {
     configureWorkConversation: unexpected,
     provisionWorkSandbox: unexpected,
     releaseWorkSandbox: unexpected,
+    sandboxPool: unexpected,
   };
   const work = new Work(
     () => harness,

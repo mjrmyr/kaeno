@@ -1239,6 +1239,104 @@ it("WORK starts an allowed child, replies to its message, and reports only after
   expect(readObject(child.input)).toMatchObject({ agent: "leaf", depth: 2 });
   expect(k8s.runningPods()).toEqual([]);
 });
+it("refuses start_work when no sandbox is free, so parents waiting for children cannot deadlock the pool", async () => {
+  // Two sandboxes fit. Before admission at start_work, both coordinators held one each and their
+  // children queued forever for a slot only a finished coordinator could free.
+  vi.spyOn(k8s, "readSandboxQuota").mockResolvedValue({ pods: "2" });
+  const refusals: string[] = [];
+  const conversation = await setup(
+    (system, last) => {
+      const message = text(last);
+      if (system.includes("COORDINATOR")) {
+        if (last.role === "toolResult") {
+          refusals.push(message);
+          return reply(`COORDINATED ALONE: ${message}`);
+        }
+        return call(
+          "start_work",
+          { agent: "leaf", title: "Child", brief: "Help" },
+          "child",
+        );
+      }
+      if (system.includes("LEAF-PROFILE")) {
+        return reply("unreachable: no sandbox was free");
+      }
+      if (last.role === "toolResult") {
+        return reply("ACK");
+      }
+      if (message.startsWith("Work #")) {
+        return reply(message.split("\n\n").at(-1) ?? "");
+      }
+      return fauxAssistantMessage(
+        ["one", "two"].map((id) =>
+          fauxToolCall(
+            "start_work",
+            { agent: "worker", title: id, brief: "Coordinate" },
+            { id },
+          ),
+        ),
+        { stopReason: "toolUse" },
+      );
+    },
+    undefined,
+    {
+      configure: (config) => {
+        required(config.templates.worker).instructions = "COORDINATOR";
+        required(config.templates.worker).delegates = ["leaf"];
+        config.templates.leaf = {
+          ...required(config.templates.kaeno),
+          name: "leaf",
+          description: "helps",
+          instructions: "LEAF-PROFILE",
+          delegates: [],
+        };
+      },
+    },
+  );
+  await conversation.submit("two coordinators", "admission-deadlock");
+  await until(
+    async () =>
+      conversation.sent.filter((value) => value.startsWith("COORDINATED"))
+        .length === 2,
+  );
+  expect(refusals).toHaveLength(2);
+  for (const refusal of refusals) {
+    expect(refusal).toContain("No free sandbox: 2 of 2 are in use");
+  }
+  const roots = await conversation.work.listWork(conversation.id);
+  expect(roots.map((root) => root.status)).toEqual(["completed", "completed"]);
+  const leaves = await conversation.harness.commit(
+    async (tx) =>
+      (await tx.scanTasks({ kind: "kaeno.work" }, 16)).items.filter(
+        (task) => readObject(task.input).agent === "leaf",
+      ),
+    ctx,
+  );
+  expect(leaves).toEqual([]);
+  await until(async () => k8s.runningPods().length === 0);
+});
+it("fails start_work at creation when the sandbox pool cannot be read, without creating work", async () => {
+  vi.spyOn(k8s, "readSandboxQuota").mockRejectedValue(
+    new Error("ResourceQuota kaeno-sandbox not found"),
+  );
+  let result = "";
+  const conversation = await setup((_system, last) => {
+    if (last.role === "toolResult") {
+      result = text(last);
+      return reply("Cannot start work right now.");
+    }
+    return call("start_work", {
+      agent: "worker",
+      title: "Blocked",
+      brief: "task",
+    });
+  });
+  await conversation.submit("start", "admission-unreadable");
+  await conversation.waitReply("admission-unreadable");
+  expect(result).toContain("ResourceQuota kaeno-sandbox not found");
+  expect(await conversation.work.listWork(conversation.id)).toEqual([]);
+  expect(k8s.runningPods()).toEqual([]);
+});
 it("CHAT relays a WORK message to the user, inspects it, and forwards the reply with message_work", async () => {
   let workId = 0;
   let inspected = "";
