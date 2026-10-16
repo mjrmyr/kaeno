@@ -37,10 +37,13 @@ Returns 202 and a plan view. Repeat the same request ID and normalized content t
 retrieve the existing admission, even after cancellation, completion or reopen.
 A changed payload with the same ID is rejected. No key eviction/resurrection:
 128 lifetime admissions per thread, then a new thread is required. At most one
-plan with `running` status is admitted per thread.
+plan that is running or cleaning up is admitted per thread. Terminal status is
+published atomically with native supervisor settlement only after all children
+are joined. `completing`, `pausing`, and `cancelling` expose persisted cleanup in
+progress and block replacement admission, including after a restart.
 
 - `GET /v1/threads/example/plans`: frozen request, origin epoch, absolute deadline,
-  status/reason, cursor (completed phase count), consumed request admissions,
+  status/reason (including cleanup-in-progress states), cursor (completed phase count), consumed request admissions,
   launch keys/WORK IDs, completed reports as data.
 - `POST /v1/threads/example/plans/analysis-0001/cancel`: durably fences further
   launches, aborts the native supervisor and joins its child cleanup.
@@ -79,7 +82,8 @@ not model-driven chaining of outputs into new instructions.
 
 The supervisor checks the origin epoch and deadline in the launch transaction.
 Stop/reset fences are committed before cleanup; explicit cancel marks the ledger
-before abort. No successor can launch after that linearization point. Cleanup
+before abort. Pauses and completion also persist their cleanup state before
+joining; hooks reject all non-running states. No successor can launch after that linearization point. Cleanup
 joins child aborts. Deadline cancellation is cooperative on the running host;
 offline time still counts and expired plans cannot start new requests on reopen.
 

@@ -50,7 +50,14 @@ export interface PlanView {
   request: PlanRequest;
   origin: Origin;
   deadline: number;
-  status: "running" | "completed" | "paused" | "cancelled";
+  status:
+    | "running"
+    | "completing"
+    | "pausing"
+    | "cancelling"
+    | "completed"
+    | "paused"
+    | "cancelled";
   cursor: number;
   requests: number;
   launches: Record<string, TaskId>;
@@ -81,6 +88,21 @@ interface PlanRuntime extends Pick<
   Harness,
   "snapshot" | "commit" | "abortTask" | "waitForTask"
 > {}
+function settledStatus(status: PlanView["status"]): PlanView["status"] {
+  switch (status) {
+    case "completing":
+      return "completed";
+    case "pausing":
+      return "paused";
+    case "cancelling":
+      return "cancelled";
+    default:
+      return status;
+  }
+}
+function isSettled(status: PlanView["status"]): boolean {
+  return ["completed", "paused", "cancelled"].includes(status);
+}
 const receiptSchema = z.object({
   status: z.literal("completed"),
   text: z.string(),
@@ -132,19 +154,19 @@ export class ReasoningPlans {
               const child =
                 childId === undefined ? undefined : await tx.task(childId);
               if (plan.status === "running" && fenced) {
-                plan.status = "cancelled";
+                plan.status = "cancelling";
                 plan.reason = "Origin fenced by stop/reset";
               }
               if (
                 plan.status === "running" &&
                 runtime.now() >= task.input.deadline
               ) {
-                plan.status = "paused";
+                plan.status = "pausing";
                 plan.reason = "Deadline exhausted";
               }
               if (plan.status === "running" && childId !== undefined) {
                 if (!child || child.kind !== "kaeno.work") {
-                  plan.status = "paused";
+                  plan.status = "pausing";
                   plan.reason = "Missing native WORK receipt";
                 } else if (child.state.status === "terminal") {
                   const outcome = child.state.outcome;
@@ -158,16 +180,16 @@ export class ReasoningPlans {
                     });
                     plan.cursor++;
                     if (plan.cursor === task.input.request.phases.length) {
-                      plan.status = "completed";
+                      plan.status = "completing";
                     }
                   } else {
-                    plan.status = "paused";
+                    plan.status = "pausing";
                     plan.reason ??= `Phase ${plan.cursor + 1} failed (${outcome.status})`;
                   }
                 }
               } else if (plan.status === "running") {
                 if (plan.requests >= task.input.request.limits.maxRequests) {
-                  plan.status = "paused";
+                  plan.status = "pausing";
                   plan.reason = "Native request budget exhausted";
                 } else {
                   const created = await launch(tx, {
@@ -191,13 +213,15 @@ export class ReasoningPlans {
                 await this.harness().abortTask(child, context);
                 await runtime.waitForTask(child, context);
               }
-              await runtime.commit(
-                () => ({
+              await runtime.commit(async (tx) => {
+                const plan = (await tx.doc(PlanLedger, task.conversationId))
+                  .plans[task.input.request.requestId];
+                plan.status = settledStatus(plan.status);
+                return {
                   status: "terminal",
                   outcome: { status: "completed", result: null },
-                }),
-                context,
-              );
+                };
+              }, context);
               return;
             }
             await runtime.sleep(runtime.now() + 25, context);
@@ -213,10 +237,13 @@ export class ReasoningPlans {
           await this.harness().abortTask(child, context);
           await runtime.waitForTask(child, context);
         }
-        await runtime.commit(
-          () => ({ status: "terminal", outcome: { status: "aborted" } }),
-          context,
-        );
+        await runtime.commit(async (tx) => {
+          const plan = (await tx.doc(PlanLedger, task.conversationId)).plans[
+            task.input.request.requestId
+          ];
+          plan.status = settledStatus(plan.status);
+          return { status: "terminal", outcome: { status: "aborted" } };
+        }, context);
       },
     });
   }
@@ -229,7 +256,9 @@ export class ReasoningPlans {
     const admission = this.admission;
     await this.harness().commit(async (tx) => {
       const ledger = await tx.doc(PlanLedger, conversationId);
-      const existing = ledger.plans[request.requestId];
+      const existing = Object.hasOwn(ledger.plans, request.requestId)
+        ? ledger.plans[request.requestId]
+        : undefined;
       if (existing) {
         if (JSON.stringify(existing.request) !== JSON.stringify(request)) {
           throw new Error(
@@ -241,10 +270,10 @@ export class ReasoningPlans {
       if (Object.keys(ledger.plans).length >= 128) {
         throw new Error("Plan history full (128); use a new thread");
       }
-      if (
-        Object.values(ledger.plans).some((plan) => plan.status === "running")
-      ) {
-        throw new Error("A reasoning plan is already running in this thread");
+      if (Object.values(ledger.plans).some((plan) => !isSettled(plan.status))) {
+        throw new Error(
+          "A reasoning plan is already running or cleaning up in this thread",
+        );
       }
       const origin = await admission.capturePlanOrigin(
         tx,
@@ -301,12 +330,15 @@ export class ReasoningPlans {
     requestId: string,
   ): Promise<TaskId[]> {
     return this.harness().commit(async (tx) => {
-      const plan = (await tx.doc(PlanLedger, conversationId)).plans[requestId];
+      const plans = (await tx.doc(PlanLedger, conversationId)).plans;
+      const plan = Object.hasOwn(plans, requestId)
+        ? plans[requestId]
+        : undefined;
       if (!plan) {
         throw new Error("No such plan in this thread");
       }
-      if (plan.status === "running") {
-        plan.status = "cancelled";
+      if (!isSettled(plan.status)) {
+        plan.status = "cancelling";
         plan.reason = "Cancelled by user";
       }
       return Object.values(plan.launches);
@@ -355,7 +387,7 @@ export class ReasoningPlans {
       }
       if (failure) {
         if (plan.status === "running") {
-          plan.status = "paused";
+          plan.status = fenced ? "cancelling" : "pausing";
           plan.reason = failure;
         }
         return failure;
@@ -377,7 +409,7 @@ export class ReasoningPlans {
         (await tx.doc(PlanLedger, conversationId)).plans,
       ).find((item) => item.id === planId);
       if (plan?.status === "running") {
-        plan.status = "paused";
+        plan.status = "pausing";
         plan.reason = reason;
       }
     }, BACKGROUND_CONTEXT);

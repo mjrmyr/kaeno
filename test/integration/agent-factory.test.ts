@@ -32,10 +32,19 @@ const matrix: {
   role: AgentSelection["role"];
   agent: string;
   orchestrate?: boolean;
+  mode?: "reasoning-plan";
   tools: string[];
   extensions: string[];
   cwd?: string;
 }[] = [
+  {
+    role: "work",
+    agent: "swe",
+    orchestrate: true,
+    mode: "reasoning-plan",
+    tools: [],
+    extensions: ["kaeno-work"],
+  },
   {
     role: "chat",
     agent: "chat",
@@ -69,7 +78,7 @@ const matrix: {
 ];
 it.each(matrix)(
   "configures exact $role/$agent (orchestrate=$orchestrate) capabilities and clears inherited settings",
-  async ({ role, agent, orchestrate, tools, extensions, cwd }) => {
+  async ({ role, agent, orchestrate, mode, tools, extensions, cwd }) => {
     const { config, factory, agents } = createAgentFixture();
     const harness = await open();
     const selection: AgentSelection =
@@ -79,6 +88,7 @@ it.each(matrix)(
             role,
             agent,
             orchestrate: orchestrate ?? false,
+            mode,
             blueprint: agents.captureWorkBlueprint("chat"),
           };
     const id = await harness.commit(async (tx) => {

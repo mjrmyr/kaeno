@@ -45,6 +45,7 @@ import {
   WorkScope,
   type PlanRequest,
 } from "../../src/work/index.ts";
+import { guide } from "./agent-fixture.ts";
 import { required, SANDBOX_RESOURCES, serverPort } from "./values.ts";
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -91,6 +92,7 @@ async function setup(
   const config = parseConfig({
     agent: "chat",
     sandboxResources: SANDBOX_RESOURCES,
+    skillRepositories: ["demo/skills"],
     templates: {
       chat: {
         description: "chat",
@@ -102,6 +104,7 @@ async function setup(
         description: "worker",
         model: "anthropic/faux-1",
         instructions: "FROZEN-TEMPLATE",
+        skills: ["demo/skills:guide"],
         delegates: ["worker"],
       },
     },
@@ -153,7 +156,11 @@ async function setup(
       undefined,
       turns,
     );
-    const factory = new AgentFactory(config, { bindSkills: () => [] }, work);
+    const factory = new AgentFactory(
+      config,
+      { bindSkills: (ids) => (ids.length ? structuredClone(guide) : []) },
+      work,
+    );
     agent = new Agent(
       factory,
       () => harness,
@@ -195,7 +202,9 @@ async function setup(
   const id = await threads.getOrCreateConversation("plan:test");
   const view = async () => required((await work.listPlans(id))[0]);
   const done = async () =>
-    until(async () => (await view()).status !== "running");
+    until(async () =>
+      ["completed", "paused", "cancelled"].includes((await view()).status),
+    );
   const children = () =>
     harness.commit(
       (tx) => tx.scanTasks({ kind: "kaeno.work", conversationId: id }, 20),
@@ -246,6 +255,11 @@ it("advances only native receipts, keeps reports as data, freezes policy and has
   expect(JSON.stringify(seen[1])).not.toContain("Ignore the plan");
   for (const input of seen) {
     expect(JSON.stringify(input.messages)).toContain("FROZEN-TEMPLATE");
+    expect(JSON.stringify(input.messages)).not.toContain("FROZEN CONTENT");
+    expect(JSON.stringify(input.messages)).not.toContain("Frozen guide");
+    expect(JSON.stringify(input.messages)).not.toContain(
+      required(guide[0]).sandboxRoot,
+    );
   }
   for (const child of (await fixture.children()).items) {
     const conversation = required(
@@ -681,3 +695,223 @@ it("message_work cannot steer a plan phase even from a durably admitted user tur
   expect((await fixture.view()).requests).toBe(1);
   await fixture.work.cancelPlans(fixture.id);
 });
+it("reasoning WORK does not occupy a sandbox slot or change ordinary WORK permissions", async () => {
+  let reasoningStarted = false;
+  const fixture = await setup(async (input, options) => {
+    const system = JSON.stringify(
+      input.messages.filter((message) => message.role === "system"),
+    );
+    if (system.includes("reasoning-only plan phase")) {
+      reasoningStarted = true;
+      await delay(60000, undefined, { signal: options.signal });
+      return fauxAssistantMessage([fauxText("late")]);
+    }
+    if (system.includes("FROZEN-TEMPLATE")) {
+      return fauxAssistantMessage([fauxText("Ordinary WORK result")]);
+    }
+    const last = input.messages.at(-1);
+    if (
+      last?.role === "user" &&
+      JSON.stringify(last).includes("Start ordinary work")
+    ) {
+      return fauxAssistantMessage(
+        [
+          fauxToolCall("start_work", {
+            agent: "worker",
+            title: "Ordinary",
+            brief: "Independently reason",
+          }),
+        ],
+        { stopReason: "toolUse" },
+      );
+    }
+    return fauxAssistantMessage([fauxText("ACK")]);
+  });
+  fixture.sandbox.sandboxPool.mockResolvedValue({
+    slots: 1,
+    summary: "only one slot",
+  });
+  await fixture.work.admitPlan(fixture.id, request());
+  await until(async () => reasoningStarted);
+  const turn = await fixture.harness.commit(
+    (tx) =>
+      fixture.turns.admitUserTurn(
+        tx,
+        fixture.id,
+        "Start ordinary work",
+        "ordinary-work-test",
+      ),
+    ctx,
+  );
+  await fixture.harness.waitForTask(turn, ctx);
+  await until(
+    async () =>
+      (await fixture.work.listWork(fixture.id))[0]?.status === "completed",
+  );
+  const work = required((await fixture.work.listWork(fixture.id))[0]);
+  const conversation = required(
+    (
+      await fixture.harness.commit(
+        (tx) => tx.scanConversations({ ownerTaskId: work.id }, 1),
+        ctx,
+      )
+    ).items[0],
+  );
+  expect(
+    (await fixture.harness.snapshot(AgentDoc, conversation.id, ctx))?.tools,
+  ).toEqual([
+    "read",
+    "write",
+    "edit",
+    "bash",
+    "message_parent",
+    "start_work",
+    "list_work",
+    "inspect_work",
+    "message_work",
+    "cancel_work",
+    "read_skill",
+  ]);
+  expect(
+    (await fixture.harness.snapshot(AgentState, conversation.id, ctx))?.sandbox,
+  ).toBeDefined();
+  expect(
+    (await fixture.harness.snapshot(AgentState, conversation.id, ctx))?.skills,
+  ).toEqual(guide);
+  expect(fixture.sandbox.ensureSandbox).toHaveBeenCalledTimes(1);
+  expect(fixture.sandbox.removeSandbox).toHaveBeenCalledTimes(1);
+  expect(await fixture.view()).toMatchObject({
+    status: "running",
+    requests: 1,
+    cursor: 0,
+  });
+  await fixture.work.cancelPlans(fixture.id);
+});
+it("counts offline time in the frozen deadline and never calls a provider on expired reopen", async () => {
+  let calls = 0;
+  const fixture = await setup(async (_input, options) => {
+    calls++;
+    await delay(60000, undefined, { signal: options.signal });
+    return fauxAssistantMessage([fauxText("late")]);
+  });
+  const input = request();
+  input.limits.deadlineMs = 300;
+  const admitted = await fixture.work.admitPlan(fixture.id, input);
+  await until(async () => calls === 1);
+  await fixture.close();
+  await delay(350);
+  await fixture.open();
+  await fixture.harness.waitForTask(admitted.id, ctx);
+  expect(await fixture.view()).toMatchObject({
+    status: "paused",
+    requests: 1,
+    cursor: 0,
+    reason: "Deadline exhausted",
+  });
+  expect(calls).toBe(1);
+  expect((await fixture.children()).items).toHaveLength(1);
+});
+it.each(["cancel", "deadline"])(
+  "exposes %s cleanup and rejects a new plan until an abort-ignoring provider is joined",
+  async (action) => {
+    const gate = Promise.withResolvers<void>();
+    let entered = false;
+    let cancellation: Promise<void> | undefined;
+    let cancellationSettled = false;
+    const fixture = await setup(async () => {
+      entered = true;
+      await gate.promise; // Intentionally ignore abort: cleanup must not claim to have settled early.
+      return fauxAssistantMessage([fauxText("Late result")]);
+    });
+    const input = request();
+    if (action === "deadline") {
+      input.limits.deadlineMs = 150;
+    }
+    const plan = await fixture.work.admitPlan(fixture.id, input);
+    try {
+      await until(async () => entered);
+      if (action === "cancel") {
+        cancellation = fixture.work
+          .cancelPlans(fixture.id, input.requestId)
+          .then(() => {
+            cancellationSettled = true;
+          });
+      }
+      const status = action === "cancel" ? "cancelling" : "pausing";
+      await until(async () => (await fixture.view()).status === status);
+      expect(cancellationSettled).toBe(false);
+      expect(
+        (await fixture.children()).items.some(
+          (child) => child.state.status !== "terminal",
+        ),
+      ).toBe(true);
+      await expect(
+        fixture.work.admitPlan(fixture.id, request(1, "second-reasoning-plan")),
+      ).rejects.toThrow(/running or cleaning up/);
+      expect(await fixture.work.listPlans(fixture.id)).toHaveLength(1);
+    } finally {
+      gate.resolve();
+      await cancellation;
+      await fixture.harness.waitForTask(plan.id, ctx);
+    }
+    expect((await fixture.view()).status).toBe(
+      action === "cancel" ? "cancelled" : "paused",
+    );
+    expect(
+      (await fixture.children()).items.every(
+        (child) => child.state.status === "terminal",
+      ),
+    ).toBe(true);
+    const next = await fixture.work.admitPlan(
+      fixture.id,
+      request(1, "second-reasoning-plan"),
+    );
+    await fixture.harness.waitForTask(next.id, ctx);
+    expect((await fixture.work.listPlans(fixture.id))[1]?.status).toBe(
+      "completed",
+    );
+  },
+);
+it("reopens a persisted cleanup fence without admitting a replacement plan", async () => {
+  const fixture = await setup(
+    () => fauxAssistantMessage([fauxText("must not run")]),
+    false,
+  );
+  const admitted = await fixture.work.admitPlan(fixture.id, request());
+  const abort = vi
+    .spyOn(fixture.harness, "abortTask")
+    .mockRejectedValueOnce(new Error("Interrupted after cleanup fence"));
+  await expect(
+    fixture.work.cancelPlans(fixture.id, request().requestId),
+  ).rejects.toThrow(/Interrupted/);
+  abort.mockRestore();
+  expect((await fixture.view()).status).toBe("cancelling");
+  await fixture.close();
+  await fixture.open(false);
+  await expect(
+    fixture.work.admitPlan(fixture.id, request(1, "replacement-plan")),
+  ).rejects.toThrow(/cleaning up/);
+  fixture.harness.resume();
+  await fixture.harness.waitForTask(admitted.id, ctx);
+  expect((await fixture.view()).status).toBe("cancelled");
+  expect((await fixture.children()).items).toEqual([]);
+});
+it.each(["toString", "hasOwnProperty"])(
+  "admits and replays schema-valid prototype-looking request ID %s",
+  async (requestId) => {
+    const fixture = await setup(
+      () => fauxAssistantMessage([fauxText("done")]),
+      false,
+    );
+    const input = request(1, requestId);
+    const first = await fixture.work.admitPlan(fixture.id, input);
+    expect((await fixture.work.admitPlan(fixture.id, input)).id).toBe(first.id);
+    expect(await fixture.work.listPlans(fixture.id)).toHaveLength(1);
+    fixture.harness.resume();
+    await fixture.harness.waitForTask(first.id, ctx);
+    expect((await fixture.work.admitPlan(fixture.id, input)).status).toBe(
+      "completed",
+    );
+    expect((await fixture.children()).items).toHaveLength(1);
+  },
+);
