@@ -114,7 +114,7 @@ export class KubernetesClient {
       body: body ? JSON.stringify(body) : undefined,
     });
     if (
-      response.status === 404 ||
+      (response.status === 404 && (method === "GET" || method === "DELETE")) ||
       (response.status === 409 && method === "POST")
     ) {
       return undefined;
