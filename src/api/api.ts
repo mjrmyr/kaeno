@@ -144,7 +144,7 @@ export class ApiServer {
     harness: () => ApiRuntime,
     threads: ApiThreads,
     turns: ApiTurns,
-    work: ApiWork,
+    work: ApiWork | undefined,
     events: ConversationEvents,
     token: string,
   ) {
@@ -184,6 +184,9 @@ export class ApiServer {
             path,
           );
         if (artifacts && req.method === "GET") {
+          if (!work) {
+            return json(res, 404, { error: "WORK is disabled" });
+          }
           const caller = await threads.getOrCreateConversation(artifacts[1]);
           const workId = parseTaskId(Number(artifacts[2]));
           const file = artifacts[3];
@@ -217,6 +220,9 @@ export class ApiServer {
         if (!message || !["POST", "GET"].includes(req.method ?? "")) {
           return json(res, 404, { error: "Not found" });
         }
+        if (message[2] === "work" && !work) {
+          return json(res, 404, { error: "WORK is disabled" });
+        }
         const key = message[1];
         const conversationId = await threads.getOrCreateConversation(key);
         if (message[2] === "replies" && req.method === "GET") {
@@ -231,7 +237,7 @@ export class ApiServer {
           }
           return json(res, 200, await turns.readReplies(conversationId, after));
         }
-        if (message[2] === "work" && req.method === "GET") {
+        if (message[2] === "work" && req.method === "GET" && work) {
           return json(res, 200, await work.listWork(conversationId));
         }
         if (req.method !== "POST" || !["turn", "abort"].includes(message[2])) {
@@ -254,7 +260,8 @@ export class ApiServer {
           typeof requestId !== "string" ||
           !/^[A-Za-z0-9:_.-]{8,200}$/.test(requestId) ||
           ["__proto__", "constructor", "prototype"].includes(requestId) ||
-          requestId.startsWith("work-report:")
+          requestId.startsWith("work-report:") ||
+          requestId.startsWith("activity-result:")
         ) {
           return json(res, 400, { error: "Need text and requestId" });
         }

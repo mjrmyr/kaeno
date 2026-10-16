@@ -17,8 +17,24 @@ import {
 } from "@earendil-works/pi-durable";
 import { z } from "zod";
 import { requireConversation, type Stored } from "../durable/index.ts";
+export interface ChannelRoute {
+  channel: string;
+  address: string;
+}
 export interface Notify {
+  route?: ChannelRoute;
+  /** Legacy persisted route, retained for existing channels and origins. */
   telegram?: number;
+}
+/** Normalize at delivery, without rewriting persisted legacy origins/receipts. */
+export function normalizeNotify(notify: Notify): Notify {
+  if (notify.route || notify.telegram === undefined) {
+    return notify;
+  }
+  return {
+    ...notify,
+    route: { channel: "telegram", address: String(notify.telegram) },
+  };
 }
 export interface Notifier {
   send(notify: Notify, text: string): Promise<void>;
@@ -33,7 +49,29 @@ export type Source =
       workId: TaskId;
       requestId: string;
       epoch: number;
+    }
+  | {
+      kind: "activity-result";
+      activityId: TaskId;
+      requestId: string;
+      epoch: number;
+      /** Consumer-owned display name for stale results. */
+      label?: string;
     };
+export type ResultSource = Exclude<Source, { kind: "user" }>;
+export function isResultSource(source: Source): source is ResultSource {
+  return source.kind !== "user";
+}
+export function resultActivityId(source: ResultSource): TaskId {
+  return source.kind === "work-result" ? source.workId : source.activityId;
+}
+function staleResultText(source: ResultSource, input: TurnInput): string {
+  const label =
+    source.kind === "work-result"
+      ? `Work #${source.workId}`
+      : (source.label ?? `Activity #${source.activityId}`);
+  return `[${label}, started before /new]\n${input.report ?? input.content}`;
+}
 export interface Origin {
   conversationId: ConversationId;
   requestId: string;
@@ -139,7 +177,7 @@ export async function admitTurn(
   input: Omit<TurnInput, "epoch">,
 ): Promise<TaskId> {
   const ledger = await tx.doc(TurnLedger, input.conversationId);
-  if (ledger.control && input.source?.kind !== "work-result") {
+  if (ledger.control && (!input.source || !isResultSource(input.source))) {
     throw new Error("Chat control in progress; retry after it completes");
   }
   const existing = ledger.receipts[input.requestId];
@@ -165,7 +203,7 @@ export async function admitTurn(
     return existing.taskId;
   }
   if (
-    input.source?.kind !== "work-result" &&
+    (!input.source || !isResultSource(input.source)) &&
     Object.values(ledger.receipts).filter((value) =>
       ["pending", "dispatching"].includes(value.delivery),
     ).length >= 64
@@ -189,7 +227,7 @@ export async function admitTurn(
     }
   }
   const source = input.source ?? { kind: "user" as const };
-  const epoch = source.kind === "work-result" ? source.epoch : ledger.epoch;
+  const epoch = isResultSource(source) ? source.epoch : ledger.epoch;
   const id = await tx.createTask(
     Turn,
     { ...input, source, epoch },
@@ -221,7 +259,7 @@ export async function activeTurn(
   const ledger = await harness.snapshot(TurnLedger, conversationId, context);
   const inputs = live?.run?.inputs ?? [];
   if (inputs.length !== 1) {
-    throw new Error("Work controls require one durably admitted turn");
+    throw new Error("Activity controls require one durably admitted turn");
   }
   const submission = await harness.submission(inputs[0], context);
   const record = await submission?.status(context);
@@ -229,7 +267,7 @@ export async function activeTurn(
     ? ledger?.receipts[record.requestId]
     : undefined;
   if (!receipt || !record?.requestId) {
-    throw new Error("Work controls require a durably admitted turn");
+    throw new Error("Activity controls require a durably admitted turn");
   }
   return {
     origin: {
@@ -252,46 +290,24 @@ export async function suppressReports(
       ledger.suppressed.push(id);
     }
   }
-  // Never forget suppression while a WORK or its independently owned report Turn can still dispatch.
-  if (ledger.suppressed.length > 1024) {
-    const live = new Set<number>(ids);
-    for (const status of [
-      "pending",
-      "running",
-      "waiting",
-      "completing",
-    ] as const) {
-      for (const task of (
-        await tx.scanTasks({ conversationId, kind: "kaeno.work", status }, 64)
-      ).items) {
-        live.add(task.id);
-      }
-      for (const task of (
-        await tx.scanTasks({ conversationId, kind: "kaeno.turn", status }, 128)
-      ).items) {
-        const source = z
-          .object({
-            source: z
-              .object({ kind: z.string(), workId: z.number().optional() })
-              .optional(),
-          })
-          .parse(task.input).source;
-        if (source?.kind === "work-result" && source.workId !== undefined) {
-          live.add(source.workId);
-        }
-      }
-    }
-    ledger.suppressed = ledger.suppressed.filter((id) => live.has(id));
-  }
+  // Retain tombstones: only the activity owner knows when no future report can arrive.
+  // Bounded task scans could forget live subjects (and independently owned result turns).
 }
 interface ControlInput {
   conversationId: ConversationId;
   action: "stop" | "reset" | "cancel";
   workId?: TaskId;
+  activityId?: TaskId;
 }
+/** Runs in the admission transaction; the activity owner must reject foreign subjects. */
+export type ValidateActivityCancellation = (
+  tx: Tx,
+  conversationId: ConversationId,
+  activityId: TaskId,
+) => Promise<void>;
 export function defineControl(
   harness: () => Harness,
-  cancel: (id: ConversationId, workId?: TaskId) => Promise<unknown>,
+  cancel: (id: ConversationId, activityId?: TaskId) => Promise<unknown>,
 ): ControlTask {
   return defineTask<
     ControlInput,
@@ -306,7 +322,10 @@ export function defineControl(
     phases: {
       execute: async (task, runtime, context) => {
         if (task.input.action === "cancel") {
-          await cancel(task.input.conversationId, task.input.workId);
+          await cancel(
+            task.input.conversationId,
+            task.input.activityId ?? task.input.workId,
+          );
           await runtime.commit(
             () => ({
               status: "terminal",
@@ -397,19 +416,40 @@ export async function admitControl(
   ledger.control = id;
   return id;
 }
+export async function admitActivityCancellation(
+  tx: Tx,
+  Control: ControlTask,
+  conversationId: ConversationId,
+  activityId: TaskId,
+  validate: ValidateActivityCancellation,
+): Promise<TaskId<null>> {
+  await validate(tx, conversationId, activityId);
+  return tx.createTask(
+    Control,
+    { conversationId, action: "cancel", activityId },
+    { ownership: { kind: "conversation" }, conversationId, background: true },
+  );
+}
+/** Legacy WORK admission. New activity owners use admitActivityCancellation. */
 export async function admitCancel(
   tx: Tx,
   Control: ControlTask,
   conversationId: ConversationId,
   workId: TaskId,
+  validate?: ValidateActivityCancellation,
 ): Promise<TaskId<null>> {
-  const work = await tx.task(workId);
-  if (
-    !work ||
-    work.kind !== "kaeno.work" ||
-    work.conversationId !== conversationId
-  ) {
-    throw new Error("Work is not owned by this chat");
+  if (validate) {
+    await validate(tx, conversationId, workId);
+  } else {
+    // Compatibility for callers that have not yet supplied their WORK-owned validator.
+    const work = await tx.task(workId);
+    if (
+      !work ||
+      work.kind !== "kaeno.work" ||
+      work.conversationId !== conversationId
+    ) {
+      throw new Error("Work is not owned by this chat");
+    }
   }
   return tx.createTask(
     Control,
@@ -469,14 +509,14 @@ export function defineTurn(notifier: () => Notifier): TurnTask {
           }
           await runtime.sleep(runtime.now() + 20, context);
         }
-        if (source.kind === "work-result") {
+        if (isResultSource(source)) {
           for (;;) {
             const ledger = await readTurnLedger(
               runtime,
               input.conversationId,
               context,
             );
-            if (ledger.suppressed.includes(source.workId)) {
+            if (ledger.suppressed.includes(resultActivityId(source))) {
               await runtime.commit(async (tx) => {
                 (await tx.doc(TurnLedger, input.conversationId)).receipts[
                   input.requestId
@@ -504,7 +544,7 @@ export function defineTurn(notifier: () => Notifier): TurnTask {
           context,
         );
         if (input.epoch !== undefined && input.epoch !== ledger.epoch) {
-          if (source.kind !== "work-result") {
+          if (!isResultSource(source)) {
             await runtime.commit(async (tx) => {
               (await tx.doc(TurnLedger, input.conversationId)).receipts[
                 input.requestId
@@ -521,7 +561,7 @@ export function defineTurn(notifier: () => Notifier): TurnTask {
               status: "running",
               checkpoint: {
                 phase: "notify",
-                text: `[Work #${source.workId}, started before /new]\n${input.report ?? input.content}`,
+                text: staleResultText(source, input),
               },
             }),
             context,
@@ -558,12 +598,12 @@ export function defineTurn(notifier: () => Notifier): TurnTask {
               continue;
             }
             await runtime.commit(async (tx) => {
-              if (source.kind === "work-result") {
+              if (isResultSource(source)) {
                 return {
                   status: "running",
                   checkpoint: {
                     phase: "notify",
-                    text: `[Work #${source.workId}, started before /new]\n${input.report ?? input.content}`,
+                    text: staleResultText(source, input),
                   },
                 };
               }
@@ -607,7 +647,7 @@ export function defineTurn(notifier: () => Notifier): TurnTask {
             return undefined;
           }, context);
         }
-        const notify = input.notify;
+        const notify = input.notify ? normalizeNotify(input.notify) : undefined;
         const typing = notify
           ? setInterval(
               () =>
@@ -642,13 +682,15 @@ export function defineTurn(notifier: () => Notifier): TurnTask {
         // A pre-upgrade notify checkpoint is also initialized here. Recovery retries a claimed send (at-least-once).
         await runtime.commit(async (tx) => {
           const doc = await tx.doc(TurnLedger, conversationId);
-          const row = (doc.receipts[requestId] ??= {
+          doc.receipts[requestId] ??= {
             taskId: task.id,
             epoch: task.input.epoch ?? doc.epoch,
             notify: notify ?? {},
             source,
             delivery: "pending",
-          });
+          };
+          // Re-read through the document proxy: the initializer is a detached object.
+          const row = doc.receipts[requestId];
           if (["delivered", "failed", "cancelled"].includes(row.delivery)) {
             return {
               status: "terminal",
@@ -657,11 +699,11 @@ export function defineTurn(notifier: () => Notifier): TurnTask {
           }
           if (row.delivery !== "dispatching") {
             const suppressed =
-              source.kind === "work-result" &&
-              doc.suppressed.includes(source.workId);
+              isResultSource(source) &&
+              doc.suppressed.includes(resultActivityId(source));
             if (
               suppressed ||
-              (source.kind !== "work-result" && row.epoch !== doc.epoch)
+              (!isResultSource(source) && row.epoch !== doc.epoch)
             ) {
               row.delivery = "cancelled";
               return {
@@ -670,8 +712,8 @@ export function defineTurn(notifier: () => Notifier): TurnTask {
               };
             }
             row.text =
-              source.kind === "work-result" && source.epoch !== doc.epoch
-                ? `[Work #${source.workId}, started before /new]\n${task.input.report ?? task.input.content}`
+              isResultSource(source) && source.epoch !== doc.epoch
+                ? staleResultText(source, task.input)
                 : task.state.checkpoint.text;
             row.delivery = "dispatching";
           }
@@ -686,7 +728,7 @@ export function defineTurn(notifier: () => Notifier): TurnTask {
         let failed = false;
         try {
           if (notify) {
-            await notifier().send(notify, replyText);
+            await notifier().send(normalizeNotify(notify), replyText);
           }
         } catch (error) {
           const attempts = (task.state.checkpoint.attempts ?? 0) + 1;
@@ -710,13 +752,14 @@ export function defineTurn(notifier: () => Notifier): TurnTask {
         }
         await runtime.commit(async (tx) => {
           const doc = await tx.doc(TurnLedger, conversationId);
-          const row = (doc.receipts[requestId] ??= {
+          doc.receipts[requestId] ??= {
             taskId: task.id,
             epoch: task.input.epoch ?? doc.epoch,
             notify: notify ?? {},
             source,
             delivery: "pending",
-          });
+          };
+          const row = doc.receipts[requestId];
           row.delivery = failed ? "failed" : "delivered";
           row.text = replyText;
           if (!doc.replies.some((value) => value.requestId === requestId)) {

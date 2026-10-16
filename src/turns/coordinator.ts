@@ -9,6 +9,9 @@ import type {
 import {
   activeTurn,
   admitCancel,
+  admitActivityCancellation,
+  isResultSource,
+  resultActivityId,
   admitControl,
   admitTurn,
   suppressReports,
@@ -19,22 +22,35 @@ import {
   type Reply,
   type Source,
   type TurnTask,
+  type ValidateActivityCancellation,
 } from "./turns.ts";
 export interface ReplyPage {
   replies: Reply[];
   next: number;
   truncated: boolean;
 }
+export interface ActivityResult {
+  activityId: TaskId;
+  /** Globally unique within the activity-result request namespace. */
+  key: string;
+  content: string;
+  report: string;
+  origin: Origin;
+  label?: string;
+}
 export class TurnCoordinator {
   readonly turnTask: TurnTask;
   readonly controlTask: ControlTask;
   private readonly harness: () => Harness;
+  private readonly validateWorkCancellation?: ValidateActivityCancellation;
   constructor(
     harness: () => Harness,
     turnTask: TurnTask,
     controlTask: ControlTask,
+    validateWorkCancellation?: ValidateActivityCancellation,
   ) {
     this.harness = harness;
+    this.validateWorkCancellation = validateWorkCancellation;
     this.turnTask = turnTask;
     this.controlTask = controlTask;
   }
@@ -63,7 +79,27 @@ export class TurnCoordinator {
     id: ConversationId,
     workId: TaskId,
   ): Promise<TaskId> {
-    return admitCancel(tx, this.controlTask, id, workId);
+    return admitCancel(
+      tx,
+      this.controlTask,
+      id,
+      workId,
+      this.validateWorkCancellation,
+    );
+  }
+  admitActivityCancellation(
+    tx: Tx,
+    id: ConversationId,
+    activityId: TaskId,
+    validate: ValidateActivityCancellation,
+  ): Promise<TaskId> {
+    return admitActivityCancellation(
+      tx,
+      this.controlTask,
+      id,
+      activityId,
+      validate,
+    );
   }
   async readReplies(id: ConversationId, after: number): Promise<ReplyPage> {
     const ledger = await this.harness().snapshot(
@@ -107,6 +143,40 @@ export class TurnCoordinator {
         ? [receipt.source.workId]
         : [],
     );
+  }
+  async getPendingActivityIds(tx: Tx, id: ConversationId): Promise<TaskId[]> {
+    const ledger = await tx.doc(TurnLedger, id);
+    return Object.values(ledger.receipts).flatMap((receipt) =>
+      isResultSource(receipt.source) &&
+      ["pending", "dispatching"].includes(receipt.delivery)
+        ? [resultActivityId(receipt.source)]
+        : [],
+    );
+  }
+  suppressActivityResults(
+    tx: Tx,
+    id: ConversationId,
+    ids: readonly TaskId[],
+  ): Promise<void> {
+    return suppressReports(tx, id, ids);
+  }
+  /** Result inputs are trusted feature callbacks, never user-admitted mutation authority. */
+  admitActivityResult(tx: Tx, result: ActivityResult): Promise<TaskId> {
+    const { activityId, origin } = result;
+    return admitTurn(tx, this.turnTask, {
+      conversationId: origin.conversationId,
+      requestId: `activity-result:${result.key}`,
+      notify: origin.notify,
+      source: {
+        kind: "activity-result",
+        activityId,
+        requestId: origin.requestId,
+        epoch: origin.epoch,
+        ...(result.label === undefined ? {} : { label: result.label }),
+      },
+      content: result.content,
+      report: result.report,
+    });
   }
   suppressWorkReports(
     tx: Tx,

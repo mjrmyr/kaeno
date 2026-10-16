@@ -1,4 +1,8 @@
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import {
+  BACKGROUND_CONTEXT,
+  withAbortSignal,
+} from "@earendil-works/chord/context";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   defineDoc,
   type ConversationId,
@@ -132,14 +136,30 @@ export class TelegramNotifier {
   constructor(client: TelegramTransport | undefined) {
     this.client = client;
   }
+  private chatId(notify: Notify): number | undefined {
+    if (notify.route) {
+      if (notify.route.channel !== "telegram") {
+        throw new Error(
+          `No delivery adapter for channel ${notify.route.channel}`,
+        );
+      }
+      return z.coerce.number().int().safe().parse(notify.route.address);
+    }
+    return notify.telegram;
+  }
   async send(notify: Notify, text: string): Promise<void> {
-    if (this.client && notify.telegram !== undefined) {
-      await this.client.sendMessage(notify.telegram, text);
+    const chatId = this.chatId(notify);
+    if (chatId !== undefined) {
+      if (!this.client) {
+        throw new Error("Telegram delivery requires TELEGRAM_BOT_TOKEN");
+      }
+      await this.client.sendMessage(chatId, text);
     }
   }
   async typing(notify: Notify): Promise<void> {
-    if (this.client && notify.telegram !== undefined) {
-      await this.client.sendTypingIndicator(notify.telegram);
+    const chatId = this.chatId(notify);
+    if (this.client && chatId !== undefined) {
+      await this.client.sendTypingIndicator(chatId);
     }
   }
 }
@@ -173,7 +193,10 @@ export class TelegramPoller {
             ?.offset ?? 0;
         const updates = await this.client.fetchUpdates(offset, signal);
         for (const update of updates) {
-          await this.handleUpdate(update);
+          if (signal.aborted) {
+            return;
+          }
+          await this.handleUpdate(update, signal);
         }
       } catch (error) {
         if (signal.aborted) {
@@ -183,11 +206,20 @@ export class TelegramPoller {
           "telegram:",
           error instanceof Error ? error.message : error,
         );
-        await new Promise((resolve) => setTimeout(resolve, 5000));
+        await delay(5000, undefined, { signal }).catch((error: unknown) => {
+          if (!signal.aborted) {
+            throw error;
+          }
+        });
       }
     }
   }
-  private async handleUpdate(update: TelegramUpdate): Promise<void> {
+  private async handleUpdate(
+    update: TelegramUpdate,
+    signal: AbortSignal,
+  ): Promise<void> {
+    // Cancel only observation on shutdown; admitted controls remain durable.
+    const observation = withAbortSignal(signal, BACKGROUND_CONTEXT);
     const message = update.message;
     const chatId = message?.chat.id;
     const text = message?.text?.trim() ?? "";
@@ -229,7 +261,7 @@ export class TelegramPoller {
         state.offset = update.update_id + 1;
         return taskId;
       }, BACKGROUND_CONTEXT);
-      await this.harness().waitForTask(taskId, BACKGROUND_CONTEXT);
+      await this.harness().waitForTask(taskId, observation);
       const reply =
         text === "/stop"
           ? "Stop requested. WORK and sandbox cleanup may still be in progress; /jobs shows status."
@@ -257,12 +289,15 @@ export class TelegramPoller {
           (await tx.doc(TelegramState)).offset = update.update_id + 1;
           return taskId;
         }, BACKGROUND_CONTEXT);
-        await this.harness().waitForTask(taskId, BACKGROUND_CONTEXT);
+        await this.harness().waitForTask(taskId, observation);
         await this.client.sendMessage(
           chatId,
           `Cancellation requested for work #${cancel[1]}.`,
         );
       } catch (error) {
+        if (signal.aborted) {
+          throw error;
+        }
         // Recovery: acknowledge the failed command and advance its update rather than retry it indefinitely.
         await advance();
         await this.client.sendMessage(chatId, String(error));

@@ -46,7 +46,10 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { AgentFactory } from "../../src/agents/index.ts";
+import {
+  AgentFactory,
+  chatAgentConfiguration,
+} from "../../src/agents/index.ts";
 import { ArtifactStore } from "../../src/artifacts/index.ts";
 import { parseConfig } from "../../src/config/index.ts";
 import { parseTaskId } from "../../src/durable/index.ts";
@@ -246,10 +249,10 @@ async function bootRig(
   const factory = new AgentFactory(
     config,
     { bindSkills: () => [] },
-    work,
     join(dir, "sandbox", "workspace"),
   );
   agents = createAgents({
+    work,
     harness: () => required(harness),
     factory,
     images: { execution: "execution-v1" },
@@ -336,8 +339,16 @@ async function runScenario(): Promise<number> {
 
   const deps = createThreadFixture(() => rig.harness, {
     role: "chat",
-    configure: (tx: Tx, id: ConversationId) =>
-      rig.factory.configureAgent(tx, id, { role: "chat" }, agents.extension),
+    configure: async (tx: Tx, id: ConversationId) => {
+      const binding = rig.factory.bindAgent(rig.factory.config.agent);
+      await rig.factory.configureAgent(
+        tx,
+        id,
+        binding,
+        chatAgentConfiguration(rig.factory, binding, agents.extension, work),
+      );
+      return binding;
+    },
   });
   const apiToken = "rig".padEnd(32, "-");
   const api = createApi({

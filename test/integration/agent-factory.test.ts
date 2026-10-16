@@ -1,7 +1,12 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AgentDoc, configure, type Harness } from "@earendil-works/pi-durable";
 import { afterEach, expect, it, vi } from "vitest";
-import { AgentFactory, type AgentSelection } from "../../src/agents/index.ts";
+import {
+  AgentFactory,
+  chatAgentConfiguration,
+  workAgentConfiguration,
+  type AgentSelection,
+} from "../../src/agents/index.ts";
 import { frozenEntry } from "../../src/work/index.ts";
 import {
   createAgentFixture,
@@ -70,7 +75,7 @@ const matrix: {
 it.each(matrix)(
   "configures exact $role/$agent (orchestrate=$orchestrate) capabilities and clears inherited settings",
   async ({ role, agent, orchestrate, tools, extensions, cwd }) => {
-    const { config, factory, agents } = createAgentFixture();
+    const { config, factory, agents, work } = createAgentFixture();
     const harness = await open();
     const selection: AgentSelection =
       role === "chat"
@@ -91,12 +96,21 @@ it.each(matrix)(
         cwd: "/inherited",
         thinkingLevel: "xhigh",
       });
-      const bound = await factory.configureAgent(
-        tx,
-        conversation.id,
-        selection,
-        agents.extension,
-      );
+      const bound =
+        selection.role === "chat"
+          ? factory.bindAgent(config.agent)
+          : frozenEntry(selection.blueprint, selection.agent);
+      const configuration =
+        selection.role === "chat"
+          ? chatAgentConfiguration(factory, bound, agents.extension, work)
+          : workAgentConfiguration(
+              bound,
+              selection,
+              agents.extension,
+              work,
+              factory.sandboxCwd,
+            );
+      await factory.configureAgent(tx, conversation.id, bound, configuration);
       expect(bound.template).toEqual(config.templates[agent]);
       expect(bound.skills).toEqual(agent === "swe" ? guide : []);
       return conversation.id;
@@ -122,17 +136,24 @@ it("configures WORK from its frozen blueprint after the live catalog and configu
   catalog.bindSkills = () => {
     throw new Error("Live catalog must not be consulted");
   };
-  const later = new AgentFactory(config, catalog, work, "/custom-workspace");
+  const later = new AgentFactory(config, catalog, "/custom-workspace");
   const harness = await open();
   const id = await harness.commit(async (tx) => {
     const conversation = await tx.createConversation({
       ownership: { kind: "ownerless" },
     });
-    const bound = await later.configureAgent(
+    const bound = frozenEntry(blueprint, "swe");
+    await later.configureAgent(
       tx,
       conversation.id,
-      { role: "work", agent: "swe", blueprint, orchestrate: true },
-      agents.extension,
+      bound,
+      workAgentConfiguration(
+        bound,
+        { role: "work", agent: "swe", blueprint, orchestrate: true },
+        agents.extension,
+        work,
+        later.sandboxCwd,
+      ),
     );
     expect(bound.skills).toEqual(guide);
     return conversation.id;

@@ -21,8 +21,14 @@ import {
   type SandboxImages,
   type SkillCopySelection,
 } from "../skills/index.ts";
-import type { WorkBlueprint } from "../work/index.ts";
+import { frozenEntry, type WorkBlueprint } from "../work/index.ts";
 import { AgentFactory } from "./agent-factory.ts";
+import {
+  chatAgentConfiguration,
+  workAgentConfiguration,
+  type WorkToolSurface,
+  type AgentSelection,
+} from "./agent-roles.ts";
 import { agentLogHooks, type AgentTraceLogger } from "./agent-logs.ts";
 import { AgentState, persistAgentBinding, podName } from "./agent-state.ts";
 export interface AgentRuntime extends Pick<Harness, "snapshot"> {}
@@ -59,6 +65,7 @@ export class Agent {
   private readonly sandboxes: AgentSandboxes;
   private readonly images: SandboxImages;
   private readonly skillCacheClaim: string;
+  private readonly work: WorkToolSurface;
   constructor(
     factory: AgentFactory,
     harness: () => AgentRuntime,
@@ -66,12 +73,14 @@ export class Agent {
     images: SandboxImages,
     skillCacheClaim: string,
     logger: AgentTraceLogger,
+    work: WorkToolSurface,
   ) {
     this.factory = factory;
     this.harness = harness;
     this.sandboxes = sandboxes;
     this.images = images;
     this.skillCacheClaim = skillCacheClaim;
+    this.work = work;
     const readSkill = defineTool({
       name: "read_skill",
       description:
@@ -132,16 +141,24 @@ export class Agent {
       orchestrate: boolean;
     },
   ): Promise<void> {
-    const binding = await this.factory.configureAgent(
+    const selection: Extract<AgentSelection, { role: "work" }> = {
+      role: "work",
+      blueprint: setup.blueprint,
+      agent: setup.agent,
+      orchestrate: setup.orchestrate,
+    };
+    const binding = frozenEntry(setup.blueprint, setup.agent);
+    await this.factory.configureAgent(
       tx,
       id,
-      {
-        role: "work",
-        blueprint: setup.blueprint,
-        agent: setup.agent,
-        orchestrate: setup.orchestrate,
-      },
-      this.extension,
+      binding,
+      workAgentConfiguration(
+        binding,
+        selection,
+        this.extension,
+        this.work,
+        this.factory.sandboxCwd,
+      ),
     );
     await persistAgentBinding(tx, id, binding, {
       role: "work",
@@ -156,11 +173,12 @@ export class Agent {
     };
   }
   async configureChatConversation(tx: Tx, id: ConversationId): Promise<void> {
-    const binding = await this.factory.configureAgent(
+    const binding = this.factory.bindAgent(this.factory.config.agent);
+    await this.factory.configureAgent(
       tx,
       id,
-      { role: "chat" },
-      this.extension,
+      binding,
+      chatAgentConfiguration(this.factory, binding, this.extension, this.work),
     );
     await persistAgentBinding(tx, id, binding, { role: "chat" });
   }

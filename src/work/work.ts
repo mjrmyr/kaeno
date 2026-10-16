@@ -1169,7 +1169,7 @@ export class Work {
     ) {
       throw new Error("This turn was fenced by stop/reset");
     }
-    if (turn.source.kind === "work-result") {
+    if (turn.source.kind !== "user") {
       throw new Error(
         "Work-result turns are read-only; only a user can start, message or cancel work",
       );

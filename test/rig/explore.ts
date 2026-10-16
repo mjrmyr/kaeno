@@ -28,7 +28,10 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
-import { AgentFactory } from "../../src/agents/index.ts";
+import {
+  AgentFactory,
+  chatAgentConfiguration,
+} from "../../src/agents/index.ts";
 import { ArtifactStore } from "../../src/artifacts/index.ts";
 import {
   PROVIDER_KEYS,
@@ -259,11 +262,11 @@ async function bootStack(dir: string): Promise<Stack> {
   const factory = new AgentFactory(
     config,
     catalog,
-    work,
     join(dir, "sandbox", "workspace"),
   );
   let agents: ReturnType<typeof createAgents> | undefined;
   agents = createAgents({
+    work,
     harness: () => harnessRef(harness),
     factory,
     images: { execution: "execution-v1" },
@@ -300,8 +303,16 @@ async function bootStack(dir: string): Promise<Stack> {
 
   const deps = createThreadFixture(() => harness, {
     role: "chat",
-    configure: (tx: Tx, id: ConversationId) =>
-      factory.configureAgent(tx, id, { role: "chat" }, agents.extension),
+    configure: async (tx: Tx, id: ConversationId) => {
+      const binding = factory.bindAgent(config.agent);
+      await factory.configureAgent(
+        tx,
+        id,
+        binding,
+        chatAgentConfiguration(factory, binding, agents.extension, work),
+      );
+      return binding;
+    },
   });
   const token = "explore".padEnd(32, "-");
   const api = createApi({

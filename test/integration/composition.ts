@@ -50,6 +50,7 @@ import {
 import * as sandboxClient from "./sandbox-fixture.ts";
 interface AgentOptions {
   factory: AgentFactory;
+  work: WorkToolSurface;
   harness: () => Harness;
   images: SandboxImages;
   skillCacheClaim: string;
@@ -122,6 +123,7 @@ export function createAgents(options: AgentOptions): Agent {
         ? undefined
         : new AgentTraceFileSink(options.artifacts),
     ),
+    options.work,
   );
 }
 interface WorkOptions {

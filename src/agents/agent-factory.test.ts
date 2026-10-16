@@ -7,6 +7,9 @@ import type { Config, Template } from "../config/index.ts";
 import type { WorkBlueprint } from "../work/index.ts";
 import {
   AgentFactory,
+  chatAgentConfiguration,
+  workAgentConfiguration,
+  type AgentSelection,
   type AgentSkills,
   type WorkToolSurface,
 } from "./index.ts";
@@ -93,7 +96,7 @@ it("binds through the injected skill contract and rejects unknown selections", (
   const skills: AgentSkills = {
     bindSkills: vi.fn<AgentSkills["bindSkills"]>().mockReturnValue([]),
   };
-  const factory = new AgentFactory(configuration(), skills, workSurface());
+  const factory = new AgentFactory(configuration(), skills);
   expect(factory.bindAgent("worker").template.name).toBe("worker");
   expect(skills.bindSkills).toHaveBeenCalledWith(["demo/skills:guide"]);
   expect(() => factory.bindAgent("missing")).toThrow(/Unknown agent/);
@@ -102,7 +105,7 @@ it("captures each reachable template once, including cycles, with the injected i
   const skills: AgentSkills = {
     bindSkills: vi.fn<AgentSkills["bindSkills"]>().mockReturnValue([]),
   };
-  const factory = new AgentFactory(configuration(), skills, workSurface());
+  const factory = new AgentFactory(configuration(), skills);
   const snapshot = factory.captureWorkBlueprint(
     "root",
     { execution: "chosen-image" },
@@ -114,19 +117,50 @@ it("captures each reachable template once, including cycles, with the injected i
   expect(snapshot.images).toEqual({ execution: "chosen-image" });
   expect(snapshot.skillCacheClaim).toBe("chosen-cache");
 });
+it("applies only the supplied binding and configuration without consulting live skills", async () => {
+  const skills: AgentSkills = {
+    bindSkills: vi.fn<AgentSkills["bindSkills"]>(() => []),
+  };
+  const config = configuration();
+  config.templates.worker.thinkingLevel = "high";
+  const factory = new AgentFactory(config, skills);
+  const binding = factory.bindAgent("worker");
+  vi.mocked(skills.bindSkills).mockImplementation(() => {
+    throw new Error("Live skills must not be consulted while configuring");
+  });
+  const tx = createMockTransaction();
+  const id = conversationId(14);
+  const tools = [tool("explicit_tool")];
+  const extensions = [{ name: "explicit_extension" }];
+  await factory.configureAgent(tx, id, binding, {
+    tools,
+    extensions,
+    instructions: "Explicit instructions",
+    cwd: "/explicit",
+  });
+  expect(configure).toHaveBeenCalledWith(tx, id, {
+    model: { provider: "openai", modelId: "worker-model" },
+    thinkingLevel: "high",
+    tools,
+    extensions,
+    instructions: "Explicit instructions",
+    cwd: "/explicit",
+  });
+  const change = vi.mocked(configure).mock.calls[0]?.[2];
+  expect(change?.tools).not.toBe(tools);
+  expect(change?.extensions).not.toBe(extensions);
+  expect(change?.model).not.toBe(binding.template.model);
+});
 it("configures CHAT with orchestration only: no coding tools, no sandbox cwd", async () => {
-  const factory = new AgentFactory(
-    configuration(),
-    { bindSkills: () => [] },
-    workSurface(),
-  );
+  const factory = new AgentFactory(configuration(), { bindSkills: () => [] });
   const tx = createMockTransaction();
   const id = conversationId(12);
-  const bound = await factory.configureAgent(
+  const bound = factory.bindAgent("root");
+  await factory.configureAgent(
     tx,
     id,
-    { role: "chat" },
-    agentExtension,
+    bound,
+    chatAgentConfiguration(factory, bound, agentExtension, workSurface()),
   );
   expect(bound.template.name).toBe("root");
   expect(configure).toHaveBeenCalledWith(
@@ -160,7 +194,6 @@ it.each([
     const factory = new AgentFactory(
       configuration(),
       { bindSkills: () => [] },
-      workSurface(),
       "/chosen-workspace",
     );
     const blueprint = factory.captureWorkBlueprint(
@@ -169,35 +202,43 @@ it.each([
       "cache",
     );
     const tx = createMockTransaction();
+    const selection: Extract<AgentSelection, { role: "work" }> = {
+      role: "work",
+      blueprint: {
+        ...blueprint,
+        templates: {
+          ...blueprint.templates,
+          worker: {
+            ...blueprint.templates.worker,
+            skills: [
+              {
+                id: "demo/skills:guide",
+                description: "guide",
+                disableModelInvocation: false,
+                repositoryCommit: "a",
+                treeHash: "b",
+                sandboxRoot: "/s",
+                documents: { "SKILL.md": "x" },
+              },
+            ],
+          },
+        },
+      },
+      agent: "worker",
+      orchestrate,
+    };
+    const binding = selection.blueprint.templates.worker;
     await factory.configureAgent(
       tx,
       conversationId(13),
-      {
-        role: "work",
-        blueprint: {
-          ...blueprint,
-          templates: {
-            ...blueprint.templates,
-            worker: {
-              ...blueprint.templates.worker,
-              skills: [
-                {
-                  id: "demo/skills:guide",
-                  description: "guide",
-                  disableModelInvocation: false,
-                  repositoryCommit: "a",
-                  treeHash: "b",
-                  sandboxRoot: "/s",
-                  documents: { "SKILL.md": "x" },
-                },
-              ],
-            },
-          },
-        },
-        agent: "worker",
-        orchestrate,
-      },
-      agentExtension,
+      binding,
+      workAgentConfiguration(
+        binding,
+        selection,
+        agentExtension,
+        workSurface(),
+        factory.sandboxCwd,
+      ),
     );
     const change = vi.mocked(configure).mock.calls[0]?.[2];
     expect(change?.cwd).toBe("/chosen-workspace");

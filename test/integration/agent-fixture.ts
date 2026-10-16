@@ -68,9 +68,10 @@ export function createAgentFixture(): AgentFixture {
     ),
   };
   const work = createNoopWorkSurface();
-  const factory = new AgentFactory(config, catalog, work, "/custom-workspace");
+  const factory = new AgentFactory(config, catalog, "/custom-workspace");
   const agents = createAgents({
     factory,
+    work,
     harness: () => {
       throw new Error("Unexpected harness access");
     },

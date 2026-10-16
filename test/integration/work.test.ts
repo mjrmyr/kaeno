@@ -27,7 +27,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { AgentFactory, AgentState } from "../../src/agents/index.ts";
+import {
+  AgentFactory,
+  AgentState,
+  chatAgentConfiguration,
+} from "../../src/agents/index.ts";
 import { parseConfig } from "../../src/config/index.ts";
 import { parseTaskId } from "../../src/durable/index.ts";
 import type { Notifier } from "../../src/turns/index.ts";
@@ -176,13 +180,9 @@ async function setup(
       agents: () => agents,
     });
     options.install?.(work, ++opening);
-    factory = new AgentFactory(
-      config,
-      { bindSkills: () => [] },
-      work,
-      undefined,
-    );
+    factory = new AgentFactory(config, { bindSkills: () => [] });
     agents = createAgents({
+      work,
       harness: () => harness,
       factory,
       images: { execution: "execution-v1" },
@@ -216,8 +216,16 @@ async function setup(
   cleanup.push(close);
   const deps = createThreadFixture(() => harness, {
     role: "chat" as const,
-    configure: (tx: Tx, id: ConversationId) =>
-      factory.configureAgent(tx, id, { role: "chat" }, agents.extension),
+    configure: async (tx: Tx, id: ConversationId) => {
+      const binding = factory.bindAgent(config.agent);
+      await factory.configureAgent(
+        tx,
+        id,
+        binding,
+        chatAgentConfiguration(factory, binding, agents.extension, work),
+      );
+      return binding;
+    },
   });
   const id = await thread(deps, "telegram:111");
   const submit = (

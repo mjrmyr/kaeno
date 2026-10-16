@@ -36,11 +36,26 @@ describe("config", () => {
       provider: "openai",
       modelId: "gpt-5.4-mini",
     });
+    expect(content.work).toBe(true);
     expect(content.maxDepth).toBe(2);
     expect(content.sandboxResources).toBe("sized");
     expect(
       parseConfig({ ...base, maxDepth: 1, sandboxResources: "custom" }),
     ).toMatchObject({ maxDepth: 1, sandboxResources: "custom" });
+  });
+  it("allows explicitly disabling WORK without sandbox resources", () => {
+    const { sandboxResources: _, ...minimal } = base;
+    expect(parseConfig({ ...minimal, work: false })).toMatchObject({
+      work: false,
+      sandboxResources: undefined,
+    });
+    expect(() => parseConfig({ ...minimal, work: true })).toThrow(
+      /sandboxResources/,
+    );
+    expect(() => parseConfig({ ...base, work: "false" })).toThrow(/work/);
+    expect(() =>
+      parseConfig({ ...minimal, work: false, sandboxResources: "bad" }),
+    ).toThrow(/sandboxResources/);
   });
   it("rejects unknown providers, unknown delegates, removed execution switches and invalid limits", () => {
     expect(() =>

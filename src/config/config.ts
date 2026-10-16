@@ -35,8 +35,10 @@ export interface Config {
   agent: string;
   /** WORK levels below CHAT. 1: only CHAT starts work; 2: those WORK agents may start leaf WORK too. */
   maxDepth: number;
-  /** Size of every sandbox pod. How many run at once derives from the sandbox ResourceQuota. */
-  sandboxResources: SandboxResources;
+  /** Omitted means enabled, for compatibility with existing callers and deployments. */
+  work?: boolean;
+  /** Required when WORK is enabled; minimal conversations have no sandbox. */
+  sandboxResources?: SandboxResources;
   skillRepositories: RepositorySpec[];
   templates: Record<string, Template>;
   telegram: {
@@ -60,7 +62,8 @@ const configSchema = z
   .object({
     agent: nonempty,
     maxDepth: z.number().int().min(1).max(8).default(2),
-    sandboxResources: z.unknown(),
+    work: z.boolean().default(true),
+    sandboxResources: z.unknown().optional(),
     skillRepositories: z.unknown().optional(),
     templates: z.record(
       z.string().regex(/^[a-z][a-z0-9-]{0,30}$/),
@@ -85,9 +88,15 @@ export function parseConfig(raw: unknown): Config {
   }
   const config = parsed.data;
   const skillRepositories = parseSkillRepositories(config.skillRepositories);
-  const sandboxResources = boundary(() =>
-    parseSandboxResources(config.sandboxResources),
-  );
+  if (config.work && config.sandboxResources === undefined) {
+    throw new Error(
+      "Invalid kaeno config: sandboxResources is required when WORK is enabled",
+    );
+  }
+  const sandboxResources =
+    config.work || config.sandboxResources !== undefined
+      ? boundary(() => parseSandboxResources(config.sandboxResources))
+      : undefined;
   const templates: Record<string, Template> = {};
   for (const [name, template] of Object.entries(config.templates)) {
     const [providerName, ...rest] = template.model.split("/");
@@ -124,6 +133,7 @@ export function parseConfig(raw: unknown): Config {
   return {
     agent: config.agent,
     maxDepth: config.maxDepth,
+    work: config.work,
     sandboxResources,
     skillRepositories,
     templates,

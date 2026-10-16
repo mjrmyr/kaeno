@@ -80,6 +80,20 @@ it("sends notifications only to their captured Telegram route", async () => {
   await notifier.send({}, "no route");
   await notifier.send({ telegram: 111 }, "reply");
   expect(client.sendMessage).toHaveBeenCalledExactlyOnceWith(111, "reply");
+  await notifier.send(
+    { route: { channel: "telegram", address: "222" } },
+    "generic reply",
+  );
+  expect(client.sendMessage).toHaveBeenLastCalledWith(222, "generic reply");
+  await expect(
+    notifier.send(
+      { route: { channel: "unknown", address: "1" } },
+      "no adapter",
+    ),
+  ).rejects.toThrow(/No delivery adapter/);
+  await expect(
+    new TelegramNotifier(undefined).send({ telegram: 111 }, "pending"),
+  ).rejects.toThrow(/TELEGRAM_BOT_TOKEN/);
 });
 it("admits allowed messages through mocked thread, turn and SDK boundaries", async () => {
   const tx = createMockTransaction();
@@ -89,7 +103,6 @@ it("admits allowed messages through mocked thread, turn and SDK boundaries", asy
     fetchUpdates: vi
       .fn<TelegramTransport["fetchUpdates"]>()
       .mockImplementation(async () => {
-        stop.abort();
         return [
           { update_id: 12, message: { chat: { id: 111 }, text: "hello" } },
         ];
@@ -105,7 +118,10 @@ it("admits allowed messages through mocked thread, turn and SDK boundaries", asy
   const turns: TelegramTurns = {
     admitUserTurn: vi
       .fn<TelegramTurns["admitUserTurn"]>()
-      .mockResolvedValue(taskId(36)),
+      .mockImplementation(async () => {
+        stop.abort();
+        return taskId(36);
+      }),
     admitStop: vi.fn<TelegramTurns["admitStop"]>(),
     admitReset: vi.fn<TelegramTurns["admitReset"]>(),
     admitWorkCancellation: vi.fn<TelegramTurns["admitWorkCancellation"]>(),
@@ -127,4 +143,38 @@ it("admits allowed messages through mocked thread, turn and SDK boundaries", asy
     "telegram:12",
     { telegram: 111 },
   );
+});
+it("stops observing an admitted control on shutdown without waiting for it to finish", async () => {
+  const runtime = createMockRuntime();
+  const stop = new AbortController();
+  runtime.waitForTask = async (_id, context) => {
+    expect(context.abortSignal).toBeDefined();
+    stop.abort();
+    expect(context.abortSignal?.aborted).toBe(true);
+    throw new Error("Observation aborted");
+  };
+  const client: TelegramTransport = {
+    fetchUpdates: async () => [
+      { update_id: 1, message: { chat: { id: 111 }, text: "/stop" } },
+    ],
+    sendMessage: vi.fn<TelegramTransport["sendMessage"]>(),
+    sendTypingIndicator: vi.fn<TelegramTransport["sendTypingIndicator"]>(),
+  };
+  const turns: TelegramTurns = {
+    admitUserTurn: vi.fn<TelegramTurns["admitUserTurn"]>(),
+    admitStop: vi
+      .fn<TelegramTurns["admitStop"]>()
+      .mockResolvedValue(taskId(36)),
+    admitReset: vi.fn<TelegramTurns["admitReset"]>(),
+    admitWorkCancellation: vi.fn<TelegramTurns["admitWorkCancellation"]>(),
+  };
+  await new TelegramPoller(
+    () => runtime,
+    { getOrCreateConversation: async () => conversationId(24) },
+    turns,
+    client,
+    new Set([111]),
+  ).pollUpdates(stop.signal);
+  expect(turns.admitStop).toHaveBeenCalledOnce();
+  expect(client.sendMessage).not.toHaveBeenCalled();
 });

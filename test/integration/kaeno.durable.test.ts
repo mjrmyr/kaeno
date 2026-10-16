@@ -1,7 +1,10 @@
 import type { TranscriptContext } from "@earendil-works/pi-ai";
 import type { ConversationId, Tx } from "@earendil-works/pi-durable";
 import { z } from "zod";
-import { AgentFactory } from "../../src/agents/index.ts";
+import {
+  AgentFactory,
+  chatAgentConfiguration,
+} from "../../src/agents/index.ts";
 import {
   HarnessReference,
   parseConversationId,
@@ -453,6 +456,7 @@ describe("kaeno durable work tree", () => {
         ReturnType<typeof createAgents>
       >();
       let factory: AgentFactory;
+      let work: ReturnType<typeof createWork>;
       const Turn = defineTurn(() => ({
         send: async () => {},
         typing: async () => {},
@@ -466,15 +470,16 @@ describe("kaeno durable work tree", () => {
           config.skillRepositories,
           {},
         );
-        const work = createWork({
+        work = createWork({
           harness: () => harnessReference.getHarness(),
           Turn,
           config,
           agents: () => agentsReference.getValue(),
         });
-        factory = new AgentFactory(config, catalog, work, workspace);
+        factory = new AgentFactory(config, catalog, workspace);
         agentsReference.setValue(
           createAgents({
+            work,
             images: { execution: `execution-v${version}` },
             skillCacheClaim: `skill-cache-v${version}`,
             harness: () => harnessReference.getHarness(),
@@ -509,13 +514,21 @@ describe("kaeno durable work tree", () => {
       };
       const deps = createThreadFixture(() => harnessReference.getHarness(), {
         role: "chat",
-        configure: (tx: Tx, id: ConversationId) =>
-          factory.configureAgent(
+        configure: async (tx: Tx, id: ConversationId) => {
+          const binding = factory.bindAgent(factory.config.agent);
+          await factory.configureAgent(
             tx,
             id,
-            { role: "chat" },
-            agentsReference.getValue().extension,
-          ),
+            binding,
+            chatAgentConfiguration(
+              factory,
+              binding,
+              agentsReference.getValue().extension,
+              work,
+            ),
+          );
+          return binding;
+        },
       });
       await open();
       const id = await thread(deps, "test:1");

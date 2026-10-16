@@ -1,9 +1,10 @@
 export { AgentFactory } from "./agent-factory.ts";
-export type {
-  AgentSelection,
-  AgentSkills,
-  WorkToolSurface,
-} from "./agent-factory.ts";
+export type { AgentConfiguration, AgentSkills } from "./agent-factory.ts";
+export {
+  chatAgentConfiguration,
+  workAgentConfiguration,
+} from "./agent-roles.ts";
+export type { AgentSelection, WorkToolSurface } from "./agent-roles.ts";
 export {
   redactAgentLog,
   AgentTraceLogger,
