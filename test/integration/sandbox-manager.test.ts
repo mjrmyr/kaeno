@@ -158,6 +158,12 @@ it("bounds persistent quota rejection at five POSTs/four waits and releases one 
   });
   const outcome = rig.manager.ensureSandbox(rig.launch, ctx);
   await expect(outcome).rejects.toThrow(/quota.*5 attempts/i);
+  await expect(outcome).rejects.toMatchObject({
+    cause: expect.objectContaining({
+      message: expect.stringContaining("→ 403:"),
+    }),
+  });
+  await expect(outcome).rejects.not.toThrow(rig.launch.sandbox.token);
   expect(rig.post).toHaveBeenCalledTimes(5);
   expect(delay).toHaveBeenCalledTimes(4);
   for (const call of vi.mocked(delay).mock.calls) {
@@ -276,5 +282,63 @@ it.each([400, 403, 422, 500, 503])(
     expect(rig.release).toHaveBeenCalledTimes(1);
     expect(rig.releasedReservations()).toBe(1);
     expect(await rig.capacity.listReservations()).toEqual([]);
+  },
+);
+
+it.each(["exhaustion", "abort"])(
+  "preserves the primary %s failure and cleanup diagnostic when guarded release rejects",
+  async (mode) => {
+    const rig = await fixture();
+    const cleanupError = new Error("GET quota-pod → 503: unavailable");
+    rig.release.mockRejectedValueOnce(cleanupError);
+    rig.post.mockImplementation(async () => {
+      if (rig.post.mock.calls.length > 5) {
+        throw new Error("Unexpected sixth quota create attempt");
+      }
+      return quotaResponse();
+    });
+    const abortError = new DOMException(
+      "The operation was aborted",
+      "AbortError",
+    );
+    if (mode === "abort") {
+      vi.mocked(delay).mockRejectedValueOnce(abortError);
+    }
+    const failure = await rig.manager
+      .ensureSandbox(rig.launch, ctx)
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(AggregateError);
+    if (!(failure instanceof AggregateError)) {
+      throw new Error("Expected both creation and cleanup failures");
+    }
+    expect(failure.errors).toEqual([failure.cause, cleanupError]);
+    expect(String(failure)).toContain(
+      "failed to release sandbox quota-pod capacity reservation",
+    );
+    expect(String(failure)).not.toContain(rig.launch.sandbox.token);
+    if (mode === "abort") {
+      expect(failure.cause).toBe(abortError);
+      expect(String(failure)).toContain("AbortError");
+      expect(rig.post).toHaveBeenCalledTimes(1);
+    } else {
+      expect(String(failure)).toMatch(/quota.*5 attempts/i);
+      expect(failure.cause).toMatchObject({
+        cause: expect.objectContaining({
+          message: expect.stringContaining("→ 403:"),
+        }),
+      });
+      expect(rig.post).toHaveBeenCalledTimes(5);
+    }
+    expect(rig.acquire).toHaveBeenCalledTimes(1);
+    expect(rig.release).toHaveBeenCalledTimes(1);
+    // A failed guarded release must not pretend capacity was freed. Normal WORK
+    // teardown/reconciliation can retry it when the infrastructure recovers.
+    expect(await rig.capacity.listReservations()).toEqual([
+      { id: rig.launch.taskId, pod: "quota-pod" },
+    ]);
+    expect(rig.releasedReservations()).toBe(0);
+    await rig.manager.removeSandbox("quota-pod");
+    expect(await rig.capacity.listReservations()).toEqual([]);
+    expect(rig.releasedReservations()).toBe(1);
   },
 );

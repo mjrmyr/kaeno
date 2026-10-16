@@ -105,21 +105,39 @@ export class SandboxManager {
           // No pod was created. Release now, without the caller's aborted
           // context; later WORK teardown is safe because release is idempotent
           // and refuses to free capacity while a pod still exists.
-          await this.capacity.releaseSandbox(sandbox.pod);
-          throw new Error(
-            `Kubernetes quota still exceeded for sandbox ${sandbox.pod} after ${QUOTA_CREATE_ATTEMPTS} attempts`,
-            { cause: error },
+          await this.releaseFailedCreation(
+            sandbox.pod,
+            new Error(
+              `Kubernetes quota still exceeded for sandbox ${sandbox.pod} after ${QUOTA_CREATE_ATTEMPTS} attempts`,
+              { cause: error },
+            ),
           );
         }
         try {
           await delay(1000, undefined, { signal: ctx.abortSignal });
         } catch (error) {
-          await this.capacity.releaseSandbox(sandbox.pod);
-          throw error;
+          await this.releaseFailedCreation(sandbox.pod, error);
         }
       }
     }
     await this.waitForSandbox(sandbox.pod, ctx);
+  }
+  private async releaseFailedCreation(
+    pod: string,
+    error: unknown,
+  ): Promise<never> {
+    try {
+      await this.capacity.releaseSandbox(pod);
+    } catch (cleanupError) {
+      // Keep the primary failure visible to WORK's String(error) report, plus
+      // both diagnostics. Failed cleanup leaves the reservation for reconciliation.
+      throw new AggregateError(
+        [error, cleanupError],
+        `${String(error)}; failed to release sandbox ${pod} capacity reservation`,
+        { cause: error },
+      );
+    }
+    throw error;
   }
   private async waitForSandbox(name: string, ctx: Context): Promise<void> {
     for (let attempt = 0; attempt < 240; attempt++) {
