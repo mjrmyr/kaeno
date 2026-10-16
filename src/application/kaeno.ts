@@ -26,6 +26,7 @@ export interface Kaeno {
   turns: TurnCoordinator;
   close(): Promise<void>;
 }
+
 export interface KaenoExtension {
   durable: Extension;
   readOnlyTools?: readonly string[];
@@ -35,11 +36,13 @@ export interface KaenoExtension {
     send(address: string, text: string): Promise<void>;
     typing?(address: string): Promise<void>;
   };
+  // NOTE: what does that do?
   start?(
     core: Kaeno,
     signal: AbortSignal,
   ): Promise<void | (() => Promise<void>)>;
 }
+
 export interface OpenKaenoOptions {
   storage: Storage;
   models: HarnessOptions["models"];
@@ -64,13 +67,16 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
     }
     names.add(extension.durable.name);
     if (extension.environment) {
+      // NOTE: this can't throw, can it?
       if (environment) {
         throw new Error("Only one environment provider is allowed");
       }
       environment = extension.environment;
     }
+
     if (extension.delivery) {
       if (deliveries.has(extension.delivery.channel)) {
+        // NOTE: do we even need to throw? can't we just ignore it?
         throw new Error(
           `Duplicate delivery channel: ${extension.delivery.channel}`,
         );
@@ -78,16 +84,20 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
       deliveries.set(extension.delivery.channel, extension.delivery);
     }
   }
+
   const reference = new HarnessReference();
   const turn = defineTurn(() => ({
     async send(notify, text) {
       if (!notify.route) {
         return;
       }
+
       const delivery = deliveries.get(notify.route.channel);
+
       if (!delivery) {
         throw new Error(`Missing delivery channel: ${notify.route.channel}`);
       }
+
       await delivery.send(notify.route.address, text);
     },
     async typing(notify) {
@@ -98,6 +108,7 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
       }
     },
   }));
+
   const control = defineControl(reference.getHarness);
   const turns = new TurnCoordinator(reference.getHarness, turn, control);
   const durable = extensions.map((extension) => extension.durable);
@@ -107,6 +118,7 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
     tools,
     extensions.flatMap((extension) => extension.readOnlyTools ?? []),
   );
+
   const threads = new ThreadDirectory(reference.getHarness, {
     async configureChatConversation(tx, id) {
       await configure(tx, id, {
@@ -118,6 +130,7 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
       });
     },
   });
+
   const registry = createRegistry();
   for (const extension of [
     ...durable,
@@ -126,12 +139,14 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
   ]) {
     registry.install(extension);
   }
+
   const settings: HarnessSettings = {
     extensions: [],
     toolExecution: "parallel",
     followUpMode: "one-at-a-time",
     retry: { maxRetries: 4 },
   };
+
   const harness = await Harness.open(
     options.storage,
     {
@@ -143,15 +158,19 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
     },
     BACKGROUND_CONTEXT,
   );
+
   reference.setHarness(harness);
   const stopping = new AbortController();
   const cleanups: (() => Promise<void>)[] = [];
   let closing: Promise<void> | undefined;
+
   const core: Kaeno = {
     harness,
     threads,
     turns,
     close() {
+      // NOTE: can't we just return that async function using Promise?
+      // that would be cleaner
       closing ??= (async () => {
         stopping.abort();
         const errors: unknown[] = [];
@@ -175,6 +194,7 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
       return closing;
     },
   };
+
   try {
     await assertRecoveryCompatible(
       harness,
@@ -182,11 +202,13 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
       BACKGROUND_CONTEXT,
       settings,
     );
+
     for (const { record } of (await harness.inspect(BACKGROUND_CONTEXT))
       .tasks) {
       if (record.kind !== "kaeno.turn") {
         continue;
       }
+
       const { notify } = z
         .object({
           notify: z
@@ -194,20 +216,25 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
             .optional(),
         })
         .parse(record.input);
+
       if (notify?.route && !deliveries.has(notify.route.channel)) {
         throw new Error(
           `Missing delivery channel: ${notify.route.channel} (task ${record.id})`,
         );
       }
     }
+
     await threads.refreshIdleConversations();
+
     for (const extension of extensions) {
       const cleanup = await extension.start?.(core, stopping.signal);
       if (cleanup) {
         cleanups.push(cleanup);
       }
     }
+
     harness.resume();
+
     return core;
   } catch (error) {
     try {

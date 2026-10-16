@@ -10,11 +10,8 @@ import { loadConfig } from "./config/index.ts";
 const config = await loadConfig(
   process.env.KAENO_CONFIG ?? "/etc/kaeno/config.json",
 );
-const token = process.env.KAENO_TOKEN?.trim();
 const port = Number(process.env.PORT ?? 8080);
-if (token && token.length < 32) {
-  throw new Error("KAENO_TOKEN must contain at least 32 characters");
-}
+
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error("Invalid PORT");
 }
@@ -50,20 +47,18 @@ function close(): Promise<void> {
   return closing;
 }
 try {
-  if (token) {
-    const current = new ApiServer(core, token).server;
-    server = current;
-    await new Promise<void>((resolve, reject) => {
-      current.once("error", reject);
-      current.listen(port, () => {
-        current.removeListener("error", reject);
-        resolve();
-      });
+  const current = new ApiServer(core).server;
+  server = current;
+  await new Promise<void>((resolve, reject) => {
+    current.once("error", reject);
+    current.listen(port, () => {
+      current.removeListener("error", reject);
+      resolve();
     });
-    console.log(`kaeno listening on :${port}`);
-  } else {
-    console.log("kaeno running (HTTP disabled: KAENO_TOKEN is unset)");
-  }
+  });
+
+  console.log(`kaeno listening on :${port}`);
+
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, () => {
       void close().then(

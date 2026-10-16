@@ -25,7 +25,7 @@ it("boots the actual core entrypoint and shuts down cleanly", async () => {
     }),
   );
   const token = "test-token-with-at-least-32-characters";
-  const child = spawn(process.execPath, [resolve("src/kaeno.ts")], {
+  const child = spawn(process.execPath, [resolve("src/main.ts")], {
     env: {
       ...process.env,
       KAENO_CONFIG: config,

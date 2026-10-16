@@ -9,4 +9,4 @@ COPY src ./src
 USER node
 ENV KAENO_DB=/data/kaeno.sqlite
 EXPOSE 8080
-CMD ["node", "src/kaeno.ts"]
+CMD ["node", "src/main.ts"]
