@@ -813,6 +813,119 @@ next(plan, execution, trustedReceipt, fences) →
             </p>
           </article>
         </div>
+        <h3>Implemented first-slice contract</h3>
+        <p>
+          The native <code>kaeno.plan</code> v1 supervisor launches existing
+          <code>kaeno.work</code> v2 phases. The authenticated HTTP request
+          itself is the authorization: no model tool can admit a plan. Original
+          phase briefs are independent; reports are retained for inspection but
+          are never forwarded to CHAT or the next phase.
+        </p>
+        <pre
+          aria-label="Implemented HTTP admission example"
+        ><code>POST /v1/threads/example/plans
+Authorization: Bearer &lt;your existing token&gt;
+Content-Type: application/json
+
+{
+  "requestId": "analysis-0001",
+  "scope": "reasoning",
+  "phases": [
+    {"agent": "worker", "title": "Compare", "brief": "Compare these supplied arguments: …"},
+    {"agent": "worker", "title": "Check", "brief": "Check this supplied conclusion independently: …"}
+  ],
+  "limits": {
+    "deadlineMs": 600000, "maxRequests": 4,
+    "maxPhases": 4, "maxDepth": 1, "fanout": 1
+  }
+}
+
+GET  /v1/threads/example/plans
+POST /v1/threads/example/plans/analysis-0001/cancel</code></pre>
+        <p>
+          <code>worker</code> is an example configured eligible template, not a
+          built-in role. Admission returns HTTP 202 and a view; inspection
+          includes phase IDs, original request, origin epoch, deadline, consumed
+          admissions, reports and explicit stop reason. Cancellation joins
+          native child cleanup. Persisted <code>completing</code>,
+          <code>pausing</code> and <code>cancelling</code> states expose cleanup
+          in progress and block a replacement plan. Terminal status is published
+          atomically with native supervisor settlement after child cleanup
+          joins. Stop/reset cancel plans; reset preserves ordinary WORK
+          behavior.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <caption>
+              Enforced first-slice bounds — not token/cost guarantees
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Limit</th>
+                <th scope="col">Actual enforcement</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">Phases / concurrency</th>
+                <td>
+                  1–4 predeclared phases; sequential fan-out 1, depth 1; one
+                  running or cleaning-up plan per thread; 128 lifetime plan
+                  admissions per thread. No key eviction/resurrection.
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">Requests / time</th>
+                <td>
+                  1–4 aggregate native generation request-hook admissions,
+                  charged durably before dispatch, including recovery. Absolute
+                  deadline 1–600,000 ms; expired/fenced plans cannot launch or
+                  start a new request. Cancellation of in-flight provider work
+                  is cooperative.
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">Input / output data</th>
+                <td>
+                  Request ID 8–128 characters, agent name ≤128, title 1–160,
+                  brief 1–8,000. This slice does not impose a hard
+                  output-storage, generation-token or billed-token limit; native
+                  transcripts and retained reports may be larger.
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">Capabilities</th>
+                <td>
+                  Zero tools, skill sections, sandbox records or execution
+                  environments. Tool-call, error or truncated responses pause
+                  before tool dispatch. Compaction is declined.
+                  <code>message_work</code> cannot steer a plan phase.
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">Unsupported promises</th>
+                <td>
+                  Unknown fields, coding/action scopes,
+                  <code>maxTokens</code> and <code>maxCost</code> are rejected.
+                  Provider transport retries/polling are not separate native
+                  request admissions; no billed-token, provider-call or monetary
+                  cap is claimed.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          The stable phase key is <code>planId:cursor</code>; there is no
+          user-controlled phase retry primitive. A crash after charging but
+          before dispatch conservatively consumes a request slot. To change a
+          plan, cancel it and submit fresh user authorization under a new
+          request ID. For the exact contract, see
+          <a
+            href="https://github.com/mjrmyr/kaeno/blob/design/work-continuations/src/work/plans.md"
+            >reasoning-plan API documentation on the implementation branch</a
+          >.
+        </p>
         <h3>Required regression evidence</h3>
         <ul>
           <li>
@@ -842,13 +955,30 @@ next(plan, execution, trustedReceipt, fences) →
         </ul>
         <div id="verification" class="notice">
           <p>
-            <strong>Verified baseline:</strong> current main’s
+            <strong>Verified baseline:</strong> inspected main’s
             <code>npm run verify</code> passed typecheck, lint, architecture,
             formatting and <strong>239 tests in 33 files</strong>. Initial main
-            baseline passed 220 tests in 31 files. Implementation evidence will
-            be linked from
-            <a href="https://github.com/mjrmyr/kaeno/issues/14">issue #14</a>
-            and recorded in the PR.
+            baseline passed 220 tests in 31 files.
+          </p>
+          <p>
+            <strong>Implementation verification:</strong> at
+            <a
+              href="https://github.com/mjrmyr/kaeno/commit/c0463cebf9c242662ceb72e7358f10c37a3cbfff"
+              ><code>c0463cebf9c242662ceb72e7358f10c37a3cbfff</code></a
+            >, <code>npm run verify</code> passed all checks and
+            <strong>274 tests in 34 files</strong>. The focused native
+            SQLite/API and AgentFactory suites passed
+            <strong>41 tests in 2 files</strong>. These use faux providers and
+            controlled sandbox boundaries, not live provider or cluster calls.
+            HTML structural/anchor/link checks, formatting and
+            <code>git diff --check</code> pass; no browser or
+            assistive-technology audit is claimed. Independent code/security
+            review reproduced all 274 tests and the focused 41. It caught early
+            terminal cancellation visibility and inherited request-ID lookup;
+            both were fixed and its three scratch regressions passed. No
+            remaining blocking authority/security finding was identified. Review
+            and PR evidence are recorded in
+            <a href="https://github.com/mjrmyr/kaeno/issues/14">issue #14</a>.
           </p>
           <p>
             Baseline installation reported 3 existing dependency vulnerabilities
