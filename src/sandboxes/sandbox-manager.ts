@@ -49,6 +49,9 @@ export interface SandboxLaunch {
   taskId: TaskId;
   template: string;
 }
+// Quota accounting can lag pod deletion. Allow four 1s waits, not an
+// unbounded hold on a capacity reservation (the readiness timeout starts later).
+const QUOTA_CREATE_ATTEMPTS = 5;
 export class SandboxManager {
   private readonly harness: () => SandboxRuntime;
   private readonly client: SandboxClient;
@@ -87,7 +90,7 @@ export class SandboxManager {
       },
       this.client.namespace,
     );
-    for (;;) {
+    for (let attempt = 1; attempt <= QUOTA_CREATE_ATTEMPTS; attempt++) {
       try {
         await this.client.createPod(spec);
         break;
@@ -98,7 +101,22 @@ export class SandboxManager {
         ) {
           throw error;
         }
-        await delay(1000, undefined, { signal: ctx.abortSignal });
+        if (attempt === QUOTA_CREATE_ATTEMPTS) {
+          // No pod was created. Release now, without the caller's aborted
+          // context; later WORK teardown is safe because release is idempotent
+          // and refuses to free capacity while a pod still exists.
+          await this.capacity.releaseSandbox(sandbox.pod);
+          throw new Error(
+            `Kubernetes quota still exceeded for sandbox ${sandbox.pod} after ${QUOTA_CREATE_ATTEMPTS} attempts`,
+            { cause: error },
+          );
+        }
+        try {
+          await delay(1000, undefined, { signal: ctx.abortSignal });
+        } catch (error) {
+          await this.capacity.releaseSandbox(sandbox.pod);
+          throw error;
+        }
       }
     }
     await this.waitForSandbox(sandbox.pod, ctx);
