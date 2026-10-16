@@ -1,0 +1,879 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta
+      name="description"
+      content="Kaeno design proposal: bounded, user-authorized durable WORK continuations, with explicit trust boundaries and staged delivery."
+    />
+    <title>Work that can continue · Kaeno proposal #14</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --paper: #f5f4ef;
+        --panel: #fff;
+        --ink: #182c38;
+        --muted: #435966;
+        --line: #c2cdd0;
+        --accent: #075f60;
+        --soft: #e3f0eb;
+        --warn: #fff1d8;
+        --warn-ink: #674000;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-padding-top: 1rem;
+      }
+      body {
+        margin: 0;
+        background: var(--paper);
+        color: var(--ink);
+        font:
+          1.0625rem/1.65 system-ui,
+          sans-serif;
+      }
+      a {
+        color: var(--accent);
+        text-underline-offset: 0.2em;
+      }
+      a:hover {
+        text-decoration-thickness: 0.18em;
+      }
+      a:focus-visible {
+        outline: 3px solid currentColor;
+        outline-offset: 4px;
+      }
+      .skip {
+        position: absolute;
+        left: 1rem;
+        top: -6rem;
+        padding: 0.6rem;
+        background: var(--panel);
+        z-index: 2;
+      }
+      .skip:focus {
+        top: 1rem;
+      }
+      header,
+      main,
+      footer {
+        max-width: 75rem;
+        margin: auto;
+        padding: 2rem clamp(1rem, 4vw, 3rem);
+      }
+      header {
+        padding-top: 4rem;
+      }
+      .eyebrow {
+        font-weight: 750;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        font-size: 0.8rem;
+        color: var(--accent);
+      }
+      h1 {
+        font-size: clamp(2.4rem, 6vw, 4.8rem);
+        max-width: 16ch;
+        line-height: 1.05;
+        letter-spacing: -0.04em;
+        margin: 0.6rem 0 1.5rem;
+      }
+      h2 {
+        font-size: clamp(1.6rem, 3vw, 2.3rem);
+        line-height: 1.2;
+        margin: 0 0 1rem;
+        letter-spacing: -0.025em;
+      }
+      h3 {
+        line-height: 1.3;
+        font-size: 1.15rem;
+      }
+      p {
+        max-width: 76ch;
+      }
+      .lead {
+        font-size: 1.3rem;
+        max-width: 62ch;
+      }
+      .meta {
+        font-size: 0.9rem;
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+      nav ul {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem 1.5rem;
+        list-style: none;
+        padding: 0;
+      }
+      section {
+        padding: 2.5rem 0;
+        border-top: 1px solid var(--line);
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+        gap: 1rem;
+      }
+      .card {
+        padding: 1.4rem;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 0.6rem;
+      }
+      .card h3 {
+        margin-top: 0;
+      }
+      .notice {
+        padding: 1.2rem 1.5rem;
+        border-left: 5px solid var(--accent);
+        background: var(--soft);
+        border-radius: 0.2rem;
+      }
+      .warning {
+        background: var(--warn);
+        color: var(--warn-ink);
+        border-color: var(--warn-ink);
+      }
+      .notice p:first-child {
+        margin-top: 0;
+      }
+      .notice p:last-child {
+        margin-bottom: 0;
+      }
+      code,
+      pre {
+        font:
+          0.92em/1.6 ui-monospace,
+          SFMono-Regular,
+          Consolas,
+          monospace;
+      }
+      code {
+        overflow-wrap: anywhere;
+      }
+      pre {
+        overflow: auto;
+        padding: 1.2rem;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 0.5rem;
+      }
+      .table-wrap {
+        overflow-x: auto;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: var(--panel);
+        font-size: 0.95rem;
+      }
+      caption {
+        text-align: left;
+        font-weight: 700;
+        padding: 0.5rem 0;
+      }
+      th,
+      td {
+        padding: 0.85rem;
+        border: 1px solid var(--line);
+        vertical-align: top;
+        text-align: left;
+      }
+      th {
+        background: var(--soft);
+      }
+      ol.flow {
+        counter-reset: step;
+        list-style: none;
+        padding: 0;
+        display: grid;
+        gap: 0.8rem;
+      }
+      ol.flow li {
+        counter-increment: step;
+        padding: 1rem 1rem 1rem 4rem;
+        position: relative;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 0.5rem;
+      }
+      ol.flow li::before {
+        content: counter(step);
+        position: absolute;
+        left: 1rem;
+        top: 1rem;
+        border: 1px solid var(--accent);
+        border-radius: 50%;
+        width: 2rem;
+        height: 2rem;
+        text-align: center;
+        font-weight: 750;
+        color: var(--accent);
+      }
+      .small {
+        font-size: 0.9rem;
+        color: var(--muted);
+      }
+      dt {
+        font-weight: 750;
+        margin-top: 1rem;
+      }
+      dd {
+        margin: 0.25rem 0 1rem;
+      }
+      footer {
+        border-top: 1px solid var(--line);
+        font-size: 0.9rem;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          color-scheme: dark;
+          --paper: #101e25;
+          --panel: #192c36;
+          --ink: #edf2f1;
+          --muted: #bacacf;
+          --line: #4c626c;
+          --accent: #8be0cc;
+          --soft: #1c3c3c;
+          --warn: #3c301a;
+          --warn-ink: #ffdb99;
+        }
+      }
+      @media print {
+        :root {
+          color-scheme: light;
+          --paper: white;
+          --panel: white;
+          --ink: black;
+          --muted: #333;
+          --line: #aaa;
+          --accent: #164e4e;
+          --soft: #eee;
+          --warn: #f8f8f8;
+          --warn-ink: #222;
+        }
+        body {
+          font-size: 10pt;
+        }
+        header,
+        main,
+        footer {
+          padding: 1rem;
+        }
+        nav,
+        .skip {
+          display: none;
+        }
+        section {
+          break-inside: auto;
+        }
+        .card,
+        li,
+        tr {
+          break-inside: avoid;
+        }
+        pre {
+          white-space: pre-wrap;
+        }
+        a {
+          color: inherit;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip" href="#content">Skip to design</a>
+    <header>
+      <p class="eyebrow">Kaeno · Architecture proposal #14</p>
+      <h1>Work that can continue.</h1>
+      <p class="lead">
+        Authorize the journey once. Let trusted lifecycle events advance a
+        finite plan. Never let a worker’s report become permission.
+      </p>
+      <p>
+        <a href="https://github.com/mjrmyr/kaeno/issues/14"
+          >Issue #14 — bounded, user-authorized multi-phase continuations</a
+        >
+      </p>
+      <p class="meta">
+        Grounded in main
+        <a
+          href="https://github.com/mjrmyr/kaeno/commit/d68cfcbad29ca2526ca672007c81e8513045751d"
+          ><code>d68cfcbad29ca2526ca672007c81e8513045751d</code></a
+        >. Design and first implementation slice; not a claim that the entire
+        target workflow is available.
+      </p>
+      <nav aria-label="Presentation sections">
+        <ul>
+          <li><a href="#boundary">The boundary</a></li>
+          <li><a href="#today">Today’s system</a></li>
+          <li><a href="#architecture">Architecture</a></li>
+          <li><a href="#flow">Lifecycle</a></li>
+          <li><a href="#safety">Safety</a></li>
+          <li><a href="#delivery">Delivery &amp; evidence</a></li>
+        </ul>
+      </nav>
+    </header>
+    <main id="content">
+      <section id="boundary" aria-labelledby="boundary-title">
+        <p class="eyebrow">01 / What actually failed</p>
+        <h2 id="boundary-title">Two systems. Two permission boundaries.</h2>
+        <p>
+          The brainstorm worker finished. The next intended step was
+          implementation, but starting another worker from that result turn was
+          denied:
+        </p>
+        <pre><code>Work-result turns are read-only; only a user can start, message or cancel work</code></pre>
+        <div class="notice warning">
+          <p>
+            <strong
+              >The immediate rejection came from the outer orchestration
+              tool/API layer, not from Kaeno repository code.</strong
+            >
+            This proposal does not change external
+            <code>functions.start_work</code> restrictions. A Kaeno issue cannot
+            grant a permission owned by that platform.
+          </p>
+        </div>
+        <div class="grid">
+          <article class="card">
+            <h3>Outer platform</h3>
+            <p>
+              Decides whether the assistant may call its orchestration tools on
+              a result-only turn. That restriction remains in force.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Kaeno product</h3>
+            <p>
+              Can admit an explicit user-authorized durable plan and advance it
+              internally. No new CHAT tool call on every completion is
+              necessary.
+            </p>
+          </article>
+        </div>
+        <p>
+          Kaeno also has an analogous local guard with the same wording. Finding
+          it in the repository is useful architectural evidence,
+          <strong
+            >not evidence that it caused the observed external rejection</strong
+          >. Neither guard should be bypassed.
+        </p>
+        <p>
+          <strong>Target example:</strong> “Design this change, implement within
+          this repository, run an independent review, then open a PR; do not
+          merge.” Those phases, action scopes, limits and approval gates must be
+          admitted before the first worker runs. A request to brainstorm alone
+          is not authorization to implement later.
+        </p>
+      </section>
+      <section id="today" aria-labelledby="today-title">
+        <p class="eyebrow">02 / Current code, not old documentation</p>
+        <h2 id="today-title">Reuse the lifecycle Kaeno already owns.</h2>
+        <div class="table-wrap">
+          <table>
+            <caption>
+              Current ownership at the inspected main SHA
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Owner</th>
+                <th scope="col">Existing responsibility</th>
+                <th scope="col">Design consequence</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">
+                  <a
+                    href="https://github.com/mjrmyr/kaeno/blob/d68cfcbad29ca2526ca672007c81e8513045751d/src/work/work.ts"
+                    >Work</a
+                  >
+                </th>
+                <td>
+                  Native <code>kaeno.work</code> v2: start → supervise →
+                  message/report; abort cascades. <code>WorkIndex</code> keys
+                  launches by tool task ID; <code>WorkScope</code> records tree
+                  position. Admission checks free sandbox capacity.
+                </td>
+                <td>
+                  Keep task identities, ownership, terminal receipts and
+                  cleanup. Do not create a second execution engine.
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">
+                  <a
+                    href="https://github.com/mjrmyr/kaeno/blob/d68cfcbad29ca2526ca672007c81e8513045751d/src/turns/coordinator.ts"
+                    >TurnCoordinator</a
+                  >
+                  &amp;
+                  <a
+                    href="https://github.com/mjrmyr/kaeno/blob/d68cfcbad29ca2526ca672007c81e8513045751d/src/turns/turns.ts"
+                    >turn ledger</a
+                  >
+                </th>
+                <td>
+                  User/result provenance; request receipts; epoch/control
+                  fencing; durable replies. CHAT result turns cannot mutate
+                  work.
+                </td>
+                <td>
+                  A report stays a report. Recheck the original admission’s
+                  epoch and cancellation fence at every transition.
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">
+                  <a
+                    href="https://github.com/mjrmyr/kaeno/blob/d68cfcbad29ca2526ca672007c81e8513045751d/src/agents/agent-factory.ts"
+                    >AgentFactory</a
+                  >
+                </th>
+                <td>
+                  CHAT selects eligible configured templates. WORK uses frozen
+                  schema-2 <code>WorkBlueprint</code> templates, models,
+                  instructions, skills, depth and image. Coding + parent tools;
+                  delegation only where allowed.
+                </td>
+                <td>
+                  All phases use allowed WORK templates through the factory;
+                  never construct a role/model/tool set from a report. Attenuate
+                  capabilities for the safe first slice, never widen them.
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">
+                  <a
+                    href="https://github.com/mjrmyr/kaeno/blob/d68cfcbad29ca2526ca672007c81e8513045751d/src/application/kaeno.ts"
+                    >Application composition</a
+                  >
+                </th>
+                <td>
+                  Wires Work, turns, factory, sandboxes; registers
+                  extensions/tasks before SQLite-backed
+                  <code>Harness.open</code> and resume.
+                </td>
+                <td>
+                  Register a native bounded supervisor here through existing
+                  feature composition. Keep policy in Work, not HTTP plumbing.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="small">
+          Merged template/factory behavior (#5, #7, #8) is included. Main
+          advanced during inspection from <code>2bf1930…</code> to
+          <code>d68cfcb…</code> when #11 and #12 merged; their sandbox fixes
+          were re-inspected. At that refresh, only #6 (logging) and #13 (CI)
+          remained open. Neither is assumed merged or modified by this work.
+        </p>
+      </section>
+      <section id="architecture" aria-labelledby="architecture-title">
+        <p class="eyebrow">03 / One explicit authority record</p>
+        <h2 id="architecture-title">
+          Persist intent. Separate it from execution.
+        </h2>
+        <div class="grid">
+          <article class="card">
+            <h3>1. Admission boundary</h3>
+            <p>
+              An authenticated user submits a structured finite plan. Validate
+              it, freeze allowed policy, bind request identity and origin, and
+              persist authorization before execution. No report or child may
+              mint this record.
+            </p>
+          </article>
+          <article class="card">
+            <h3>2. WorkPlan supervisor</h3>
+            <p>
+              A native durable task holds phase state and reconciles trusted
+              child terminal receipts. A deterministic policy returns advance,
+              finish, fail or pause. It does not ask a model what to execute
+              next.
+            </p>
+          </article>
+          <article class="card">
+            <h3>3. Existing WORK execution</h3>
+            <p>
+              Launch the selected phase through native task creation and
+              AgentFactory, under the admitted policy. Reports and artifact
+              references are bounded data. Notifications are observations, never
+              triggers.
+            </p>
+          </article>
+        </div>
+        <pre
+          aria-label="Target type sketch, not an existing public API"
+        ><code>// Target domain sketch — proposed, not a current API contract
+WorkPlan = {
+  schema, id,
+  authorization: { userIntent, requestId, origin, scope, expiry },
+  phases: [{ id, template, approvedBrief, actions, transition }],
+  limits: { phases, fanout, depth, children, tokens, cost, time },
+  frozenPolicy
+}
+Execution = { cursor, childIds, reservedBudget, usage, status, reason }
+
+next(plan, execution, trustedReceipt, fences) →
+  Advance(phaseId) | Completed | Failed(reason) | Paused(reason)</code></pre>
+        <dl>
+          <dt>Admit</dt>
+          <dd>
+            Direct user intent only. Persist the exact scope, ordered phases,
+            limits and frozen template bindings. Same request ID with different
+            content is a conflict, not an amendment.
+          </dd>
+          <dt>Inspect</dt>
+          <dd>
+            Expose original authorization, current phase, child IDs,
+            limits/usage, last transition, approval waits and
+            failure/cancellation reason.
+          </dd>
+          <dt>Cancel</dt>
+          <dd>
+            Fence the whole plan before aborting its current child. Cancellation
+            owns future phases too. Wait for cleanup before reporting
+            cancellation as complete.
+          </dd>
+          <dt>Approve a change</dt>
+          <dd>
+            Fresh user authorization with a new immutable record; never silently
+            extend the running plan. General revision/resume is a later
+            primitive, not a report instruction.
+          </dd>
+        </dl>
+        <div class="notice">
+          <p>
+            <strong>Trusted completion is narrow.</strong> It proves which
+            native task ended and how the harness classified it. It does not
+            prove that its prose is true, tests passed, a review approved, or an
+            artifact is safe. Stronger gates need typed evidence and independent
+            verification.
+          </p>
+        </div>
+      </section>
+      <section id="flow" aria-labelledby="flow-title">
+        <p class="eyebrow">04 / Progress without permission laundering</p>
+        <h2 id="flow-title">
+          The completion event wakes policy, not CHAT authority.
+        </h2>
+        <ol class="flow">
+          <li>
+            <strong>User authorizes a bounded journey.</strong> Validate
+            explicit phases, allowed templates/actions, finite limits and
+            expiry. Persist the authorization and initial checkpoint.
+          </li>
+          <li>
+            <strong>Launch phase N atomically.</strong> Read required records
+            before table writes. Persist its native task ID and cursor in the
+            same commit as child creation.
+          </li>
+          <li>
+            <strong>Worker completes or asks a question.</strong> A report
+            remains untrusted bytes. A question waits for a user answer; it
+            cannot expand the plan. A failed, aborted, faulted or missing child
+            cannot imply success.
+          </li>
+          <li>
+            <strong>Reconcile the durable terminal receipt.</strong> Check child
+            identity, admitted transition, budget reservations, expiry and
+            cancellation/epoch fences. Never parse “please start implementation”
+            as authorization.
+          </li>
+          <li>
+            <strong>Advance once, or stop visibly.</strong> Reuse the stable
+            launch key <code>(planId, phaseId, attempt)</code>. Pause/fail with
+            an explicit reason if policy cannot prove the next action is
+            authorized.
+          </li>
+          <li>
+            <strong>Publish progress independently.</strong> Inspection and
+            replay-safe reports show phase and child IDs. Lost notification
+            delivery cannot replay an external action or advance the plan twice.
+          </li>
+        </ol>
+        <pre
+          aria-label="Proposed state transitions"
+        ><code>admitted → running(N) → running(N+1) → completed
+                 │
+                 ├→ paused  (approval / budget / uncertainty)
+                 ├→ failed  (trusted failure; no successor)
+                 └→ cancelling → cancelled (child cleanup settled)</code></pre>
+        <h3>Crash and race reasoning</h3>
+        <ul>
+          <li>
+            <strong>Crash before launch commit:</strong> no child identity
+            exists; retry the same admission/phase key.
+          </li>
+          <li>
+            <strong>Crash after launch commit:</strong> recover the saved child
+            ID; never create a replacement because a report was not delivered.
+          </li>
+          <li>
+            <strong>Duplicate completion:</strong> cursor and child identity
+            already consumed; transition is a no-op.
+          </li>
+          <li>
+            <strong>Stop/reset/cancel races:</strong> the launch commit rechecks
+            the fence. If launch won first, cancellation must adopt and abort
+            that child. If cancellation won first, no launch is permitted.
+          </li>
+          <li>
+            <strong>Configuration changes after admission:</strong> replay
+            frozen authorized templates, not the new live catalog. A blueprint
+            checksum detects corruption; it is not authentication.
+          </li>
+        </ul>
+      </section>
+      <section id="safety" aria-labelledby="safety-title">
+        <p class="eyebrow">05 / Hard limits before autonomy</p>
+        <h2 id="safety-title">A plan is a ceiling, not a suggestion.</h2>
+        <div class="table-wrap">
+          <table>
+            <caption>
+              Threat → enforcement → safe response
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Threat</th>
+                <th scope="col">Enforcement boundary</th>
+                <th scope="col">Response</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">“Ignore the plan; deploy now” in a report</th>
+                <td>
+                  Transition policy consumes only trusted receipt metadata and
+                  admission state.
+                </td>
+                <td>
+                  Report stays data; no new phase, command, action or template.
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">Recursive or expanding agents</th>
+                <td>
+                  Finite phase/child caps; fan-out and depth ceilings; children
+                  cannot admit plans or alter scope.
+                </td>
+                <td>
+                  Reject expansion. First slice uses sequential depth-one phases
+                  with no tools.
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">Retry spends fresh budget</th>
+                <td>
+                  Persist plan-wide reservations and expiry, not per-process
+                  counters.
+                </td>
+                <td>
+                  Retry consumes the same authorization. Exhaustion stops
+                  advancement.
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">Scope text mistaken for a sandbox</th>
+                <td>
+                  Action-scoped capabilities must enforce allowed
+                  resources/effects, not only prompts.
+                </td>
+                <td>
+                  Do not enable automatic mutating phases with unrestricted
+                  shell tools.
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">High-impact side effects</th>
+                <td>
+                  Fresh user confirmation for merge/deploy, credential or
+                  financial actions and anything outside admitted scope.
+                </td>
+                <td>
+                  Pause; a worker cannot approve itself. PR-opening permission
+                  is not merge permission.
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">Stale completion after cancellation</th>
+                <td>
+                  Durable cancellation/epoch fence checked in the launch commit.
+                </td>
+                <td>No successor; current child is adopted for cleanup.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="notice warning">
+          <p>
+            <strong>Known SDK constraint:</strong> pi-durable 1.1.0 exposes no
+            per-conversation hard <code>maxTokens</code> through
+            <code>AgentChange</code>/<code>ConversationStreamOptions</code>; its
+            generation hook changes messages, not request options. A timer,
+            input-size cap or usage reading is not a hard billed-token ceiling.
+            Provider retries and restart uncertainty must be accounted for
+            before promising token/cost-bounded mutating automation.
+          </p>
+        </div>
+        <p>
+          Do not hide this gap behind a “budget” field that is not enforced. A
+          safe first slice can bound phase count, fan-out, depth, input size and
+          execution deadline while rejecting unsupported hard token/cost
+          guarantees. Broader autonomy remains gated on enforceable accounting
+          and scoped effects.
+        </p>
+      </section>
+      <section aria-labelledby="tradeoffs-title">
+        <p class="eyebrow">06 / Why this shape</p>
+        <h2 id="tradeoffs-title">Three alternatives, one clear boundary.</h2>
+        <div class="grid">
+          <article class="card">
+            <h3>Relax result-turn permissions</h3>
+            <p>
+              <strong>Reject.</strong> Makes prompt injection a control channel;
+              conflates data with consent. Also cannot alter the outer
+              platform’s tool restriction.
+            </p>
+          </article>
+          <article class="card">
+            <h3>One recursive coordinator agent</h3>
+            <p>
+              <strong>Not the policy owner.</strong> Existing delegation is
+              useful, but model prose should not determine authorization or
+              retries. A waiting parent also holds sandbox capacity.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Native durable WorkPlan</h3>
+            <p>
+              <strong>Choose.</strong> Small explicit admission surface; native
+              task replay/identity; deterministic bounded transitions. Cost: new
+              persisted authorization/state and explicit approval semantics.
+            </p>
+          </article>
+        </div>
+        <p>
+          <strong>Synthesis:</strong> keep an application-owned policy record
+          and native supervisor as the base; retain existing WORK execution and
+          frozen AgentFactory bindings. Borrow the coordinator alternative’s
+          useful idea—one durable owner for the whole journey—but make that
+          owner deterministic code, not a recursively acting model.
+        </p>
+        <p>
+          <strong>Principles applied:</strong> boundary discipline separates
+          user authority from report data; idempotent operations make child
+          creation converge after crashes; minimize reader load keeps the policy
+          in the existing Work lifecycle rather than a general workflow/plugin
+          framework.
+        </p>
+      </section>
+      <section id="delivery" aria-labelledby="delivery-title">
+        <p class="eyebrow">07 / Ship a slice, not a permission bypass</p>
+        <h2 id="delivery-title">Staged acceptance and honest evidence.</h2>
+        <div class="grid">
+          <article class="card">
+            <h3>Stage 1 · Safe vertical slice</h3>
+            <p>
+              Explicit structured user admission; sequential reasoning-only
+              phases; frozen allowed templates; no
+              shell/files/network/delegation tools; durable cursor and child
+              identity; inspect/cancel; bounded phases/input/deadline. Reject
+              unsupported scope or guarantees.
+            </p>
+            <p>
+              <strong>Not yet:</strong> automatically implement code, open a PR,
+              or enforce a hard aggregate billed-token cap.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Stage 2 · Enforce effects and spend</h3>
+            <p>
+              Hard retry/restart-aware token/cost accounting; action-scoped
+              implementation and review capabilities; typed evidence gates;
+              fresh-approval primitive. Prove enforcement before allowing
+              mutating phases.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Stage 3 · Authorized PR handoff</h3>
+            <p>
+              Explicit PR-opening adapter, richer user progress and bounded
+              parallel gates only if needed. Keep merge/deploy behind fresh
+              approval. No generic plugin framework.
+            </p>
+          </article>
+        </div>
+        <h3>Required regression evidence</h3>
+        <ul>
+          <li>
+            Explicitly authorized next phase starts without a mutating CHAT
+            result-turn tool call.
+          </li>
+          <li>
+            Malicious report instructions cannot change the original next brief,
+            template, scope or phase count.
+          </li>
+          <li>
+            Replayed admission, duplicate completion and SQLite reopen produce
+            one child per phase.
+          </li>
+          <li>
+            Maxima, unknown templates, child scope expansion and unsupported
+            actions are rejected.
+          </li>
+          <li>
+            Failure, cancellation, deadline or uncertain state produces an
+            explicit visible stop without a successor.
+          </li>
+          <li>
+            Stop/reset/cancel races and existing CHAT/WORK/leaf permissions stay
+            correct; ordinary WORK behavior remains intact.
+          </li>
+        </ul>
+        <div id="verification" class="notice">
+          <p>
+            <strong>Verified baseline:</strong> current main’s
+            <code>npm run verify</code> passed typecheck, lint, architecture,
+            formatting and <strong>239 tests in 33 files</strong>. Initial main
+            baseline passed 220 tests in 31 files. Implementation evidence will
+            be linked from
+            <a href="https://github.com/mjrmyr/kaeno/issues/14">issue #14</a>
+            and recorded in the PR.
+          </p>
+          <p>
+            Baseline installation reported 3 existing dependency vulnerabilities
+            (1 moderate, 2 critical). No dependency update, live Kubernetes
+            verification, external API permission change, merge or deployment is
+            part of this task.
+          </p>
+        </div>
+        <h3>Explicit non-goals</h3>
+        <p>
+          Changing external orchestration permissions; following report
+          instructions; arbitrary recursive tasks; default automatic
+          merge/deploy; a plugin framework; modifying unrelated open PRs. The
+          presentation is a file linked on a branch,
+          <strong>not a GitHub Pages publication</strong>.
+        </p>
+      </section>
+    </main>
+    <footer>
+      <p>
+        Kaeno proposal
+        <a href="https://github.com/mjrmyr/kaeno/issues/14">#14</a> ·
+        <a href="https://github.com/mjrmyr/kaeno">Repository</a> ·
+        Self-contained HTML: no scripts, external styles, fonts, assets or CDN
+        requests. Read in source or download and open locally.
+      </p>
+    </footer>
+  </body>
+</html>
