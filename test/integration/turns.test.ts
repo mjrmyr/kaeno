@@ -16,7 +16,12 @@ import {
 import { expect, it } from "vitest";
 import { parseTaskId } from "../../src/durable/index.ts";
 import { admitTurn, defineTurn, TurnLedger } from "../../src/turns/index.ts";
-import { required } from "./values.ts";
+function required<T>(value: T | null | undefined): T {
+  if (value === undefined || value === null) {
+    throw new Error("Missing value");
+  }
+  return value;
+}
 it.each([false, true])(
   "resumes a v1 notify checkpoint without a ledger (send fails=%s) and unblocks later reports",
   async (fail) => {
@@ -41,7 +46,7 @@ it.each([false, true])(
       null
     >({
       name: "kaeno.turn",
-      version: 1,
+      version: 2,
       initial: () => ({ phase: "notify", text: "ACK", attempts: 5 }),
       phases: {
         notify: async () => {
@@ -84,7 +89,7 @@ it.each([false, true])(
               conversationId: root.id,
               content: "old user text",
               requestId: "legacy-ack",
-              notify: { telegram: 111 },
+              notify: { route: { channel: "test", address: "111" } },
             },
             {
               ownership: { kind: "conversation" },
@@ -107,12 +112,12 @@ it.each([false, true])(
         (tx) =>
           admitTurn(tx, Turn, {
             conversationId: root.id,
-            content: "Verified work result",
+            content: "Verified activity result",
             requestId: "report-next",
-            notify: { telegram: 111 },
+            notify: { route: { channel: "test", address: "111" } },
             source: {
-              kind: "work-result",
-              workId: parseTaskId(123),
+              kind: "activity-result",
+              activityId: parseTaskId(123),
               epoch: 0,
               requestId: "legacy-ack",
             },

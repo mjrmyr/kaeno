@@ -7,12 +7,9 @@ export {
   suppressReports,
   defineControl,
   admitControl,
-  admitCancel,
   admitActivityCancellation,
-  normalizeNotify,
   isResultSource,
   resultActivityId,
-  resetEpoch,
   defineTurn,
 } from "./turns.ts";
 export type {

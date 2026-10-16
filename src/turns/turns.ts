@@ -1,6 +1,5 @@
 // Turn admission, provenance, causal delivery and replayable replies. All channels use this owner.
 import type { Context } from "@earendil-works/chord";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   AssistantEntry,
   defineDoc,
@@ -23,18 +22,6 @@ export interface ChannelRoute {
 }
 export interface Notify {
   route?: ChannelRoute;
-  /** Legacy persisted route, retained for existing channels and origins. */
-  telegram?: number;
-}
-/** Normalize at delivery, without rewriting persisted legacy origins/receipts. */
-export function normalizeNotify(notify: Notify): Notify {
-  if (notify.route || notify.telegram === undefined) {
-    return notify;
-  }
-  return {
-    ...notify,
-    route: { channel: "telegram", address: String(notify.telegram) },
-  };
 }
 export interface Notifier {
   send(notify: Notify, text: string): Promise<void>;
@@ -43,12 +30,6 @@ export interface Notifier {
 export type Source =
   | {
       kind: "user";
-    }
-  | {
-      kind: "work-result";
-      workId: TaskId;
-      requestId: string;
-      epoch: number;
     }
   | {
       kind: "activity-result";
@@ -63,13 +44,23 @@ export function isResultSource(source: Source): source is ResultSource {
   return source.kind !== "user";
 }
 export function resultActivityId(source: ResultSource): TaskId {
-  return source.kind === "work-result" ? source.workId : source.activityId;
+  return source.activityId;
+}
+function sourceIdentity(source: Source): string {
+  return JSON.stringify(
+    source.kind === "user"
+      ? ["user"]
+      : [
+          source.kind,
+          source.activityId,
+          source.requestId,
+          source.epoch,
+          source.label,
+        ],
+  );
 }
 function staleResultText(source: ResultSource, input: TurnInput): string {
-  const label =
-    source.kind === "work-result"
-      ? `Work #${source.workId}`
-      : (source.label ?? `Activity #${source.activityId}`);
+  const label = source.label ?? `Activity #${source.activityId}`;
   return `[${label}, started before /new]\n${input.report ?? input.content}`;
 }
 export interface Origin {
@@ -187,14 +178,13 @@ export async function admitTurn(
       ? z
           .object({
             content: z.string(),
-            source: z.object({ kind: z.string() }).optional(),
           })
           .parse(record.input)
       : undefined;
     if (
-      prior &&
-      (prior.content !== input.content ||
-        (prior.source?.kind ?? "user") !== (input.source?.kind ?? "user"))
+      (prior && prior.content !== input.content) ||
+      sourceIdentity(existing.source) !==
+        sourceIdentity(input.source ?? { kind: "user" })
     ) {
       throw new Error(
         "Request ID already admitted with different content/provenance",
@@ -296,7 +286,6 @@ export async function suppressReports(
 interface ControlInput {
   conversationId: ConversationId;
   action: "stop" | "reset" | "cancel";
-  workId?: TaskId;
   activityId?: TaskId;
 }
 /** Runs in the admission transaction; the activity owner must reject foreign subjects. */
@@ -305,9 +294,10 @@ export type ValidateActivityCancellation = (
   conversationId: ConversationId,
   activityId: TaskId,
 ) => Promise<void>;
+/** Optional host cancellation replaces native cancellation, including stop's background sweep. */
 export function defineControl(
   harness: () => Harness,
-  cancel: (id: ConversationId, activityId?: TaskId) => Promise<unknown>,
+  cancel?: (id: ConversationId, activityId?: TaskId) => Promise<unknown>,
 ): ControlTask {
   return defineTask<
     ControlInput,
@@ -317,15 +307,16 @@ export function defineControl(
     null
   >({
     name: "kaeno.control",
-    version: 1,
+    version: 2,
     initial: () => ({ phase: "execute" }),
     phases: {
       execute: async (task, runtime, context) => {
         if (task.input.action === "cancel") {
-          await cancel(
-            task.input.conversationId,
-            task.input.activityId ?? task.input.workId,
-          );
+          if (cancel) {
+            await cancel(task.input.conversationId, task.input.activityId);
+          } else if (task.input.activityId !== undefined) {
+            await harness().abortTask(task.input.activityId, context);
+          }
           await runtime.commit(
             () => ({
               status: "terminal",
@@ -365,7 +356,37 @@ export function defineControl(
         if (task.input.action === "reset") {
           await conversation.reset(undefined, context);
         } else {
-          await cancel(task.input.conversationId);
+          if (cancel) {
+            await cancel(task.input.conversationId);
+          } else {
+            const ids = await harness().commit(async (tx) => {
+              const ids: TaskId[] = [];
+              let cursor;
+              do {
+                const page = await tx.scanTasks(
+                  { conversationId: task.input.conversationId },
+                  256,
+                  cursor,
+                );
+                for (const record of page.items) {
+                  if (
+                    record.background &&
+                    record.owner === undefined &&
+                    record.kind !== "kaeno.turn" &&
+                    record.kind !== "kaeno.control" &&
+                    record.state.status !== "terminal"
+                  ) {
+                    ids.push(record.id);
+                  }
+                }
+                cursor = page.next;
+              } while (cursor);
+              return ids;
+            }, context);
+            for (const id of ids) {
+              await harness().abortTask(id, context);
+            }
+          }
         }
         await runtime.commit(async (tx) => {
           const ledger = await tx.doc(TurnLedger, task.input.conversationId);
@@ -407,6 +428,31 @@ export async function admitControl(
   if (ledger.control) {
     throw new Error("Chat control already in progress");
   }
+  if (action === "stop") {
+    const subjects = new Set<TaskId>();
+    for (const receipt of Object.values(ledger.receipts)) {
+      if (isResultSource(receipt.source)) {
+        subjects.add(receipt.source.activityId);
+      }
+    }
+    let cursor;
+    do {
+      const page = await tx.scanTasks({ conversationId }, 256, cursor);
+      for (const record of page.items) {
+        if (
+          record.background &&
+          record.owner === undefined &&
+          record.kind !== "kaeno.turn" &&
+          record.kind !== "kaeno.control" &&
+          record.state.status !== "terminal"
+        ) {
+          subjects.add(record.id);
+        }
+      }
+      cursor = page.next;
+    } while (cursor);
+    await suppressReports(tx, conversationId, [...subjects]);
+  }
   const id = await tx.createTask(
     Control,
     { conversationId, action },
@@ -421,58 +467,39 @@ export async function admitActivityCancellation(
   Control: ControlTask,
   conversationId: ConversationId,
   activityId: TaskId,
-  validate: ValidateActivityCancellation,
+  validate: ValidateActivityCancellation = validateNativeActivityCancellation,
 ): Promise<TaskId<null>> {
   await validate(tx, conversationId, activityId);
+  await suppressReports(tx, conversationId, [activityId]);
   return tx.createTask(
     Control,
     { conversationId, action: "cancel", activityId },
     { ownership: { kind: "conversation" }, conversationId, background: true },
   );
 }
-/** Legacy WORK admission. New activity owners use admitActivityCancellation. */
-export async function admitCancel(
+/** Only directly conversation-owned background activities are public cancellation subjects. */
+async function validateNativeActivityCancellation(
   tx: Tx,
-  Control: ControlTask,
   conversationId: ConversationId,
-  workId: TaskId,
-  validate?: ValidateActivityCancellation,
-): Promise<TaskId<null>> {
-  if (validate) {
-    await validate(tx, conversationId, workId);
-  } else {
-    // Compatibility for callers that have not yet supplied their WORK-owned validator.
-    const work = await tx.task(workId);
-    if (
-      !work ||
-      work.kind !== "kaeno.work" ||
-      work.conversationId !== conversationId
-    ) {
-      throw new Error("Work is not owned by this chat");
-    }
-  }
-  return tx.createTask(
-    Control,
-    { conversationId, action: "cancel", workId },
-    { ownership: { kind: "conversation" }, conversationId, background: true },
-  );
-}
-export async function resetEpoch(
-  harness: Harness,
-  conversationId: ConversationId,
-  Control: ControlTask,
+  activityId: TaskId,
 ): Promise<void> {
-  const id = await harness.commit(
-    (tx) => admitControl(tx, Control, conversationId, "reset"),
-    BACKGROUND_CONTEXT,
-  );
-  await harness.waitForTask(id, BACKGROUND_CONTEXT);
+  const activity = await tx.task(activityId);
+  if (
+    !activity ||
+    activity.conversationId !== conversationId ||
+    activity.owner !== undefined ||
+    !activity.background ||
+    activity.kind === "kaeno.turn" ||
+    activity.kind === "kaeno.control"
+  ) {
+    throw new Error("Activity is not owned by this conversation");
+  }
 }
-/** Definition name/version retained: existing v1 run/notify checkpoints remain executable. */
+/** Core-only v2 intentionally rejects old product payloads; no implicit migration. */
 export function defineTurn(notifier: () => Notifier): TurnTask {
   return defineTask<Stored<TurnInput>, TurnState, null>({
     name: "kaeno.turn",
-    version: 1,
+    version: 2,
     initial: () => ({ phase: "run" }),
     phases: {
       run: async (task, runtime, context) => {
@@ -647,7 +674,7 @@ export function defineTurn(notifier: () => Notifier): TurnTask {
             return undefined;
           }, context);
         }
-        const notify = input.notify ? normalizeNotify(input.notify) : undefined;
+        const notify = input.notify;
         const typing = notify
           ? setInterval(
               () =>
@@ -728,7 +755,7 @@ export function defineTurn(notifier: () => Notifier): TurnTask {
         let failed = false;
         try {
           if (notify) {
-            await notifier().send(normalizeNotify(notify), replyText);
+            await notifier().send(notify, replyText);
           }
         } catch (error) {
           const attempts = (task.state.checkpoint.attempts ?? 0) + 1;
@@ -783,8 +810,11 @@ export function defineTurn(notifier: () => Notifier): TurnTask {
     },
     abort: (task, runtime, context) =>
       runtime.commit(async (tx) => {
-        const row = (await tx.doc(TurnLedger, task.input.conversationId))
-          .receipts[task.input.requestId];
+        const ledger = await tx.doc(TurnLedger, task.input.conversationId);
+        if (ledger.submitting === task.id) {
+          delete ledger.submitting;
+        }
+        const row = ledger.receipts[task.input.requestId];
         if (row) {
           row.delivery = "cancelled";
         }

@@ -1,96 +1,45 @@
-# A durable core, ordinary extensions
+# Core only
 
-Kaeno is a personal, self-hosted assistant. Extensibility means understandable source-level composition, not a plugin marketplace or another workflow engine.
+Kaeno is a small durable conversation host. It does not ship WORK, Telegram, Kubernetes, artifacts, skill repositories, remote execution, or deployment automation.
 
-## Ownership
+## The boundary
 
-- **pi-durable** owns storage, transactions, task scheduling, replay and native extension definitions.
-- **Threads and turns** own conversation identity, immutable input provenance, receipt deduplication, control epochs, submission fences, result suppression and replayable replies.
-- **Agents** bind explicit model/tool/instruction configurations. WORK's role configurations are separate from the generic binding operation.
-- **WORK** owns delegation, frozen policy, parent/child authorization, supervision and cancellation trees.
-- **Sandboxes** own physical resources, capacity admission and cleanup. Never bypass the shared admission owner.
-- **Channels** authenticate external input and translate protocols. Telegram's offset and turn admission remain in the same native transaction.
-- **Application** explicitly constructs dependencies and installs native definitions before opening the harness. There is no runtime module discovery or hot installation.
+- **pi-durable:** tasks, documents, transactions, scheduling, tools, execution environments and storage.
+- **Threads:** external thread keys map to persistent conversations.
+- **Turns:** idempotent input admission, provenance, stop/reset fences, generic activity results, reply cursors and delivery claims.
+- **Authority:** assistant tools default to mutating; result turns may invoke only explicitly declared read tools. Mutation handlers must recheck the origin fence inside their actual admission transaction.
+- **Application:** explicitly install extensions, open storage, inspect recovery requirements, configure idle conversations, start services and resume.
 
-Features import one another through their public `index.ts`; only application composition constructs another feature. `npm run architecture:check` enforces these boundaries.
+There is one runtime, no hot loader, no service locator, and no plugin marketplace. Native extensions are trusted process code.
 
-## Minimal configuration
+## Extension mechanism
 
-Set `work: false` to run a conversational assistant without Kubernetes, a sandbox image or a skill-cache mount:
+`openKaeno` accepts native pi-durable definitions plus a small set of host integration points:
 
-```json
-{
-  "work": false,
-  "agent": "assistant",
-  "templates": {
-    "assistant": {
-      "description": "Personal assistant",
-      "model": "openai/gpt-4.1",
-      "instructions": "Answer clearly and honestly."
-    }
-  }
-}
-```
+- `durable`: tools, tasks, documents referenced by tasks, sections, hooks and wrappers using pi-durable directly.
+- `readOnlyTools`: assistant tools allowed on result turns. All other tools default to mutating.
+- `environment`: a native execution-environment provider. A later Kubernetes extension can supply this together with its own tasks and resource management. Only one provider is selected.
+- `delivery`: a named channel adapter for durable replies and optional typing indicators.
+- `start(core, signal)`: start a channel listener or reconciliation service and return an asynchronous cleanup function. Signals stop ingress first, then Harness closes to quiesce durable invocations while extension clients remain available. Resource cleanup runs in reverse order afterwards and must not access the closed harness.
 
-The default remains WORK-enabled for existing deployments; those configurations require `sandboxResources`. Disabling new WORK is **not** a way to discard unfinished WORK or its saved bindings. Keep the compatible WORK deployment until its durable dependencies have settled; startup checks intentionally reject missing recovery code.
+Extensions receive the native harness, thread directory and turn coordinator. A channel can commit its external cursor together with `turns.admitUserTurn(tx, ...)`; no transaction facade or second database is necessary. An extension owns any resource documents, provisioning, retries and cleanup its tasks need. The core does not contain Kubernetes policy.
 
-## Adding an ordinary native feature
+A service's `start` must return after startup, not wait for its long-running loop. It should retain that loop and return a cleanup that joins it after the abort signal. Observe shutdown promptly; cleanup runs after the harness closes, so do not require durable task completion or new database operations to stop the service. If `start` throws before returning cleanup, it must release its own partially acquired resources. Do not enable native task scheduling or accept input before startup compatibility inspection.
 
-1. Add a feature folder with an explicit `index.ts`. Export a factory or class that takes consumer-owned capabilities, not a service locator.
-2. Define tools, documents and tasks with pi-durable's native definitions. Choose stable, namespaced durable identities; do not reuse an identity for an incompatible meaning.
-3. Supply tool/instruction configuration explicitly. Do not mutate a running registry to install new native code.
-4. Wire concrete dependencies in `src/application/`. Services start after compatibility inspection; stop admission and join service callbacks before closing the harness.
-5. Add a real restart test and tests for cancellation, retry and any external effects. Keep code required by persisted work installed until that work and its cleanup obligations settle.
+## Durability, not compatibility scaffolding
 
-For a tiny stateful tool, the shape is an ordinary native definition, not a new extension SDK:
+Definitions are fixed until restart. Persisted kinds and versions are contracts; retain compatible handlers, drain, or migrate deliberately. Startup refuses missing/incompatible task definitions or missing saved tool/extension references before normal scheduling. `Harness.open` itself reconciles recovery state and is not read-only.
 
-```ts
-// Illustrative: imports and domain validation omitted.
-const Note = defineDoc({
-  kind: "personal.note",
-  version: 1,
-  scope: "conversation",
-  initial: () => ({ text: "" }),
-});
-const extension = defineExtension({
-  name: "personal-notes",
-  tools: [readNote, saveNote],
-});
-```
+The core-only cut intentionally removes the previous product and its configuration. **It is not an automatic migration of an old WORK/Telegram database.** Core turn/control definitions are now version 2 without an implicit migration from the removed product payloads. Missing or incompatible old definitions must remain an actionable startup failure, not be silently discarded. Keep the previous release and its data backup for old workloads; use a fresh database for this minimal runtime.
 
-`saveNote` must resolve authority from the actual admitted turn, reject result-turn mutation, and recheck its origin fence inside the transaction writing `Note`. The assistant tool-policy wrapper is a default-deny first boundary, **not** a substitute for that transactional check. A read tool is read-only because trusted code actually limits its effects, not because its name or model prompt says so. Select assistant policy for assistant conversations, not worker conversations with delegated parent/child rules.
+Stop/reset fence old input before it can mutate state. A stop durably requests cancellation of background activities; their native abort handlers own cleanup. Reset preserves independently running activities but does not inject old results into fresh context. Suppression precedes cancellation. Results are data authority, not user authority.
 
-Generic activity results retain their originating request, epoch and route. Native feature callbacks are trusted; do not expose result admission as an unauthenticated network input or let model parameters fabricate an origin.
+Task admission and effect authorization belong in one native commit. External effects do not: use provider idempotency when available and expose uncertain outcomes rather than blindly retrying unsafe actions. A claimed reply may complete after reset and may duplicate on recovery. Closing Kaeno does not mean cancelling durable background tasks.
 
-## Reliability contract
+Before upgrading, stop ingress, join services, close storage and take a consistent SQLite backup plus referenced extension files. Do not blindly copy a live SQLite file; WAL and active writers matter. Restoring old code alone is not rollback after incompatible state changes, and restoring a backup cannot undo external effects.
 
-- Admit request identity, provenance, receipt and task together. Retry retention is bounded; this is not an indefinite exactly-once promise.
-- Stop/reset commits a fence before old input can proceed. Suppression precedes durable cancellation. Reset may preserve independent work while preventing its old results entering fresh context.
-- A pending send can be suppressed. A durably claimed send may complete after reset, and crash recovery can duplicate delivery.
-- Creating a durable task and reserving capacity must share admission. A parent holding capacity must not wait indefinitely for a child's slot.
-- Collect evidence before deleting a sandbox; release capacity only after physical disappearance. Failed evidence capture must not permanently block cleanup.
-- Closing the process does not mean cancelling durable background work.
+## Adding capabilities later
 
-External network calls are not transactional with SQLite. Record an intent, use provider idempotency where available, and reconcile uncertain outcomes rather than blindly replaying unsafe operations.
+Write one ordinary native extension, supply its tools/tasks and optional environment/delivery/service hooks, and pass it to `openKaeno`. Keep extension-owned state and cleanup with that extension. No core edit is needed to register these capabilities. Integration tests exercise this public mechanism without implementing a real cluster or chat service.
 
-## Upgrades and recovery
-
-1. Stop new ingress and join service callbacks, then close the harness.
-2. Take a **consistent** SQLite backup and preserve referenced skill trees, images and evidence as appropriate. Do not blindly copy a live SQLite file: WAL and active writers matter. Use a supported backup method or a verified closed/checkpointed database procedure.
-3. Deploy a fixed release with all required handlers. `Harness.open` reconciles persisted task state and is not read-only, so back up **before** opening new code.
-4. Run compatibility inspection before conversation refresh, scheduling or ingress. Missing task definitions, incompatible saved versions, and missing saved extension/tool references produce actionable errors.
-5. Resume only when compatible. Retain compatible handlers, drain, or migrate deliberately. A version change needs a decision about old live state, not a ritual migration when none is needed.
-
-Restoring an old binary against newly migrated state is not necessarily rollback. Fix forward or restore the coordinated data/code backup; that loses subsequent state and cannot undo external effects. Do not blindly abort missing-code tasks to clear diagnostics: their abort cleanup may not execute. Restore cleanup code or use an explicit resource-specific reconciler.
-
-## Kaeno writing its own extensions
-
-Routine scripts and skills run through existing WORK with its configured authority and frozen bindings. Existing WORK environments may contain GitHub/SSH credentials; scope those credentials deliberately. They are not an untrusted-code sandbox.
-
-Native code is a release of the fork: Kaeno can author a branch, tests and a diff; an owner-controlled release policy accepts and deploys it. That may be manual review or deliberately configured CI automation. Ordinary runtime actions do not require a new approval each time. Passing tests or being model-written does not itself confer host trust.
-
-Native imports have full process authority, including environment secrets, database access and infrastructure credentials. Interfaces and architecture checks prevent maintenance mistakes, not malicious JavaScript. Unattended execution of code the owner explicitly distrusts would justify a separately verified restricted runner for a concrete use case; a catalog, broker, per-invocation grant platform and plugin VM are not prerequisites for this design.
-
-## Verification
-
-Run `npm run verify` before releasing. Focused integration coverage includes startup compatibility, minimal no-WORK reopen, generic result authority, existing WORK blueprints, stop/reset races, replay, sandbox admission and teardown ordering.
+Kaeno can author extensions in a branch. Accepting native code into the running process is an owner-controlled release decision, whether manual or automated. Generated code and passing tests do not create isolation. A separately restricted executor may be added if a real use case requires running code the owner explicitly distrusts.

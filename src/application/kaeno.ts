@@ -1,177 +1,179 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createModels } from "@earendil-works/pi-ai/models";
-import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
-import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
-import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import {
   configure,
   createRegistry,
   defineExtension,
   Harness,
-  watchEvents,
+  type Extension,
+  type HarnessOptions,
   type HarnessSettings,
+  type ModelRef,
+  type Storage,
 } from "@earendil-works/pi-durable";
-import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { CodingTools } from "@earendil-works/pi-durable/tools";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { z } from "zod";
-import { ApiServer } from "../api/index.ts";
 import { assistantToolPolicy } from "../authority/index.ts";
-import { PROVIDER_KEYS, loadConfig } from "../config/index.ts";
 import {
-  HarnessReference,
   assertRecoveryCompatible,
+  HarnessReference,
 } from "../durable/index.ts";
-import {
-  TelegramClient,
-  TelegramNotifier,
-  TelegramPoller,
-} from "../telegram/index.ts";
 import { ThreadDirectory } from "../threads/index.ts";
 import { defineControl, defineTurn, TurnCoordinator } from "../turns/index.ts";
-import { prepareWork } from "./work.ts";
-import { minimalChatAgent } from "./minimal.ts";
-function readEnvironment(name: string): string | undefined {
-  return process.env[name]?.trim() || undefined;
+
+export interface Kaeno {
+  harness: Harness;
+  threads: ThreadDirectory;
+  turns: TurnCoordinator;
+  close(): Promise<void>;
 }
-export async function startApplication(): Promise<void> {
-  const token = readEnvironment("KAENO_TOKEN") ?? "";
-  if (token.length < 32) {
-    throw new Error("KAENO_TOKEN must be set (≥32 chars)");
-  }
-  const config = await loadConfig(
-    readEnvironment("KAENO_CONFIG") ?? "/etc/kaeno/config.json",
-  );
-  // Providers are optional: a missing key never blocks boot, it only makes the
-  // templates using that provider fail per-request at use time.
-  const providers = new Set(
-    Object.values(config.templates).map((template) => template.model.provider),
-  );
-  for (const provider of providers) {
-    if (readEnvironment(PROVIDER_KEYS[provider]) === undefined) {
-      console.warn(
-        `kaeno: ${PROVIDER_KEYS[provider]} is not set; templates using ${provider} will fail at request time`,
-      );
+export interface KaenoExtension {
+  durable: Extension;
+  readOnlyTools?: readonly string[];
+  environment?: HarnessOptions["env"];
+  delivery?: {
+    channel: string;
+    send(address: string, text: string): Promise<void>;
+    typing?(address: string): Promise<void>;
+  };
+  start?(
+    core: Kaeno,
+    signal: AbortSignal,
+  ): Promise<void | (() => Promise<void>)>;
+}
+export interface OpenKaenoOptions {
+  storage: Storage;
+  models: HarnessOptions["models"];
+  assistant: {
+    model: ModelRef;
+    instructions: string;
+    thinkingLevel?: ModelThinkingLevel;
+  };
+  extensions?: readonly KaenoExtension[];
+  onReport?: HarnessOptions["onReport"];
+}
+
+/** Explicit native composition. Extensions and raw transactions are trusted application code. */
+export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
+  const extensions = options.extensions ?? [];
+  const names = new Set(["kaeno-channels", "kaeno-tool-authority"]);
+  const deliveries = new Map<string, NonNullable<KaenoExtension["delivery"]>>();
+  let environment: HarnessOptions["env"];
+  for (const extension of extensions) {
+    if (names.has(extension.durable.name)) {
+      throw new Error(`Duplicate extension: ${extension.durable.name}`);
+    }
+    names.add(extension.durable.name);
+    if (extension.environment) {
+      if (environment) {
+        throw new Error("Only one environment provider is allowed");
+      }
+      environment = extension.environment;
+    }
+    if (extension.delivery) {
+      if (deliveries.has(extension.delivery.channel)) {
+        throw new Error(
+          `Duplicate delivery channel: ${extension.delivery.channel}`,
+        );
+      }
+      deliveries.set(extension.delivery.channel, extension.delivery);
     }
   }
-  const models = createModels();
-  models.setProvider(anthropicProvider());
-  models.setProvider(openaiProvider());
-  models.setProvider(openrouterProvider());
-  const harnessReference = new HarnessReference();
-  const telegramToken = readEnvironment("TELEGRAM_BOT_TOKEN");
-  const telegram = telegramToken
-    ? new TelegramClient(
-        telegramToken,
-        fetch,
-        readEnvironment("TELEGRAM_API_BASE"),
-      )
-    : undefined;
-  const notifier = new TelegramNotifier(telegram);
-  const turnTask = defineTurn(() => notifier);
-  const controlTask = defineControl(
-    harnessReference.getHarness,
-    (id, workId) =>
-      workSupport?.work.cancelWork(id, workId) ?? Promise.resolve(),
+  const reference = new HarnessReference();
+  const turn = defineTurn(() => ({
+    async send(notify, text) {
+      if (!notify.route) {
+        return;
+      }
+      const delivery = deliveries.get(notify.route.channel);
+      if (!delivery) {
+        throw new Error(`Missing delivery channel: ${notify.route.channel}`);
+      }
+      await delivery.send(notify.route.address, text);
+    },
+    async typing(notify) {
+      if (notify.route) {
+        await deliveries
+          .get(notify.route.channel)
+          ?.typing?.(notify.route.address);
+      }
+    },
+  }));
+  const control = defineControl(reference.getHarness);
+  const turns = new TurnCoordinator(reference.getHarness, turn, control);
+  const durable = extensions.map((extension) => extension.durable);
+  const tools = durable.flatMap((extension) => extension.tools ?? []);
+  const policy = assistantToolPolicy(
+    reference.getHarness,
+    tools,
+    extensions.flatMap((extension) => extension.readOnlyTools ?? []),
   );
-  const turns = new TurnCoordinator(
-    harnessReference.getHarness,
-    turnTask,
-    controlTask,
-  );
-  const workSupport =
-    config.work === false
-      ? undefined
-      : await prepareWork(
-          config,
-          harnessReference.getHarness,
-          turns,
-          readEnvironment,
-        );
-  const work = workSupport?.work;
-  const agent = workSupport?.agent ?? minimalChatAgent(config);
-  const toolPolicy = assistantToolPolicy(
-    harnessReference.getHarness,
-    workSupport
-      ? [
-          ...workSupport.work.orchestrationTools,
-          ...(workSupport.agent.extension.tools ?? []),
-        ]
-      : [],
-    ["list_work", "inspect_work", "read_skill"],
-  );
-  const threads = new ThreadDirectory(harnessReference.getHarness, {
-    async configureChatConversation(tx, id): Promise<void> {
-      await agent.configureChatConversation(tx, id);
+  const threads = new ThreadDirectory(reference.getHarness, {
+    async configureChatConversation(tx, id) {
       await configure(tx, id, {
-        extensions: workSupport
-          ? [
-              workSupport.agent.extension,
-              workSupport.work.extension,
-              toolPolicy,
-            ]
-          : [toolPolicy],
+        ...options.assistant,
+        thinkingLevel: options.assistant.thinkingLevel ?? null,
+        extensions: [...durable, policy],
+        tools,
+        cwd: null,
       });
     },
   });
   const registry = createRegistry();
-  registry.install(toolPolicy);
-  if (workSupport) {
-    registry.install(CodingTools);
-    registry.install(workSupport.agent.extension);
-    registry.install(workSupport.work.extension);
+  for (const extension of [
+    ...durable,
+    policy,
+    defineExtension({ name: "kaeno-channels", tasks: [turn, control] }),
+  ]) {
+    registry.install(extension);
   }
-  const settings = {
-    extensions: workSupport ? [CodingTools, workSupport.agent.extension] : [],
+  const settings: HarnessSettings = {
+    extensions: [],
     toolExecution: "parallel",
     followUpMode: "one-at-a-time",
     retry: { maxRetries: 4 },
-  } satisfies HarnessSettings;
-  registry.install(
-    defineExtension({
-      name: "kaeno-channels",
-      tasks: [turns.turnTask, turns.controlTask],
-    }),
-  );
+  };
   const harness = await Harness.open(
-    await openNodeSqliteStorage(
-      readEnvironment("KAENO_DB") ?? "/data/kaeno.sqlite",
-    ),
+    options.storage,
     {
-      models,
+      models: options.models,
       registry,
-      ...(workSupport
-        ? { env: workSupport.agent.getExecutionEnvironment }
-        : {}),
       settings,
-      onReport: (error) => console.error("harness:", error),
+      env: environment,
+      onReport: options.onReport,
     },
     BACKGROUND_CONTEXT,
   );
-  harnessReference.setHarness(harness);
+  reference.setHarness(harness);
   const stopping = new AbortController();
-  let polling: Promise<void> | undefined;
-  const sweeps = new Set<Promise<void>>();
-  let sweeper: ReturnType<typeof setInterval> | undefined;
-  let initialSweep: ReturnType<typeof setTimeout> | undefined;
-  let api: ReturnType<ApiServer["server"]["listen"]> | undefined;
+  const cleanups: (() => Promise<void>)[] = [];
   let closing: Promise<void> | undefined;
-  const close = (): Promise<void> => {
-    closing ??= (async () => {
-      stopping.abort();
-      clearInterval(sweeper);
-      clearTimeout(initialSweep);
-      if (api) {
-        const closed = new Promise<void>((resolve) =>
-          api?.close(() => resolve()),
-        );
-        api.closeAllConnections();
-        await closed;
-      }
-      await polling;
-      await Promise.all(sweeps);
-      await harness.close(BACKGROUND_CONTEXT);
-    })();
-    return closing;
+  const core: Kaeno = {
+    harness,
+    threads,
+    turns,
+    close() {
+      closing ??= (async () => {
+        stopping.abort();
+        const errors: unknown[] = [];
+        // Keep extension clients alive until in-flight durable invocations stop.
+        try {
+          await harness.close(BACKGROUND_CONTEXT);
+        } catch (error) {
+          errors.push(error);
+        }
+        for (const cleanup of cleanups.toReversed()) {
+          try {
+            await cleanup();
+          } catch (error) {
+            errors.push(error);
+          }
+        }
+        if (errors.length) {
+          throw new AggregateError(errors, "Kaeno shutdown failed");
+        }
+      })();
+      return closing;
+    },
   };
   try {
     await assertRecoveryCompatible(
@@ -180,84 +182,39 @@ export async function startApplication(): Promise<void> {
       BACKGROUND_CONTEXT,
       settings,
     );
-    await threads.refreshIdleConversations();
-    const port = z.coerce
-      .number()
-      .int()
-      .min(1)
-      .max(65535)
-      .parse(readEnvironment("PORT") ?? 8080);
-    api = new ApiServer(
-      harnessReference.getHarness,
-      threads,
-      turns,
-      work,
-      { watchConversation: (id, ctx) => watchEvents(harness, id, ctx) },
-      token,
-    ).server;
-    await new Promise<void>((resolve, reject) => {
-      const server = api;
-      if (!server) {
-        reject(new Error("HTTP server was not constructed"));
-        return;
+    for (const { record } of (await harness.inspect(BACKGROUND_CONTEXT))
+      .tasks) {
+      if (record.kind !== "kaeno.turn") {
+        continue;
       }
-      server.once("error", reject);
-      server.listen(port, () => {
-        server.removeListener("error", reject);
-        resolve();
-      });
-    });
-    harness.resume();
-    if (telegram) {
-      const poller = new TelegramPoller(
-        harnessReference.getHarness,
-        threads,
-        turns,
-        telegram,
-        new Set(config.telegram.allowedChatIds),
-        work,
-      );
-      polling = poller
-        .pollUpdates(stopping.signal)
-        .catch((error) => console.error("telegram:", error));
-    }
-    const sweep = (): void => {
-      if (!workSupport) {
-        return;
-      }
-      const pending = workSupport.agent
-        .sweepOrphanedSandboxes()
-        .catch((error) => console.error("sweeper:", error));
-      sweeps.add(pending);
-      void pending.finally(() => sweeps.delete(pending));
-    };
-    // Best effort: a missing or misconfigured quota fails each WORK with the same message.
-    const fit = await workSupport?.capacity
-      .fitSandboxes()
-      .then((value) => value.summary)
-      .catch((error: unknown) =>
-        error instanceof Error ? error.message : String(error),
-      );
-    sweeper = workSupport ? setInterval(sweep, 5 * 60000) : undefined;
-    initialSweep = workSupport ? setTimeout(sweep, 30000) : undefined;
-    console.log(
-      `kaeno listening on :${port} · agent ${config.agent} · max depth ${config.maxDepth} · sandboxes ${fit} · templates ${Object.keys(config.templates).join(", ")} · sandbox image ${workSupport?.images.execution ?? "disabled"}`,
-    );
-    for (const signal of ["SIGTERM", "SIGINT"] as const) {
-      process.once(signal, () => {
-        void close().then(
-          () => process.exit(0),
-          (error) => {
-            console.error("shutdown:", error);
-            process.exit(1);
-          },
+      const { notify } = z
+        .object({
+          notify: z
+            .object({ route: z.object({ channel: z.string() }).optional() })
+            .optional(),
+        })
+        .parse(record.input);
+      if (notify?.route && !deliveries.has(notify.route.channel)) {
+        throw new Error(
+          `Missing delivery channel: ${notify.route.channel} (task ${record.id})`,
         );
-      });
+      }
     }
+    await threads.refreshIdleConversations();
+    for (const extension of extensions) {
+      const cleanup = await extension.start?.(core, stopping.signal);
+      if (cleanup) {
+        cleanups.push(cleanup);
+      }
+    }
+    harness.resume();
+    return core;
   } catch (error) {
-    await close().catch((cleanupError) =>
-      console.error("startup cleanup:", cleanupError),
-    );
+    try {
+      await core.close();
+    } catch (cleanupError) {
+      options.onReport?.(cleanupError);
+    }
     throw error;
   }
 }

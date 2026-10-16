@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, it, vi } from "vitest";
 
-it("boots the actual no-WORK entrypoint without cluster/image/cache dependencies and shuts down cleanly", async () => {
+it("boots the actual core entrypoint and shuts down cleanly", async () => {
   const root = await mkdtemp(join(tmpdir(), "kaeno-application-"));
   const reservation = createServer();
   reservation.listen(0, "127.0.0.1");
@@ -20,15 +20,8 @@ it("boots the actual no-WORK entrypoint without cluster/image/cache dependencies
   await writeFile(
     config,
     JSON.stringify({
-      work: false,
-      agent: "assistant",
-      templates: {
-        assistant: {
-          description: "Minimal assistant",
-          model: "openai/gpt-4.1",
-          instructions: "Answer clearly.",
-        },
-      },
+      model: "openai/gpt-4.1",
+      instructions: "Answer clearly.",
     }),
   );
   const token = "test-token-with-at-least-32-characters";
@@ -39,10 +32,6 @@ it("boots the actual no-WORK entrypoint without cluster/image/cache dependencies
       KAENO_DB: join(root, "kaeno.sqlite"),
       KAENO_TOKEN: token,
       PORT: String(address.port),
-      POD_NAME: "must-not-look-up-a-pod",
-      KAENO_BUILD_INFO: join(root, "nonexistent-build-info.json"),
-      KAENO_SKILL_CACHE: join(root, "nonexistent-cache"),
-      TELEGRAM_BOT_TOKEN: "",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

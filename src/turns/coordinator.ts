@@ -8,7 +8,6 @@ import type {
 } from "@earendil-works/pi-durable";
 import {
   activeTurn,
-  admitCancel,
   admitActivityCancellation,
   isResultSource,
   resultActivityId,
@@ -42,15 +41,12 @@ export class TurnCoordinator {
   readonly turnTask: TurnTask;
   readonly controlTask: ControlTask;
   private readonly harness: () => Harness;
-  private readonly validateWorkCancellation?: ValidateActivityCancellation;
   constructor(
     harness: () => Harness,
     turnTask: TurnTask,
     controlTask: ControlTask,
-    validateWorkCancellation?: ValidateActivityCancellation,
   ) {
     this.harness = harness;
-    this.validateWorkCancellation = validateWorkCancellation;
     this.turnTask = turnTask;
     this.controlTask = controlTask;
   }
@@ -74,24 +70,11 @@ export class TurnCoordinator {
   admitReset(tx: Tx, id: ConversationId): Promise<TaskId> {
     return admitControl(tx, this.controlTask, id, "reset");
   }
-  admitWorkCancellation(
-    tx: Tx,
-    id: ConversationId,
-    workId: TaskId,
-  ): Promise<TaskId> {
-    return admitCancel(
-      tx,
-      this.controlTask,
-      id,
-      workId,
-      this.validateWorkCancellation,
-    );
-  }
   admitActivityCancellation(
     tx: Tx,
     id: ConversationId,
     activityId: TaskId,
-    validate: ValidateActivityCancellation,
+    validate?: ValidateActivityCancellation,
   ): Promise<TaskId> {
     return admitActivityCancellation(
       tx,
@@ -135,15 +118,6 @@ export class TurnCoordinator {
     const ledger = await tx.doc(TurnLedger, origin.conversationId);
     return Boolean(ledger.control) || ledger.epoch !== origin.epoch;
   }
-  async getPendingReportIds(tx: Tx, id: ConversationId): Promise<TaskId[]> {
-    const ledger = await tx.doc(TurnLedger, id);
-    return Object.values(ledger.receipts).flatMap((receipt) =>
-      receipt.source.kind === "work-result" &&
-      ["pending", "dispatching"].includes(receipt.delivery)
-        ? [receipt.source.workId]
-        : [],
-    );
-  }
   async getPendingActivityIds(tx: Tx, id: ConversationId): Promise<TaskId[]> {
     const ledger = await tx.doc(TurnLedger, id);
     return Object.values(ledger.receipts).flatMap((receipt) =>
@@ -176,39 +150,6 @@ export class TurnCoordinator {
       },
       content: result.content,
       report: result.report,
-    });
-  }
-  suppressWorkReports(
-    tx: Tx,
-    id: ConversationId,
-    ids: readonly TaskId[],
-  ): Promise<void> {
-    return suppressReports(tx, id, ids);
-  }
-  /** A WORK message or final report, delivered to its CHAT as a read-only work-result turn. */
-  admitWorkReport(
-    tx: Tx,
-    report: {
-      workId: TaskId;
-      key: string;
-      content: string;
-      report: string;
-      origin: Origin;
-    },
-  ): Promise<TaskId> {
-    const { workId, origin } = report;
-    return admitTurn(tx, this.turnTask, {
-      conversationId: origin.conversationId,
-      requestId: `work-report:${report.key}`,
-      notify: origin.notify,
-      source: {
-        kind: "work-result",
-        workId,
-        requestId: origin.requestId,
-        epoch: origin.epoch,
-      },
-      report: report.report,
-      content: report.content,
     });
   }
 }
