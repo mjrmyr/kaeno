@@ -154,8 +154,10 @@ export async function startApplication(): Promise<void> {
     : undefined;
   const notifier = new TelegramNotifier(telegram);
   const turnTask = defineTurn(() => notifier);
-  const controlTask = defineControl(harnessReference.getHarness, (id, workId) =>
-    workReference.getValue().cancelWork(id, workId),
+  const controlTask = defineControl(
+    harnessReference.getHarness,
+    (id, workId) => workReference.getValue().cancelWork(id, workId),
+    (id) => workReference.getValue().cancelPlans(id),
   );
   const turns = new TurnCoordinator(
     harnessReference.getHarness,
@@ -172,6 +174,8 @@ export async function startApplication(): Promise<void> {
     { listWorkTemplates: () => eligibleWorkTemplates(config) },
     agentReference.getValue,
     artifacts,
+    undefined,
+    turns,
   );
   workReference.initialize(work);
   const factory = new AgentFactory(config, skills, work);

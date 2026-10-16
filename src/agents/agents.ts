@@ -130,6 +130,7 @@ export class Agent {
       agent: string;
       workId: TaskId;
       orchestrate: boolean;
+      mode?: "reasoning-plan";
     },
   ): Promise<void> {
     const binding = await this.factory.configureAgent(
@@ -140,13 +141,22 @@ export class Agent {
         blueprint: setup.blueprint,
         agent: setup.agent,
         orchestrate: setup.orchestrate,
+        mode: setup.mode,
       },
       this.extension,
     );
-    await persistAgentBinding(tx, id, binding, {
-      role: "work",
-      workId: setup.workId,
-    });
+    await persistAgentBinding(
+      tx,
+      id,
+      setup.mode === "reasoning-plan" ? { ...binding, skills: [] } : binding,
+      {
+        role: "work",
+        workId: setup.workId,
+      },
+    );
+    if (setup.mode === "reasoning-plan") {
+      return;
+    }
     const state = await tx.doc(AgentState, id);
     state.sandbox = {
       pod: podName(id),

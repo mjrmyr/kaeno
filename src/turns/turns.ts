@@ -292,6 +292,7 @@ interface ControlInput {
 export function defineControl(
   harness: () => Harness,
   cancel: (id: ConversationId, workId?: TaskId) => Promise<unknown>,
+  cancelPlans: (id: ConversationId) => Promise<void> = async () => {},
 ): ControlTask {
   return defineTask<
     ControlInput,
@@ -344,6 +345,7 @@ export function defineControl(
         );
         await conversation.abort(context); // withdraw inputs submitted before the fence, including queued reports
         if (task.input.action === "reset") {
+          await cancelPlans(task.input.conversationId);
           await conversation.reset(undefined, context);
         } else {
           await cancel(task.input.conversationId);

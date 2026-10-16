@@ -34,6 +34,7 @@ import type {
   ArtifactFile,
   ArtifactsListing,
   WorkView,
+  PlanView,
 } from "../work/index.ts";
 const oneLine = (state: string, max = 200) => {
   const file = state.replace(/\s+/g, " ").trim();
@@ -126,6 +127,9 @@ export interface ApiTurns {
   ): Promise<string | undefined>;
 }
 export interface ApiWork {
+  admitPlan?(id: ConversationId, request: unknown): Promise<PlanView>;
+  listPlans?(id: ConversationId): Promise<PlanView[]>;
+  cancelPlans?(id: ConversationId, requestId?: string): Promise<void>;
   listWork(id: ConversationId): Promise<WorkView[]>;
   readArtifacts(
     caller: ConversationId,
@@ -178,6 +182,29 @@ export class ApiServer {
         }
         if (req.method === "GET" && path === "/v1/threads") {
           return json(res, 200, await threads.listConversations());
+        }
+        const plans =
+          /^\/v1\/threads\/([A-Za-z0-9:_.-]{1,200})\/plans(?:\/([A-Za-z0-9:_.-]{8,128})\/cancel)?$/.exec(
+            path,
+          );
+        if (plans) {
+          if (!work.admitPlan || !work.listPlans || !work.cancelPlans) {
+            return json(res, 503, {
+              error: "Plan admission is not configured",
+            });
+          }
+          const id = await threads.getOrCreateConversation(plans[1]);
+          if (req.method === "GET" && !plans[2]) {
+            return json(res, 200, await work.listPlans(id));
+          }
+          if (req.method === "POST" && plans[2]) {
+            await work.cancelPlans(id, plans[2]);
+            return json(res, 200, { cancellationRequested: true });
+          }
+          if (req.method === "POST" && !plans[2]) {
+            return json(res, 202, await work.admitPlan(id, await body(req)));
+          }
+          return json(res, 404, { error: "Not found" });
         }
         const artifacts =
           /^\/v1\/threads\/([A-Za-z0-9:_.-]{1,200})\/work\/(\d+)\/artifacts(?:\/(.*))?$/.exec(

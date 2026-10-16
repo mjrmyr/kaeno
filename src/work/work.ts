@@ -5,6 +5,9 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Type } from "@earendil-works/pi-ai";
 import {
   AssistantEntry,
+  GenerationTask,
+  CompactionTask,
+  hook,
   defineDoc,
   defineExtension,
   defineTask,
@@ -33,8 +36,10 @@ import {
   type Stored,
   type WorkBlueprint,
 } from "./work-blueprint.ts";
-/** Where messages and the final report go. CHAT parents route through the turn ledger; WORK parents get inputs. */
+import { ReasoningPlans, type PlanAdmission, type PlanView } from "./plans.ts";
+/** CHAT receives read-only report turns; WORK receives inputs; plans consume only native terminal receipts. */
 export type WorkParent =
+  | { kind: "plan"; planId: TaskId; conversationId: ConversationId }
   | {
       kind: "chat";
       origin: Origin;
@@ -91,7 +96,7 @@ type WorkTaskRuntime = TaskRuntime<
 >;
 export interface WorkRuntime extends Pick<
   Harness,
-  "snapshot" | "getTask" | "commit" | "abortTask"
+  "snapshot" | "getTask" | "commit" | "abortTask" | "waitForTask"
 > {}
 /** Children started by one conversation (CHAT or WORK), keyed by the start_work tool call that admitted them. */
 export const WorkIndex = defineDoc<{
@@ -110,6 +115,7 @@ interface WorkScopeState {
   agent?: string;
   blueprint?: Stored<WorkBlueprint>;
   message?: string;
+  reasoningPlan?: { id: TaskId; conversationId: ConversationId };
 }
 /** A WORK conversation's place in its tree. CHAT conversations keep the initial value (depth 0, no work). */
 export const WorkScope = defineDoc<Stored<WorkScopeState>>({
@@ -151,6 +157,7 @@ export interface WorkSetup {
   agent: string;
   workId: TaskId;
   orchestrate: boolean;
+  mode?: "reasoning-plan";
 }
 export interface WorkAgents {
   captureWorkBlueprint(agent: string): WorkBlueprint;
@@ -206,6 +213,9 @@ export interface WorkTurns {
 }
 const LIVE = ["pending", "running", "waiting", "completing"] as const;
 const FINISHED = ["completed", "failed", "aborted", "faulted", "orphaned"];
+const planParentSchema = z.object({
+  parent: z.object({ kind: z.literal("plan") }),
+});
 const workInputSchema = z.object({ title: z.string(), agent: z.string() });
 const resultSchema = z.object({ status: z.string() });
 const checkpointSchema = z.object({
@@ -251,6 +261,7 @@ async function latestResponse(
 async function liveWork(
   tx: Tx,
   conversationId?: ConversationId,
+  sandboxOnly = false,
 ): Promise<TaskId[]> {
   const ids: TaskId[] = [];
   for (const status of LIVE) {
@@ -258,7 +269,14 @@ async function liveWork(
       { conversationId, kind: "kaeno.work", status },
       256,
     );
-    ids.push(...page.items.map((task) => task.id));
+    ids.push(
+      ...page.items
+        .filter(
+          (task) =>
+            !sandboxOnly || !planParentSchema.safeParse(task.input).success,
+        )
+        .map((task) => task.id),
+    );
   }
   return ids;
 }
@@ -304,6 +322,7 @@ export class Work {
   private readonly agents: () => WorkAgents;
   private readonly artifacts?: ArtifactStore;
   private readonly maxActive: number;
+  private readonly plans: ReasoningPlans;
   constructor(
     harness: () => WorkRuntime,
     turns: WorkTurns,
@@ -311,6 +330,7 @@ export class Work {
     agents: () => WorkAgents,
     artifacts?: ArtifactStore,
     maxActive = 32,
+    planAdmission?: PlanAdmission,
   ) {
     this.harness = harness;
     this.turns = turns;
@@ -347,7 +367,12 @@ export class Work {
                   blueprint,
                   agent: task.input.agent,
                   workId: task.id,
+                  mode:
+                    task.input.parent.kind === "plan"
+                      ? "reasoning-plan"
+                      : undefined,
                   orchestrate:
+                    task.input.parent.kind !== "plan" &&
                     task.input.depth < blueprint.maxDepth &&
                     template.delegates.length > 0,
                 },
@@ -357,6 +382,12 @@ export class Work {
               scope.depth = task.input.depth;
               scope.agent = task.input.agent;
               scope.blueprint = storageCopy(blueprint);
+              if (task.input.parent.kind === "plan") {
+                scope.reasoningPlan = {
+                  id: task.input.parent.planId,
+                  conversationId: task.input.parent.conversationId,
+                };
+              }
             }
             return {
               status: "running",
@@ -374,6 +405,7 @@ export class Work {
             task.state.checkpoint.conversation,
             runtime,
             context,
+            task.input.parent.kind === "plan",
           ),
         message: async (task, runtime, context) => {
           const { conversation, sent, seen, message } = task.state.checkpoint;
@@ -465,6 +497,40 @@ export class Work {
         }, context);
       },
     });
+    this.plans = new ReasoningPlans(
+      harness,
+      turns,
+      (agent) => {
+        if (
+          !this.templates
+            .listWorkTemplates()
+            .some((template) => template.name === agent)
+        ) {
+          throw new Error(`Ineligible reasoning WORK template "${agent}"`);
+        }
+        return this.agents().captureWorkBlueprint(agent);
+      },
+      async (tx, input) =>
+        tx.createTask(
+          WorkTask,
+          {
+            ...input.phase,
+            depth: 1,
+            parent: {
+              kind: "plan",
+              planId: input.planId,
+              conversationId: input.conversationId,
+            },
+            blueprint: input.blueprint,
+          },
+          {
+            ownership: { kind: "conversation" },
+            conversationId: input.conversationId,
+            background: true,
+          },
+        ),
+      planAdmission,
+    );
     const start = defineTool({
       name: "start_work",
       description:
@@ -481,6 +547,9 @@ export class Work {
           api.conversationId,
           context,
         );
+        if (caller?.reasoningPlan) {
+          throw new Error("Reasoning plans cannot orchestrate");
+        }
         const parent: WorkParent =
           caller?.workId === undefined
             ? {
@@ -544,7 +613,7 @@ export class Work {
           // now means no WORK ever waits for a slot, so parents and children cannot deadlock.
           // Counted inside this commit, so concurrent start_work calls cannot overbook the pool.
           if (pool !== undefined) {
-            const used = (await liveWork(tx)).length;
+            const used = (await liveWork(tx, undefined, true)).length;
             if (used >= pool.slots) {
               throw new Error(
                 `No free sandbox: ${used} of ${pool.slots} are in use by unfinished works. Wait for a running work to report or cancel one, then retry. Pool: ${pool.summary}`,
@@ -759,8 +828,72 @@ export class Work {
     this.extension = defineExtension({
       name: "kaeno-work",
       tools: [...this.orchestrationTools, ...this.parentTools],
-      tasks: [WorkTask],
+      tasks: [WorkTask, this.plans.task],
+      hooks: [
+        hook(GenerationTask, {
+          beforeRequest: async (_request, api, context) => {
+            const plan = (
+              await api.snapshot(WorkScope, api.conversationId, context)
+            )?.reasoningPlan;
+            if (plan) {
+              await this.plans.beforeRequest(plan.conversationId, plan.id);
+            }
+            return undefined;
+          },
+        }),
+        hook(GenerationTask, {
+          afterResponse: async (message, api, context) => {
+            const plan = (
+              await api.snapshot(WorkScope, api.conversationId, context)
+            )?.reasoningPlan;
+            if (!plan) {
+              return;
+            }
+            let reason: string | undefined;
+            if (message.content.some((block) => block.type === "toolCall")) {
+              reason = "Unsupported action: reasoning plans have no tools";
+            }
+            if (
+              message.stopReason === "error" ||
+              message.stopReason === "aborted" ||
+              message.stopReason === "length"
+            ) {
+              reason ??= `Reasoning response failed (${message.stopReason})`;
+            }
+            if (reason) {
+              await this.plans.pause(plan.conversationId, plan.id, reason);
+              throw new Error(reason);
+            }
+          },
+        }),
+        hook(CompactionTask, {
+          beforeCompact: async (_compaction, api, context) => {
+            if (
+              (await api.snapshot(WorkScope, api.conversationId, context))
+                ?.reasoningPlan
+            ) {
+              return { decline: true };
+            }
+            return undefined;
+          },
+        }),
+      ],
     });
+  }
+  admitPlan(
+    conversationId: ConversationId,
+    request: unknown,
+  ): Promise<PlanView> {
+    return this.plans.admit(conversationId, request);
+  }
+  listPlans(conversationId: ConversationId): Promise<PlanView[]> {
+    return this.plans.list(conversationId);
+  }
+  cancelPlans(
+    conversationId: ConversationId,
+    requestId?: string,
+  ): Promise<void> {
+    return this.plans.cancel(conversationId, requestId);
   }
   async listWork(conversationId: ConversationId): Promise<WorkView[]> {
     const index = await this.harness().snapshot(
@@ -781,6 +914,9 @@ export class Work {
     conversationId: ConversationId,
     id?: TaskId,
   ): Promise<TaskId[]> {
+    if (id === undefined) {
+      await this.cancelPlans(conversationId);
+    }
     const jobs = await this.listWork(conversationId);
     if (id !== undefined && !jobs.some((job) => job.id === id)) {
       throw new Error(`No work #${id} belongs to this chat`);
@@ -960,6 +1096,14 @@ export class Work {
     ) {
       throw new Error(`Work #${id} was not started here`);
     }
+    if (
+      z.object({ parent: z.object({ kind: z.string() }) }).parse(record.input)
+        .parent.kind === "plan"
+    ) {
+      throw new Error(
+        "Reasoning plan phases cannot receive message_work; cancel and admit a new plan",
+      );
+    }
     if (record.state.status === "terminal" || record.abortRequested) {
       throw new Error(`Work #${id} has already finished`);
     }
@@ -992,10 +1136,17 @@ export class Work {
     conversationId: ConversationId,
     runtime: WorkTaskRuntime,
     context: Context,
+    reasoning = false,
   ): Promise<void> {
     // Converge on a running sandbox at every entry: after a restart the pod may be gone (409 adopts a live one).
     try {
-      await this.agents().provisionWorkSandbox(conversationId, workId, context);
+      if (!reasoning) {
+        await this.agents().provisionWorkSandbox(
+          conversationId,
+          workId,
+          context,
+        );
+      }
     } catch (error) {
       if (runtime.signal.aborted || context.abortSignal?.aborted) {
         throw error;

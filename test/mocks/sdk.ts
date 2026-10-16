@@ -62,6 +62,7 @@ export interface MockSdk {
       name: string;
     };
   };
+  CompactionTask: { definition: { name: string } };
   ToolTask: {
     definition: {
       name: string;
@@ -83,6 +84,7 @@ export function createMockSdk(): MockSdk {
     section,
     configure: vi.fn<typeof configure>().mockResolvedValue(undefined),
     GenerationTask: { definition: { name: "pi.generation" } },
+    CompactionTask: { definition: { name: "pi.compaction" } },
     ToolTask: { definition: { name: "pi.tool" } },
     AgentDoc: { definition: { initial: () => ({}) } },
     AssistantEntry: {},

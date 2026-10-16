@@ -38,6 +38,17 @@ export class TurnCoordinator {
     this.turnTask = turnTask;
     this.controlTask = controlTask;
   }
+  async capturePlanOrigin(
+    tx: Tx,
+    id: ConversationId,
+    requestId: string,
+  ): Promise<Origin> {
+    const ledger = await tx.doc(TurnLedger, id);
+    if (ledger.control) {
+      throw new Error("Chat control in progress; retry later");
+    }
+    return { conversationId: id, requestId, epoch: ledger.epoch, notify: {} };
+  }
   admitUserTurn(
     tx: Tx,
     id: ConversationId,

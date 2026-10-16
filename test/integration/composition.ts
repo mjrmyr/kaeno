@@ -151,6 +151,7 @@ export function createWork(options: WorkOptions): Work {
     options.agents,
     options.artifacts,
     options.maxActive,
+    turns,
   );
   return work;
 }
