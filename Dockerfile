@@ -3,8 +3,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts \
  && npm cache clean --force \
- && mkdir -p /data \
- && chown node:node /data
+ && mkdir -p /data /workspace /home/agent \
+ && chown -R node:node /data /workspace /home/agent
 COPY src ./src
 USER node
 ENV KAENO_DB=/data/kaeno.sqlite
