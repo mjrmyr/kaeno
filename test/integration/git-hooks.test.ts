@@ -23,7 +23,7 @@ const installer = fileURLToPath(
   new URL("../../node_modules/husky/bin.js", import.meta.url),
 );
 
-it("checks commits but does not run verification on push", async () => {
+it("blocks failed commits and pushes, and allows both when their checks pass", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-git-hooks-"));
   const repository = join(directory, "repository");
   const remote = join(directory, "remote.git");
@@ -48,13 +48,9 @@ it("checks commits but does not run verification on push", async () => {
     await git(["config", "user.email", "hooks@example.invalid"]);
     await git(["config", "commit.gpgsign", "false"]);
     await git(["remote", "add", "origin", remote]);
-    await expect(readFile(join(hooks, "pre-push"))).rejects.toMatchObject({
-      code: "ENOENT",
-    });
-    await copyFile(
-      join(hooks, "pre-commit"),
-      join(repository, ".husky", "pre-commit"),
-    );
+    for (const hook of ["pre-commit", "pre-push"]) {
+      await copyFile(join(hooks, hook), join(repository, ".husky", hook));
+    }
     await writeFile(
       join(repository, "package.json"),
       JSON.stringify({
@@ -79,13 +75,19 @@ it("checks commits but does not run verification on push", async () => {
     ).rejects.toThrow();
     await expect(git(["rev-parse", "--verify", "HEAD"])).rejects.toThrow();
     await git(["commit", "-m", "fixture"]);
-    await git(["push", "origin", "HEAD:main"], { VERIFY_EXIT: "1" });
+    await expect(
+      git(["push", "origin", "HEAD:main"], { VERIFY_EXIT: "1" }),
+    ).rejects.toThrow();
+    expect((await git(["ls-remote", "origin", "refs/heads/main"])).stdout).toBe(
+      "",
+    );
+    await git(["push", "origin", "HEAD:main"]);
     const commit = (await git(["rev-parse", "HEAD"])).stdout.trim();
     expect(
       (await git(["ls-remote", "origin", "refs/heads/main"])).stdout,
     ).toContain(commit);
     expect(await readFile(join(repository, "checks.log"), "utf8")).toBe(
-      "check\ncheck\n",
+      "check\ncheck\nverify\nverify\n",
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
