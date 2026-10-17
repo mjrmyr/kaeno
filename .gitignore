@@ -1,6 +1,10 @@
 node_modules/
+config.json
+work-config.json
 .kaeno/
 .kaeno-next/
 .DS_Store
 .playwright-mcp/
 .rig.env
+.env
+data

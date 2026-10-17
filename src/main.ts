@@ -50,6 +50,7 @@ const limits = {
 const extensions = createWorkExtensions({
   config: workConfig,
   sandbox: new DockerSandboxProvider({
+    apiHost: process.env.KAENO_SANDBOX_API_HOST ?? "127.0.0.1",
     createEnvironment: ({ url, token, id, cwd, fetch }) =>
       new RemoteExecutionEnv(url, token, id, cwd, fetch),
   }),
