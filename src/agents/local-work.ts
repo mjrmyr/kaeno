@@ -76,7 +76,6 @@ export class LocalWorkAgents implements WorkAgents {
       tx,
       id,
       {
-        role: "work",
         blueprint: setup.blueprint,
         agent: setup.agent,
         orchestrate: setup.orchestrate,

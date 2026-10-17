@@ -17,7 +17,6 @@ export interface BoundAgent {
 }
 /** One request tree's immutable policy: every reachable template, frozen when CHAT starts the root WORK. */
 export interface WorkBlueprint {
-  readonly schema: 2;
   readonly digest: string;
   readonly agent: string;
   readonly maxDepth: number;
@@ -63,7 +62,6 @@ const entrySchema = z.object({
 });
 const blueprintSchema = z
   .object({
-    schema: z.literal(2),
     digest: z.string(),
     agent: z.string().min(1),
     maxDepth: z.number().int().min(1),
@@ -153,12 +151,12 @@ export function sealBlueprint(
 /** Boundary: verify stored data before narrowing it. This checksum is not authentication. */
 export function readBlueprint(value: unknown): WorkBlueprint {
   const envelope = z
-    .object({ schema: z.literal(2), digest: z.string() })
+    .object({ digest: z.string() })
     .passthrough()
     .safeParse(value);
   if (!envelope.success) {
     throw new Error(
-      "WORK has no supported frozen policy snapshot; cannot resume safely (cancel and submit a new request)",
+      "WORK has no valid frozen policy snapshot; cannot resume safely (cancel and submit a new request)",
     );
   }
   const copied = z

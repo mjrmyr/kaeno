@@ -1,8 +1,4 @@
-export {
-  parseWorkConfig,
-  loadWorkConfig,
-  eligibleWorkTemplates,
-} from "./config.ts";
+export { parseWorkConfig, loadWorkConfig } from "./config.ts";
 export type { WorkConfig, Template } from "./config.ts";
 export { workTurns } from "./turns.ts";
 export {

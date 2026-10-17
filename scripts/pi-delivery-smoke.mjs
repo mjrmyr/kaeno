@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { EventEmitter, once } from "node:events";
@@ -11,6 +11,22 @@ await mkdir(join(agentDirectory, "extensions"), { recursive: true });
 await symlink(
   resolve("pi-extension/kaeno-local"),
   join(agentDirectory, "extensions", "kaeno-local"),
+);
+// Exercise the same navigation as /tree without depending on the interactive TUI.
+await writeFile(
+  join(agentDirectory, "extensions", "test-tree.js"),
+  `
+export default function (pi) {
+  pi.registerCommand("test-tree-root", {
+    handler: async (_args, ctx) => {
+      const entries = ctx.sessionManager.getEntries();
+      const target = entries.find(entry => entry.type === "message" && entry.message.role === "system") ?? entries[0];
+      if (!target) throw new Error("No tree root");
+      await ctx.navigateTree(target.id, { summarize: false });
+    },
+  });
+}
+`,
 );
 const replies = [];
 let posts = 0;
@@ -164,10 +180,38 @@ try {
   ) {
     throw new Error("Duplicate delivery or unintended model call");
   }
+  client.send({ id: "rewind", type: "prompt", message: "/test-tree-root" });
+  const rewound = await client.wait(
+    (event) => event.type === "response" && event.id === "rewind",
+  );
+  if (!rewound.success) {
+    throw new Error(`Tree navigation failed: ${JSON.stringify(rewound)}`);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  const afterRewind = client.records.filter(
+    (event) => event.type === "message_end",
+  );
+  if (afterRewind.length !== messages.length) {
+    throw new Error("Tree rewind replayed previously delivered replies");
+  }
+  replies.push({
+    id: 3,
+    requestId: "activity-result:after-tree",
+    text: "REPORT_AFTER_TREE",
+  });
+  await client.wait(
+    (event) =>
+      event.type === "message_end" &&
+      event.message?.content === "REPORT_AFTER_TREE",
+  );
+  await client.wait(
+    (event) =>
+      event.type === "entry_appended" && event.entry?.data?.after === 3,
+  );
   await client.close();
   client = undefined;
   replies.push({
-    id: 3,
+    id: 4,
     requestId: "activity-result:offline",
     text: "REPORT_WHILE_OFFLINE",
   });
@@ -179,7 +223,7 @@ try {
   );
   await client.wait(
     (event) =>
-      event.type === "entry_appended" && event.entry?.data?.after === 3,
+      event.type === "entry_appended" && event.entry?.data?.after === 4,
   );
   messages = client.records
     .filter((event) => event.type === "message_end")
@@ -194,7 +238,7 @@ try {
   await client.close();
   client = undefined;
   console.log(
-    "PASS: real Pi RPC: acknowledgment once, automatic worker report once, no replay/model call on manual fetch, and only the offline report on resume.",
+    "PASS: real Pi RPC: automatic delivery, no replay on manual fetch or tree rewind, new replies after rewind, and only unread replies on resume.",
   );
 } finally {
   if (client) {

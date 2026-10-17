@@ -14,7 +14,6 @@ export interface Template {
 }
 
 export interface WorkConfig {
-  agent: string;
   maxDepth: number;
   templates: Record<string, Template>;
 }
@@ -36,7 +35,6 @@ const templateSchema = z
 export function parseWorkConfig(raw: unknown): WorkConfig {
   const parsed = z
     .object({
-      agent: z.string().trim().min(1),
       maxDepth: z.number().int().min(1).max(8).default(2),
       templates: z.record(
         z.string().regex(/^[a-z][a-z0-9-]{0,30}$/),
@@ -62,9 +60,6 @@ export function parseWorkConfig(raw: unknown): WorkConfig {
       skills: template.skills,
     };
   }
-  if (!Object.hasOwn(templates, parsed.agent)) {
-    throw new Error(`Unknown root WORK template: ${parsed.agent}`);
-  }
   for (const template of Object.values(templates)) {
     for (const delegate of template.delegates) {
       if (!Object.hasOwn(templates, delegate)) {
@@ -80,12 +75,4 @@ export function parseWorkConfig(raw: unknown): WorkConfig {
 export async function loadWorkConfig(path: string): Promise<WorkConfig> {
   const raw: unknown = JSON.parse(await readFile(path, "utf8"));
   return parseWorkConfig(raw);
-}
-
-export function eligibleWorkTemplates(config: WorkConfig): Template[] {
-  const names = new Set([
-    config.agent,
-    ...config.templates[config.agent].delegates,
-  ]);
-  return [...names].map((name) => config.templates[name]);
 }

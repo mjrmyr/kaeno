@@ -19,7 +19,6 @@ vi.mock("../config/index.ts", () => ({
 }));
 function payload(): Omit<WorkBlueprint, "digest"> {
   return {
-    schema: 2,
     agent: "worker",
     maxDepth: 2,
     templates: {
@@ -81,6 +80,8 @@ function forged(
 it("seals an alias-free, deeply frozen policy and returns independently mutable storage drafts", () => {
   const original = payload();
   const snapshot = sealBlueprint(original);
+  expect(snapshot).not.toHaveProperty("schemaVersion");
+  expect(readBlueprint(storageCopy(snapshot))).toEqual(snapshot);
   expect(frozenEntry(snapshot, "worker").template.delegates).toEqual([
     "worker",
   ]);
@@ -102,15 +103,12 @@ it("verifies checksums independently of object insertion order", () => {
   );
   expect(readBlueprint(reversed)).toEqual(snapshot);
 });
-it.each([
-  undefined,
-  null,
-  {},
-  { schema: 0, digest: "x" },
-  { schema: 1, digest: "x" },
-])("rejects missing or unsupported saved policy envelopes (%j)", (value) => {
-  expect(() => readBlueprint(value)).toThrow(/frozen policy/);
-});
+it.each([undefined, null, {}, [], { digest: 42 }])(
+  "rejects missing or malformed saved policy envelopes (%j)",
+  (value) => {
+    expect(() => readBlueprint(value)).toThrow(/frozen policy/);
+  },
+);
 it("detects policy edits before replay and rejects absent targets", () => {
   const draft = storageCopy(sealBlueprint(payload()));
   draft.templates.worker.template.instructions = "changed";

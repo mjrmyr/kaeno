@@ -71,7 +71,6 @@ faux.setResponses(
   }),
 );
 const config: WorkConfig = {
-  agent: "worker",
   maxDepth: 1,
   templates: {
     worker: {

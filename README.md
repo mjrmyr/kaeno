@@ -2,7 +2,9 @@
 
 A small, self-hosted durable assistant core. Conversations survive restarts; tools, background tasks, channels and execution environments come from explicitly installed extensions.
 
-**Not included:** Telegram, Kubernetes, WORK orchestration, artifacts, skill repositories, remote execution servers, or a plugin marketplace.
+The CLI includes Docker-backed WORK orchestration. [Worker configuration](docs/work.md) defines the agents Kaeno can choose from; every configured worker is available directly.
+
+**Not included:** Telegram, Kubernetes, skill repository integration, or a plugin marketplace.
 
 ## Run
 

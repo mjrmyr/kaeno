@@ -4,7 +4,7 @@ import type { Kaeno, KaenoExtension } from "./kaeno.ts";
 import type { SandboxLimits, SandboxProvider } from "../sandbox/index.ts";
 import { LocalWorkAgents } from "../agents/index.ts";
 import type { WorkConfig } from "../work/index.ts";
-import { eligibleWorkTemplates, Work, workTurns } from "../work/index.ts";
+import { Work, workTurns } from "../work/index.ts";
 
 export interface WorkExtensionOptions {
   config: WorkConfig;
@@ -37,7 +37,7 @@ export function createWorkExtensions(
   };
   const templates = {
     listWorkTemplates: () =>
-      eligibleWorkTemplates(options.config).map(({ name, description }) => ({
+      Object.values(options.config.templates).map(({ name, description }) => ({
         name,
         description,
       })),
@@ -65,7 +65,7 @@ export function createWorkExtensions(
     "Use a complete, self-contained brief. Work runs asynchronously; continue responding instead of waiting for it.",
     "Use list_work and inspect_work for progress, message_work for clarification, and cancel_work to stop work.",
     "Available WORK templates:",
-    ...eligibleWorkTemplates(options.config).map(
+    ...Object.values(options.config.templates).map(
       (template) => `- ${template.name}: ${template.description}`,
     ),
   ].join("\n");

@@ -29,11 +29,16 @@ Or run `/reload` in an existing Pi session and select **kaeno-local** with
 `/model`. Prefer a fresh session: previous Pi messages aren't uploaded to Kaeno.
 Each Pi session maps to its own durable Kaeno thread. Resume the same Pi session
 to continue that thread. Forked/new sessions get a separate thread, not a copy
-of the old Kaeno conversation.
+of the old Kaeno conversation. `/tree` only changes Pi's active branch: it does
+not clear or rewind Kaeno's remote conversation. Delivery progress is scoped to
+the whole Pi session, so navigating backward does not replay old replies. Use
+`/new` for a fresh Kaeno conversation.
 
 - Chat normally to send messages and wait for Kaeno's immediate reply.
 - Later replies arrive automatically (polled every second while this model is
-  selected and Pi is idle). No extra prompt or model call is needed.
+  selected and Pi is idle). They are Kaeno's answers after processing worker
+  reports, not raw worker output. The TUI labels them **Kaeno (local)**. No extra
+  prompt or Pi-side model call is needed.
 - `/kaeno-local-replies` checks for **unread** replies immediately. It no longer
   replays history and does not call a model.
 - `/kaeno-local-stop` requests cancellation of the current turn and background
@@ -76,7 +81,7 @@ node scripts/pi-delivery-smoke.mjs
 This auto-discovers the extension through an installed-style directory symlink
 in a temporary Pi config directory, then starts real Pi RPC processes against a
 mock HTTP server. It checks initial-reply deduplication, automatic later reports,
-manual fetching, and resume catch-up. It uses temporary sessions and makes no
-model calls. The ordinary
+manual fetching, tree navigation without replay, delivery after navigation, and
+resume catch-up. It uses temporary sessions and makes no model calls. The ordinary
 `npm run verify` suite also tests cursor, retry, cancellation, and concurrency
 behavior without requiring Pi to be installed.

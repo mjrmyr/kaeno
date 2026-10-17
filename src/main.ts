@@ -23,7 +23,6 @@ const port = z.coerce
 const workConfig = process.env.KAENO_WORK_CONFIG
   ? await loadWorkConfig(process.env.KAENO_WORK_CONFIG)
   : {
-      agent: "worker",
       maxDepth: 1,
       templates: {
         worker: {
