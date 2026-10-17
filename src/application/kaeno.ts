@@ -29,6 +29,9 @@ export interface Kaeno {
 
 export interface KaenoExtension {
   durable: Extension;
+  /** Tool names exposed to the default assistant; omitted means all tools in this extension. */
+  assistantTools?: readonly string[];
+  assistantInstructions?: string;
   readOnlyTools?: readonly string[];
   environment?: HarnessOptions["env"];
   delivery?: {
@@ -113,6 +116,14 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
   const turns = new TurnCoordinator(reference.getHarness, turn, control);
   const durable = extensions.map((extension) => extension.durable);
   const tools = durable.flatMap((extension) => extension.tools ?? []);
+  const assistantTools = extensions.flatMap((extension) => {
+    const extensionTools = extension.durable.tools ?? [];
+    return extension.assistantTools === undefined
+      ? extensionTools
+      : extensionTools.filter((tool) =>
+          extension.assistantTools?.includes(tool.name),
+        );
+  });
   const policy = assistantToolPolicy(
     reference.getHarness,
     tools,
@@ -123,9 +134,17 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
     async configureChatConversation(tx, id) {
       await configure(tx, id, {
         ...options.assistant,
+        instructions: [
+          options.assistant.instructions,
+          ...extensions.flatMap((extension) =>
+            extension.assistantInstructions
+              ? [extension.assistantInstructions]
+              : [],
+          ),
+        ].join("\n\n"),
         thinkingLevel: options.assistant.thinkingLevel ?? null,
         extensions: [...durable, policy],
-        tools,
+        tools: assistantTools,
         cwd: null,
       });
     },

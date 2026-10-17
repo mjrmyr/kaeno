@@ -1,4 +1,6 @@
 export { openKaeno } from "./kaeno.ts";
+export { createWorkExtensions } from "./work.ts";
+export type { WorkExtensionOptions } from "./work.ts";
 export type { Kaeno, KaenoExtension, OpenKaenoOptions } from "./kaeno.ts";
 export type {
   Extension,
