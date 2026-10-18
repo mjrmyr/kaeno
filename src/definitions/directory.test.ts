@@ -19,10 +19,10 @@ it("loads one manifest per package directory and treats missing roots as empty",
   const pkg = join(root, "reviewer");
   await mkdir(pkg);
   await writeFile(
-    join(pkg, "agent.md"),
+    join(pkg, "AGENT.md"),
     "---\nname: reviewer\ndescription: Reviews code\n---\nReview carefully.\n",
   );
-  const found = await directorySource("home", root).snapshot("agent.md");
+  const found = await directorySource("home", root).snapshot("AGENT.md");
   expect(found.diagnostics).toEqual([]);
   expect(found.packages).toEqual([
     {
@@ -34,7 +34,7 @@ it("loads one manifest per package directory and treats missing roots as empty",
   expect(
     (
       await directorySource("missing", join(root, "absent")).snapshot(
-        "agent.md",
+        "AGENT.md",
       )
     ).packages,
   ).toEqual([]);
@@ -43,17 +43,17 @@ it("rejects package directory symlinks and manifest symlinks instead of followin
   const root = await temp();
   const outside = await temp();
   await writeFile(
-    join(outside, "agent.md"),
+    join(outside, "AGENT.md"),
     "---\nname: bad\ndescription: bad\n---\n",
   );
   await symlink(outside, join(root, "linked"));
-  const source = await directorySource("x", root).snapshot("agent.md");
+  const source = await directorySource("x", root).snapshot("AGENT.md");
   expect(source.packages).toEqual([]);
   expect(source.diagnostics).toHaveLength(1);
   await mkdir(join(root, "pkg"));
-  await symlink(join(outside, "agent.md"), join(root, "pkg/agent.md"));
+  await symlink(join(outside, "AGENT.md"), join(root, "pkg/AGENT.md"));
   const withManifestLink = await directorySource("x", root).snapshot(
-    "agent.md",
+    "AGENT.md",
   );
   expect(withManifestLink.packages).toEqual([]);
   expect(
@@ -62,17 +62,17 @@ it("rejects package directory symlinks and manifest symlinks instead of followin
 });
 it("validates regular manifests and UTF-8 YAML frontmatter", async () => {
   const root = await temp();
-  const path = join(root, "agent.md");
+  const path = join(root, "AGENT.md");
   await writeFile(path, "---\nname: valid\ndescription: valid\n---\nBody");
   expect(await readManifestFile(path)).toContain("Body");
   await rm(path);
   await mkdir(path);
   await expect(readManifestFile(path)).rejects.toThrow(/regular file/);
-  expect(() => parseManifest("Body only", "agent.md")).toThrow(/frontmatter/);
+  expect(() => parseManifest("Body only", "AGENT.md")).toThrow(/frontmatter/);
   expect(() =>
     parseManifest(
       "---\nname: one\nname: two\ndescription: d\n---\n",
-      "agent.md",
+      "AGENT.md",
     ),
   ).toThrow(/duplicate|unique|frontmatter/i);
 });

@@ -70,7 +70,7 @@ async function packagesFrom(
 
 /**
  * Chosen filesystem composition, not core policy. Local roots are relative to the captured startup
- * directory; home roots are external sources. Kaeno's local agent.md overrides the home agent.md,
+ * directory; home roots are external sources. Kaeno's local AGENT.md overrides the home AGENT.md,
  * while catalogs use qualified aliases and never silently override names.
  */
 export async function loadFileEnvironment(
@@ -105,7 +105,7 @@ export async function loadFileEnvironment(
       ? [directorySource("local", join(root, ".agents/skills"))]
       : []),
   ];
-  const agentPackages = await packagesFrom(agentSources, "agent.md");
+  const agentPackages = await packagesFrom(agentSources, "AGENT.md");
   const generalPackages = await packagesFrom(skillSources, "SKILL.md");
   const ownPackages = await packagesFrom(
     [
@@ -129,8 +129,8 @@ export async function loadFileEnvironment(
     ...own.diagnostics,
   ];
 
-  const localPath = join(root, ".kaeno/agent.md");
-  const homePath = join(home, ".kaeno/agent.md");
+  const localPath = join(root, ".kaeno/AGENT.md");
+  const homePath = join(home, ".kaeno/AGENT.md");
   const local = separate ? await readManifestFile(localPath) : undefined;
   const path = local === undefined ? homePath : localPath;
   const text = local ?? (await readManifestFile(homePath));

@@ -1,4 +1,4 @@
-// Markdown agent definitions: `<root>/<directory>/agent.md` with YAML frontmatter (name and description
+// Markdown agent definitions: `<root>/<directory>/AGENT.md` with YAML frontmatter (name and description
 // required; model, skills and tools optional) and the system prompt as body. Pure resolution: this module
 // has no durable definitions and performs no I/O beyond what its caller already loaded.
 import type { JsonValue } from "@earendil-works/chord";
@@ -20,7 +20,7 @@ import {
   type Diagnostic,
 } from "../definitions/index.ts";
 
-export const AGENT_MANIFEST = "agent.md";
+export const AGENT_MANIFEST = "AGENT.md";
 
 export interface AgentDefinition {
   /** `<source alias>:<name>`; the ID used with start_work. */
@@ -68,7 +68,7 @@ const optionalFields = z.object({
   tools: z.array(z.string().trim().min(1)).optional(),
 });
 
-/** Parse one `agent.md`. Throws an actionable error for invalid known fields. */
+/** Parse one `AGENT.md`. Throws an actionable error for invalid known fields. */
 export function parseAgent(
   text: string,
   source: string,

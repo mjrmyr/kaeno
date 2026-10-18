@@ -14,7 +14,7 @@ it("requires only name and description and preserves body and future metadata", 
       "Investigate carefully.",
     ),
     "home",
-    "/agents/scout/agent.md",
+    "/agents/scout/AGENT.md",
   );
   expect(agent.id).toBe("home:scout");
   expect(agent.prompt).toBe("Investigate carefully.");

@@ -18,7 +18,7 @@ it("boots the actual core entrypoint and shuts down cleanly", async () => {
   await new Promise<void>((done) => reservation.close(() => done()));
   await mkdir(join(root, ".kaeno"));
   await writeFile(
-    join(root, ".kaeno/agent.md"),
+    join(root, ".kaeno/AGENT.md"),
     "---\nname: kaeno\ndescription: Test assistant\nmodel: openai/gpt-4.1\n---\nAnswer clearly.\n",
   );
   const token = "test-token-with-at-least-32-characters";

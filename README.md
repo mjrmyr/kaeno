@@ -4,9 +4,9 @@ Kaeno is a small, self-hosted durable conversation and work host. Threads, turns
 
 The CLI composes the built-in file environment:
 
-- Kaeno's own assistant: `~/.kaeno/agent.md`, overridden by `.kaeno/agent.md` in the directory Kaeno starts from.
+- Kaeno's own assistant: `~/.kaeno/AGENT.md`, overridden by `.kaeno/AGENT.md` in the directory Kaeno starts from.
 - Kaeno-only skills: `~/.kaeno/skills/<directory>/SKILL.md` and `.kaeno/skills/<directory>/SKILL.md`.
-- Worker agents: `~/.agents/agents/<directory>/agent.md` and `.agents/agents/<directory>/agent.md`.
+- Worker agents: `~/.agents/agents/<directory>/AGENT.md` and `.agents/agents/<directory>/AGENT.md`.
 - Skills assignable to workers: `~/.agents/skills/<directory>/SKILL.md` and `.agents/skills/<directory>/SKILL.md`.
 
 The startup directory is captured once. Home and project definitions have distinct source IDs; same-named entries remain distinct and are selected by their qualified IDs. The application configuration under `.kaeno` is separate from the reusable agent/skill catalogs under `.agents`. Kaeno automatically uses its dedicated `.kaeno/skills` entries when its `skills` field is omitted; an explicit list, including `[]`, overrides that default. Workers only receive the skills their definitions select.
@@ -18,7 +18,7 @@ Node.js 24 or newer:
 ```sh
 npm ci
 mkdir -p ~/.kaeno
-cat > ~/.kaeno/agent.md <<'MD'
+cat > ~/.kaeno/AGENT.md <<'MD'
 ---
 name: kaeno
 description: My personal assistant.
@@ -35,7 +35,7 @@ To enable WORK, install at least one worker definition. For example:
 
 ```sh
 mkdir -p ~/.agents/agents/coder
-cat > ~/.agents/agents/coder/agent.md <<'MD'
+cat > ~/.agents/agents/coder/AGENT.md <<'MD'
 ---
 name: coder
 description: Implement and verify code changes.
@@ -63,7 +63,7 @@ Native extensions are trusted process code, fixed before the harness opens. Ther
 
 Definitions used by admitted work are frozen. On restart, missing saved native definitions or incompatible work plans fail closed rather than silently binding a new tool surface. Take a consistent SQLite backup before opening a changed release; opening the harness writes recovery reconciliation state. External side effects are not transactional with SQLite and may be uncertain after a crash.
 
-This cut intentionally does not migrate the prior WORK/Telegram database or JSON configuration. Move the assistant to `.kaeno/agent.md` or `~/.kaeno/agent.md`, workers to per-directory `agent.md` files, and skills to per-directory `SKILL.md` files. The old `KAENO_CONFIG` and `KAENO_WORK_CONFIG` JSON paths are rejected. Use a fresh database for this release unless the previous workload has been deliberately drained/migrated and backed up.
+This cut intentionally does not migrate the prior WORK/Telegram database or JSON configuration. Move the assistant to `.kaeno/AGENT.md` or `~/.kaeno/AGENT.md`, workers to per-directory `AGENT.md` files, and skills to per-directory `SKILL.md` files. The old `KAENO_CONFIG` and `KAENO_WORK_CONFIG` JSON paths are rejected. Use a fresh database for this release unless the previous workload has been deliberately drained/migrated and backed up.
 
 See the [core entry point](src/application/index.ts), [WORK implementation](src/work/work.ts) and [extension composition tests](test/integration/extensions.test.ts).
 

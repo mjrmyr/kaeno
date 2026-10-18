@@ -26,11 +26,11 @@ it("loads Kaeno config/skills from .kaeno and worker definitions/skills from hom
   const project = await root();
   const home = await root();
   await put(
-    join(home, ".kaeno/agent.md"),
+    join(home, ".kaeno/AGENT.md"),
     agent("home-assistant", "Home assistant", "openai/home"),
   );
   await put(
-    join(project, ".kaeno/agent.md"),
+    join(project, ".kaeno/AGENT.md"),
     agent("project-assistant", "Project assistant", "openai/project"),
   );
   await put(
@@ -42,11 +42,11 @@ it("loads Kaeno config/skills from .kaeno and worker definitions/skills from hom
     skill("local-kaeno"),
   );
   await put(
-    join(home, ".agents/agents/reviewer/agent.md"),
+    join(home, ".agents/agents/reviewer/AGENT.md"),
     agent("reviewer", "Home reviewer"),
   );
   await put(
-    join(project, ".agents/agents/coder/agent.md"),
+    join(project, ".agents/agents/coder/AGENT.md"),
     agent("coder", "Project coder"),
   );
   await put(join(home, ".agents/skills/shared/SKILL.md"), skill("shared"));
@@ -76,7 +76,7 @@ it("uses ~/.kaeno when there is no project override and still works without work
   const project = await root();
   const home = await root();
   await put(
-    join(home, ".kaeno/agent.md"),
+    join(home, ".kaeno/AGENT.md"),
     agent("kaeno", "Assistant", "openai/home"),
   );
   const config = await loadFileEnvironment({ root: project, home });
@@ -91,15 +91,15 @@ it("keeps same-name agents distinct across home and project sources", async () =
   const project = await root();
   const home = await root();
   await put(
-    join(home, ".kaeno/agent.md"),
+    join(home, ".kaeno/AGENT.md"),
     agent("kaeno", "Assistant", "openai/home"),
   );
   await put(
-    join(home, ".agents/agents/reviewer/agent.md"),
+    join(home, ".agents/agents/reviewer/AGENT.md"),
     agent("reviewer", "Home"),
   );
   await put(
-    join(project, ".agents/agents/reviewer/agent.md"),
+    join(project, ".agents/agents/reviewer/AGENT.md"),
     agent("reviewer", "Project"),
   );
   const config = await loadFileEnvironment({ root: project, home });
@@ -113,7 +113,7 @@ it("reports an unavailable external catalog without inventing entries or prevent
   const project = await root();
   const home = await root();
   await put(
-    join(home, ".kaeno/agent.md"),
+    join(home, ".kaeno/AGENT.md"),
     agent("kaeno", "Assistant", "openai/home"),
   );
   const config = await loadFileEnvironment({
@@ -138,11 +138,11 @@ it("reports an unavailable external catalog without inventing entries or prevent
 it("does not load the same home/project directory twice when started in HOME", async () => {
   const home = await root();
   await put(
-    join(home, ".kaeno/agent.md"),
+    join(home, ".kaeno/AGENT.md"),
     agent("kaeno", "Assistant", "openai/home"),
   );
   await put(
-    join(home, ".agents/agents/coder/agent.md"),
+    join(home, ".agents/agents/coder/AGENT.md"),
     agent("coder", "Coder"),
   );
   const config = await loadFileEnvironment({ root: home, home });
