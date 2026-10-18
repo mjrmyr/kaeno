@@ -3,7 +3,7 @@ import {
   parseAgent,
   parseAgents,
   resolveAgentSetup,
-  agentParticipants,
+  resolveAgents,
   type SkillBinder,
 } from "./index.ts";
 const manifest = (frontmatter: string, body = "Prompt") =>
@@ -32,11 +32,11 @@ it("keeps legacy or future delegation metadata inert; core uses all-to-all deleg
   );
   expect(agent.metadata).toEqual({ delegates: [] });
   expect(
-    agentParticipants({
+    resolveAgents({
       agents: [agent],
       defaults: { model: { provider: "openai", modelId: "x" }, tools: [] },
-    }).plan("home:scout").participants["home:scout"],
-  ).toBeDefined();
+    }).map((profile) => profile.id),
+  ).toEqual(["home:scout"]);
 });
 it("reports duplicate IDs but preserves same names from distinct source aliases", () => {
   const packages = ["home", "local"].map((source) => ({
@@ -50,30 +50,21 @@ it("reports duplicate IDs but preserves same names from distinct source aliases"
   ]);
   expect(parseAgents([packages[0], packages[0]]).diagnostics).toHaveLength(1);
 });
-it("leaves agents discoverable without a model and activates them when a default exists", () => {
+it("fails to resolve an agent without a model and resolves it when a default exists", () => {
   const agent = parseAgent(
     manifest("name: scout\ndescription: Investigates"),
     "local",
     "x",
   );
-  const unavailable = agentParticipants({
-    agents: [agent],
-    defaults: { tools: [] },
-  });
-  expect(unavailable.list()).toMatchObject([
-    { id: "local:scout", available: false },
-  ]);
-  expect(() => unavailable.plan("local:scout")).toThrow(/no model/);
-  const participant = agentParticipants({
+  expect(() =>
+    resolveAgents({ agents: [agent], defaults: { tools: [] } }),
+  ).toThrow("Agent local:scout is unavailable: no model");
+  const agents = resolveAgents({
     agents: [agent],
     defaults: { model: { provider: "openai", modelId: "x" }, tools: [] },
   });
-  expect(
-    participant.plan("local:scout").participants["local:scout"].setup.tools,
-  ).toEqual([]);
-  expect(Object.keys(participant.plan("local:scout").participants)).toEqual([
-    "local:scout",
-  ]);
+  expect(agents.map((profile) => profile.id)).toEqual(["local:scout"]);
+  expect(agents[0].setup.tools).toEqual([]);
 });
 it.each(["", "\nskills: []"])(
   "uses the host's default tools and binds no skills without assignments (%s)",
@@ -106,7 +97,7 @@ it("freezes trusted extension bindings without changing explicit tool selection"
     "x",
   );
   const binding = { owner: "external", version: 1, value: { scope: [123] } };
-  const participants = agentParticipants({
+  const [profile] = resolveAgents({
     agents: [agent],
     defaults: {
       model: { provider: "openai", modelId: "x" },
@@ -114,11 +105,10 @@ it("freezes trusted extension bindings without changing explicit tool selection"
     },
     bindings: [binding],
   });
-  const plan = participants.plan(agent.id);
-  expect(plan.participants[agent.id].setup.tools).toEqual([]);
-  expect(plan.participants[agent.id].setup.bindings).toEqual([binding]);
+  expect(profile.setup.tools).toEqual([]);
+  expect(profile.setup.bindings).toEqual([binding]);
   binding.value.scope.push(456);
-  expect(plan.participants[agent.id].setup.bindings?.[0].value).toEqual({
+  expect(profile.setup.bindings?.[0].value).toEqual({
     scope: [123],
   });
   expect(

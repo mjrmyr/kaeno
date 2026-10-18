@@ -11,10 +11,10 @@ import {
   type WorkOptions,
 } from "../../core/application/index.ts";
 import {
-  agentParticipants,
   parseModelRef,
   parseAgents,
   resolveAgentSetup,
+  resolveAgents,
   type AgentDefinition,
 } from "../../extensions/agents/index.ts";
 import {
@@ -175,24 +175,11 @@ export async function loadEnvironment(
         assistantBinder,
         bindings,
       );
-      const assistantTools = [
-        ...CODING,
-        ...ORCHESTRATION,
-        ...SKILL_TOOLS,
-        ...(options.tools ?? []),
-      ];
-      const missing = (assistant.tools ?? []).filter(
-        (tool) => !assistantTools.includes(tool),
-      );
-      if (missing.length) {
-        throw new Error(
-          `Configuration: assistant tools are not installed/approved: ${missing.join(", ")}`,
-        );
-      }
       const workerTools = [
         ...new Set([...WORKER_TOOLS, ...SKILL_TOOLS, ...(options.tools ?? [])]),
       ];
-      const participants = agentParticipants({
+      // Selected workers must resolve; tool and binding fit is checked by core when Kaeno opens.
+      const agents = resolveAgents({
         agents: workerDefinitions,
         defaults: {
           ...defaults,
@@ -200,15 +187,7 @@ export async function loadEnvironment(
         },
         skills: (agent) => binderFor(agent, "worker"),
         bindings,
-        tools: workerTools,
       });
-      for (const worker of participants.list()) {
-        if (!worker.available) {
-          throw new Error(
-            `Configuration: selected worker ${worker.id} is unavailable: ${worker.reason}`,
-          );
-        }
-      }
       return {
         assistant,
         extensions: [
@@ -218,7 +197,7 @@ export async function loadEnvironment(
           ...(options.extensions ?? []),
         ],
         work: {
-          participants,
+          agents,
           environment: options.environment,
           tools: workerTools,
           maxDepth: options.maxDepth ?? 2,

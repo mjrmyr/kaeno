@@ -1,15 +1,14 @@
 export { workTurns } from "./turns.ts";
 export {
   assertPlanFits,
-  describeParticipants,
+  describeAgents,
+  planFor,
   readPlan,
-  resolveParticipantId,
+  resolveAgentId,
   storedPlan,
 } from "./plan.ts";
 export type {
-  ParticipantPlan,
-  ParticipantSummary,
-  Participants,
+  AgentProfile,
   WorkEnvironment,
   WorkEnvironmentRuntime,
   WorkInstance,

@@ -5,6 +5,7 @@ import { lstat, readFile, readdir } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
+import { qualifiedIdMatches } from "../../core/application/index.ts";
 import {
   discoveryMetadata,
   parseManifest,
@@ -208,12 +209,7 @@ export class SkillCatalog {
   }
   /** Resolve `source:name`, or a bare name when exactly one source has it. */
   resolve(reference: string): string {
-    if (this.entries.has(reference)) {
-      return reference;
-    }
-    const matches = [...this.entries.keys()].filter((id) =>
-      id.endsWith(`:${reference}`),
-    );
+    const matches = qualifiedIdMatches(reference, this.entries.keys());
     if (matches.length === 1) {
       return matches[0];
     }
@@ -364,14 +360,14 @@ export function readSkillDocument(
   binding: readonly BoundSkill[],
   request: { skill: string; file?: string },
 ): string {
+  const matches = qualifiedIdMatches(
+    request.skill,
+    binding.map((candidate) => candidate.id),
+  );
   const skill =
-    binding.find((candidate) => candidate.id === request.skill) ??
-    (() => {
-      const matches = binding.filter((candidate) =>
-        candidate.id.endsWith(`:${request.skill}`),
-      );
-      return matches.length === 1 ? matches[0] : undefined;
-    })();
+    matches.length === 1
+      ? binding.find((candidate) => candidate.id === matches[0])
+      : undefined;
   if (!skill) {
     fail(`skill not assigned: ${request.skill}`);
   }

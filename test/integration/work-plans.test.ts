@@ -17,42 +17,26 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
+import { z } from "zod";
 import {
   openKaeno,
-  type Participants,
-  type WorkPlan,
+  type AgentProfile,
 } from "../../src/core/application/index.ts";
 
-it("runs all-to-all delegation through core-only participant plans, keeps frozen children and exact tools", async () => {
+it("runs all-to-all delegation through core-only agents, keeps frozen children, exact tools and the v3 stored plan", async () => {
   const faux = fauxProvider();
   const models = createModels();
   models.setProvider(faux.provider);
   const model = { provider: "faux", modelId: "faux-1" };
-  let prepares = 0;
   const leafSetup = { model, instructions: "LEAF", tools: [] };
-  const livePlan: WorkPlan = {
-    root: "parent",
-    participants: {
-      parent: {
-        id: "parent",
-        description: "Coordinates",
-        setup: { model, instructions: "PARENT", tools: ["start_work"] },
-      },
-      leaf: { id: "leaf", description: "Answers", setup: leafSetup },
+  const agents: AgentProfile[] = [
+    {
+      id: "parent",
+      description: "Coordinates",
+      setup: { model, instructions: "PARENT", tools: ["start_work"] },
     },
-  };
-  const participants: Participants = {
-    list: () =>
-      Object.values(livePlan.participants).map(({ id, description }) => ({
-        id,
-        description,
-        available: true,
-      })),
-    plan: () => {
-      prepares++;
-      return livePlan;
-    },
-  };
+    { id: "leaf", description: "Answers", setup: leafSetup },
+  ];
   const prompts: string[] = [];
   faux.setResponses(
     Array.from({ length: 30 }, () => async (request) => {
@@ -112,7 +96,7 @@ it("runs all-to-all delegation through core-only participant plans, keeps frozen
     models,
     assistant: { model, instructions: "CHAT", tools: ["start_work"] },
     work: {
-      participants,
+      agents,
       tools: ["start_work"],
       maxDepth: 2,
       maxConcurrent: 3,
@@ -135,7 +119,6 @@ it("runs all-to-all delegation through core-only participant plans, keeps frozen
       },
       { timeout: 5000 },
     );
-    expect(prepares).toBe(1);
     expect(prompts).toHaveLength(1);
     expect(prompts[0]).toContain("LEAF");
     expect(prompts[0]).not.toContain("CHANGED");
@@ -156,119 +139,204 @@ it("runs all-to-all delegation through core-only participant plans, keeps frozen
           setup.tools.length === 0,
       ),
     ).toBe(true);
+    // Durable bytes are unchanged: kaeno.work v3 input keeps `agent` and `plan.participants`.
+    const record = (
+      await core.harness.commit((tx) => tx.scanTasks({}, 100), context)
+    ).items.find(
+      (task) =>
+        task.kind === "kaeno.work" &&
+        JSON.stringify(task.input).includes('"agent":"parent"'),
+    );
+    expect(record?.version).toBe(3);
+    expect(record?.input).toMatchObject({
+      agent: "parent",
+      plan: {
+        root: "parent",
+        participants: {
+          parent: {
+            id: "parent",
+            description: "Coordinates",
+            setup: { model, instructions: "PARENT", tools: ["start_work"] },
+          },
+          leaf: { id: "leaf", description: "Answers" },
+        },
+      },
+    });
+    expect(
+      Object.keys(
+        z
+          .object({
+            plan: z.object({ participants: z.record(z.string(), z.unknown()) }),
+          })
+          .parse(record?.input).plan.participants,
+      ),
+    ).toEqual(["parent", "leaf"]);
   } finally {
     await core.close();
   }
 });
 
-it.each([false, true])(
-  "keeps orchestration usable and explains failed delegation with unavailable definitions (%s)",
-  async (configured) => {
-    const faux = fauxProvider();
-    const models = createModels();
-    models.setProvider(faux.provider);
-    const model = { provider: "faux", modelId: "faux-1" };
-    const failure = configured
-      ? "Agent broken is unavailable: tools are not installed/approved: missing_tool"
-      : "No worker agents are configured";
-    const plan = vi.fn<Participants["plan"]>(() => {
-      throw new Error(failure);
-    });
-    const tools = [
-      "start_work",
-      "list_work",
-      "inspect_work",
-      "message_work",
-      "cancel_work",
-    ];
-    let observedFailure = false;
-    faux.setResponses([
-      async (request) => {
-        const prompt = getCurrentSystemPrompt(request.messages);
-        expect(prompt).toContain("You support delegation with start_work");
-        expect(prompt).toContain(
-          configured
-            ? "Unavailable agent broken: tools are not installed/approved: missing_tool"
-            : "No worker agents are configured",
-        );
-        return fauxAssistantMessage(
-          [
-            fauxToolCall("start_work", {
-              agent: "broken",
-              title: "Attempt",
-              brief: "Delegate",
-            }),
-            fauxToolCall("list_work", {}),
-          ],
-          { stopReason: "toolUse" },
-        );
-      },
-      async (request) => {
-        const results = request.messages.filter(
-          (message) => message.role === "toolResult",
-        );
-        expect(results).toHaveLength(2);
-        expect(JSON.stringify(results)).toContain(failure);
-        expect(JSON.stringify(results)).toContain('"text":"[]"');
-        observedFailure = true;
-        return fauxAssistantMessage(
-          "I support delegation, but no worker can run yet.",
-        );
-      },
-    ]);
-    const core = await openKaeno({
-      storage: new MemoryStorage(),
-      models,
-      assistant: { model, instructions: "CHAT", tools },
-      work: {
-        participants: {
-          list: () =>
-            configured
-              ? [
-                  {
-                    id: "broken",
-                    description: "Broken worker",
-                    available: false,
-                    reason: "tools are not installed/approved: missing_tool",
-                  },
-                ]
-              : [],
-          plan,
+it("keeps orchestration usable and explains failed delegation without configured agents", async () => {
+  const faux = fauxProvider();
+  const models = createModels();
+  models.setProvider(faux.provider);
+  const model = { provider: "faux", modelId: "faux-1" };
+  const failure = "No worker agents are configured";
+  const tools = [
+    "start_work",
+    "list_work",
+    "inspect_work",
+    "message_work",
+    "cancel_work",
+  ];
+  let observedFailure = false;
+  faux.setResponses([
+    async (request) => {
+      const prompt = getCurrentSystemPrompt(request.messages);
+      expect(prompt).toContain("You support delegation with start_work");
+      expect(prompt).toContain("No worker agents are configured");
+      return fauxAssistantMessage(
+        [
+          fauxToolCall("start_work", {
+            agent: "broken",
+            title: "Attempt",
+            brief: "Delegate",
+          }),
+          fauxToolCall("list_work", {}),
+        ],
+        { stopReason: "toolUse" },
+      );
+    },
+    async (request) => {
+      const results = request.messages.filter(
+        (message) => message.role === "toolResult",
+      );
+      expect(results).toHaveLength(2);
+      expect(JSON.stringify(results)).toContain(failure);
+      expect(JSON.stringify(results)).toContain('"text":"[]"');
+      observedFailure = true;
+      return fauxAssistantMessage(
+        "I support delegation, but no worker can run yet.",
+      );
+    },
+  ]);
+  const core = await openKaeno({
+    storage: new MemoryStorage(),
+    models,
+    assistant: { model, instructions: "CHAT", tools },
+    work: { agents: [], tools: [] },
+  });
+  try {
+    const id = await core.threads.getOrCreateConversation(
+      "no-available-workers",
+    );
+    expect((await core.harness.snapshot(AgentDoc, id, context))?.tools).toEqual(
+      tools,
+    );
+    const task = await core.harness.commit(
+      (tx) => core.turns.admitUserTurn(tx, id, "Delegate this", "delegate"),
+      context,
+    );
+    await core.harness.waitForTask(task, context);
+    expect(observedFailure).toBe(true);
+    expect(
+      (await core.turns.readReplies(id, 0)).replies.map((reply) => reply.text),
+    ).toContain("I support delegation, but no worker can run yet.");
+    const tasks = await core.harness.commit(
+      (tx) => tx.scanTasks({}, 100),
+      context,
+    );
+    expect(tasks.items.filter((task) => task.kind === "kaeno.work")).toEqual(
+      [],
+    );
+  } finally {
+    await core.close();
+  }
+});
+
+it.each([
+  {
+    agents: [
+      {
+        id: "broken",
+        description: "Broken worker",
+        setup: {
+          model: { provider: "faux", modelId: "faux-1" },
+          instructions: "BROKEN",
+          tools: ["missing_tool"],
         },
-        tools: [],
       },
-    });
-    try {
-      const id = await core.threads.getOrCreateConversation(
-        "no-available-workers",
-      );
-      expect(
-        (await core.harness.snapshot(AgentDoc, id, context))?.tools,
-      ).toEqual(tools);
-      const task = await core.harness.commit(
-        (tx) => core.turns.admitUserTurn(tx, id, "Delegate this", "delegate"),
-        context,
-      );
-      await core.harness.waitForTask(task, context);
-      expect(observedFailure).toBe(true);
-      expect(plan).toHaveBeenCalledTimes(configured ? 1 : 0);
-      expect(
-        (await core.turns.readReplies(id, 0)).replies.map(
-          (reply) => reply.text,
-        ),
-      ).toContain("I support delegation, but no worker can run yet.");
-      const tasks = await core.harness.commit(
-        (tx) => tx.scanTasks({}, 100),
-        context,
-      );
-      expect(tasks.items.filter((task) => task.kind === "kaeno.work")).toEqual(
-        [],
-      );
-    } finally {
-      await core.close();
-    }
+    ],
+    error: 'Agent broken: tool "missing_tool" is not available here',
+  },
+  {
+    agents: [
+      {
+        id: "unbound",
+        description: "Missing binding owner",
+        setup: {
+          model: { provider: "faux", modelId: "faux-1" },
+          instructions: "UNBOUND",
+          tools: [],
+          bindings: [{ owner: "not-installed", version: 1, value: {} }],
+        },
+      },
+    ],
+    error: "Agent unbound",
+  },
+  {
+    agents: [
+      {
+        id: "twice",
+        description: "First",
+        setup: {
+          model: { provider: "faux", modelId: "faux-1" },
+          instructions: "A",
+        },
+      },
+      {
+        id: "twice",
+        description: "Second",
+        setup: {
+          model: { provider: "faux", modelId: "faux-1" },
+          instructions: "B",
+        },
+      },
+    ],
+    error: 'Duplicate agent "twice"',
+  },
+])(
+  "rejects a misconfigured agent when Kaeno opens ($error)",
+  async ({ agents, error }) => {
+    await expect(
+      openKaeno({
+        storage: new MemoryStorage(),
+        models: createModels(),
+        assistant: {
+          model: { provider: "faux", modelId: "faux-1" },
+          instructions: "CHAT",
+          tools: ["start_work"],
+        },
+        work: { agents, tools: [] },
+      }),
+    ).rejects.toThrow(error);
   },
 );
+
+it("keeps message_parent out of the assistant's selectable tools", async () => {
+  await expect(
+    openKaeno({
+      storage: new MemoryStorage(),
+      models: createModels(),
+      assistant: {
+        model: { provider: "faux", modelId: "faux-1" },
+        instructions: "CHAT",
+        tools: ["message_parent"],
+      },
+      work: { agents: [], tools: [] },
+    }),
+  ).rejects.toThrow('Assistant: tool "message_parent" is not available here');
+});
 
 it("fails paused preflight when an approved tool disappears from a saved unfinished tree", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-plan-recovery-"));
@@ -286,19 +354,13 @@ it("fails paused preflight when an approved tool disappears from a saved unfinis
   const extension = {
     durable: defineExtension({ name: "test-reader", tools: [read] }),
   };
-  const participants: Participants = {
-    list: () => [{ id: "worker", description: "Worker", available: true }],
-    plan: () => ({
-      root: "worker",
-      participants: {
-        worker: {
-          id: "worker",
-          description: "Worker",
-          setup: { model, instructions: "WORKER", tools: [read.name] },
-        },
-      },
-    }),
-  };
+  const agents: AgentProfile[] = [
+    {
+      id: "worker",
+      description: "Worker",
+      setup: { model, instructions: "WORKER", tools: [read.name] },
+    },
+  ];
   let ensuring = false;
   const environment = {
     cwd: "/workspace",
@@ -338,7 +400,7 @@ it("fails paused preflight when an approved tool disappears from a saved unfinis
     models,
     assistant: { model, instructions: "CHAT", tools: ["start_work"] },
     extensions: [extension],
-    work: { participants, tools: [read.name], environment },
+    work: { agents, tools: [read.name], environment },
   });
   try {
     const id = await core.threads.getOrCreateConversation("pending");
@@ -355,16 +417,7 @@ it("fails paused preflight when an approved tool disappears from a saved unfinis
         models,
         assistant: { model, instructions: "CHAT", tools: ["start_work"] },
         extensions: [extension],
-        work: {
-          participants: {
-            list: () => [],
-            plan: () => {
-              throw new Error("Sources unavailable");
-            },
-          },
-          tools: [],
-          environment,
-        },
+        work: { agents: [], tools: [], environment },
       }),
     ).rejects.toThrow(/Saved WORK no longer fits/);
   } finally {

@@ -36,7 +36,10 @@ import {
   EnvironmentServer,
   RemoteExecutionEnv,
 } from "../../src/extensions/execution/index.ts";
-import { openKaeno, type WorkPlan } from "../../src/core/application/index.ts";
+import {
+  openKaeno,
+  type AgentProfile,
+} from "../../src/core/application/index.ts";
 import type { WorkInstance } from "../../src/core/work/index.ts";
 
 const resources = {
@@ -759,18 +762,13 @@ it("runs WORK through a pod execution environment and rejects child admission wh
     },
   });
   const model = { provider: "faux", modelId: "faux-1" };
-  const plan: WorkPlan = {
-    root: "coder",
-    participants: {
-      coder: {
-        id: "coder",
-        description: "Codes",
-        setup: {
-          model,
-          instructions: "CODER",
-          tools: [probe.name, "start_work"],
-        },
-      },
+  const coder: AgentProfile = {
+    id: "coder",
+    description: "Codes",
+    setup: {
+      model,
+      instructions: "CODER",
+      tools: [probe.name, "start_work"],
     },
   };
   const faux = fauxProvider();
@@ -827,10 +825,7 @@ it("runs WORK through a pod execution environment and rejects child admission wh
       { durable: defineExtension({ name: "probe", tools: [probe] }) },
     ],
     work: {
-      participants: {
-        list: () => [{ id: "coder", description: "Codes", available: true }],
-        plan: () => plan,
-      },
+      agents: [coder],
       tools: [probe.name, "start_work"],
       environment: extension.environment,
       maxConcurrent: 4,

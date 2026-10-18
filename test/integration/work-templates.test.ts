@@ -15,8 +15,8 @@ import { expect, it } from "vitest";
 import { openKaeno } from "../../src/core/application/index.ts";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import {
-  agentParticipants,
   parseAgent,
+  resolveAgents,
 } from "../../src/extensions/agents/index.ts";
 import { SandboxWorkEnvironment } from "../../src/extensions/docker/index.ts";
 import type { SandboxProvider } from "../../src/extensions/docker/index.ts";
@@ -24,7 +24,7 @@ import type { SandboxProvider } from "../../src/extensions/docker/index.ts";
 it("offers and launches every configured worker even when none delegate to each other", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-templates-"));
   const names = ["easy", "medium", "high"];
-  const participants = agentParticipants({
+  const agents = resolveAgents({
     agents: names.map((name) =>
       parseAgent(
         `---\nname: ${name}\ndescription: ${name} independent worker\nmodel: openai/faux-1\n---\nComplete work as ${name}.`,
@@ -87,7 +87,7 @@ it("offers and launches every configured worker even when none delegate to each 
     },
     extensions: [{ durable: CodingTools }],
     work: {
-      participants,
+      agents,
       tools: [],
       environment: new SandboxWorkEnvironment({
         sandbox,

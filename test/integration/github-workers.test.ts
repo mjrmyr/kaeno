@@ -230,10 +230,9 @@ it("configures GitHub for every agent while respecting explicit tool overrides",
       }),
     );
     const config = await loadEnvironment({ configFile, ...github });
-    const setup =
-      config.work?.participants.plan("global:coder").participants[
-        "global:coder"
-      ].setup;
+    const setup = config.work?.agents.find(
+      (agent) => agent.id === "global:coder",
+    )?.setup;
     expect(
       setup?.bindings?.filter(
         (binding) => binding.owner !== "kaeno-definition-origins",
@@ -282,13 +281,19 @@ it("configures GitHub for every agent while respecting explicit tool overrides",
     );
     const overridden = await loadEnvironment({ configFile, ...github });
     expect(
-      overridden.work?.participants.plan("global:coder").participants[
-        "global:coder"
-      ].setup.tools,
+      overridden.work?.agents.find((agent) => agent.id === "global:coder")
+        ?.setup.tools,
     ).toEqual([]);
     expect(overridden.assistant.tools).toEqual(["github_list_repositories"]);
-    await expect(loadEnvironment({ configFile })).rejects.toThrow(
-      "not installed/approved: github_list_repositories",
+    const withoutGitHub = await loadEnvironment({ configFile });
+    await expect(
+      openKaeno({
+        ...withoutGitHub,
+        storage: new MemoryStorage(),
+        models: createModels(),
+      }),
+    ).rejects.toThrow(
+      'Assistant: tool "github_list_repositories" is not available here',
     );
     await writeFile(
       join(directory, ".agents/agents/kaeno/AGENT.md"),
@@ -296,9 +301,8 @@ it("configures GitHub for every agent while respecting explicit tool overrides",
     );
     const disabled = await loadEnvironment({ configFile });
     expect(
-      disabled.work?.participants.plan("global:coder").participants[
-        "global:coder"
-      ].setup.bindings,
+      disabled.work?.agents.find((agent) => agent.id === "global:coder")?.setup
+        .bindings,
     ).toEqual([
       expect.objectContaining({
         owner: "kaeno-definition-origins",

@@ -37,12 +37,13 @@ function setup(): {
   const runtime = createMockRuntime(createMockTransaction());
   const coordinator = turns();
   const work = new Work(() => runtime, coordinator, {
-    participants: {
-      list: () => [{ id: "local:root", description: "Root", available: true }],
-      plan: () => {
-        throw new Error("Unexpected plan");
+    agents: [
+      {
+        id: "local:root",
+        description: "Root",
+        setup: { model: { provider: "faux", modelId: "x" }, instructions: "" },
       },
-    },
+    ],
     surface: () => ({ tools: new Map(), extensions: new Map() }),
     maxDepth: 2,
     maxConcurrent: 4,

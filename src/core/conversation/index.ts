@@ -1,3 +1,4 @@
+export { qualifiedIdMatches } from "./ids.ts";
 export {
   ConversationBindings,
   applySetup,

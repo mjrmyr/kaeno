@@ -13,10 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openKaeno } from "../src/core/application/index.ts";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
-import {
-  agentParticipants,
-  parseAgent,
-} from "../src/extensions/agents/index.ts";
+import { resolveAgents, parseAgent } from "../src/extensions/agents/index.ts";
 import {
   SkillCatalog,
   skillBinder,
@@ -98,7 +95,7 @@ faux.setResponses(
   }),
 );
 const skills = skillBinder(new SkillCatalog([]));
-const participants = agentParticipants({
+const agents = resolveAgents({
   agents: [
     parseAgent(
       "---\nname: worker\ndescription: Local sandbox worker\nmodel: openai/faux-1\n---\nComplete the task and verify it.",
@@ -119,7 +116,7 @@ const core = await openKaeno({
   },
   extensions: [{ durable: CodingTools }, skillsExtension()],
   work: {
-    participants,
+    agents,
     tools: ["bash", ...SKILL_TOOLS],
     maxDepth: 1,
     maxConcurrent: 2,

@@ -61,13 +61,10 @@ it("selects assistant and workers from the same catalog, captures origins and ke
       },
     },
   ]);
-  expect(config.work.participants.list()).toEqual([
-    { id: "local:swe", description: "Profile swe", available: true },
-  ]);
   expect(
-    config.work.participants.plan("local:swe").participants["local:swe"].setup
-      .bindings,
-  ).toEqual(
+    config.work.agents.map(({ id, description }) => ({ id, description })),
+  ).toEqual([{ id: "local:swe", description: "Profile swe" }]);
+  expect(config.work.agents[0].setup.bindings).toEqual(
     expect.arrayContaining([
       expect.objectContaining({
         owner: "kaeno-skills",
@@ -89,7 +86,7 @@ it.each([undefined, []])(
   async (workers) => {
     const { configFile } = await fixture({ workers });
     const config = await loadEnvironment({ configFile });
-    expect(config.work.participants.list()).toEqual([]);
+    expect(config.work.agents).toEqual([]);
     expect(config.work.tools).toContain("read_skill");
     expect(config.assistant.tools).toContain("start_work");
   },
@@ -165,8 +162,10 @@ it("keeps worker-specific native contributions separate", async () => {
           ]
         : [],
   });
-  const participants = config.work.participants.plan("local:swe").participants;
-  expect(participants["local:other"].setup.bindings).toEqual(
+  expect(
+    config.work.agents.find((profile) => profile.id === "local:other")?.setup
+      .bindings,
+  ).toEqual(
     expect.arrayContaining([
       expect.objectContaining({
         owner: "kaeno-skills",
@@ -188,30 +187,29 @@ it.each(["[]", "[list_work]"])(
     );
   },
 );
-it("fails explicit unavailable selections instead of silently shrinking workers", async () => {
+it("keeps explicit worker tools for core to check when Kaeno opens", async () => {
   const { root, configFile } = await fixture();
   await put(
     join(root, "agents/swe/AGENT.md"),
     agent("swe", "model: openai/test\ntools: [missing_tool]\n"),
   );
-  await expect(loadEnvironment({ configFile })).rejects.toThrow(
-    "selected worker local:swe is unavailable",
-  );
+  const config = await loadEnvironment({ configFile });
+  expect(config.work.agents[0].setup.tools).toEqual(["missing_tool"]);
+  expect(config.work.tools).not.toContain("missing_tool");
 });
 it("does not inherit a worker model from the assistant", async () => {
   const { root, configFile } = await fixture();
   await put(join(root, "agents/swe/AGENT.md"), agent("swe", ""));
-  await expect(loadEnvironment({ configFile })).rejects.toThrow("no model");
+  await expect(loadEnvironment({ configFile })).rejects.toThrow(
+    "Agent local:swe is unavailable: no model",
+  );
   const raw = JSON.parse(await readFile(configFile, "utf8"));
   await put(
     configFile,
     JSON.stringify({ ...raw, defaultModel: "openai/owner-default" }),
   );
   const config = await loadEnvironment({ configFile });
-  expect(
-    config.work.participants.plan("local:swe").participants["local:swe"].setup
-      .model.modelId,
-  ).toBe("owner-default");
+  expect(config.work.agents[0].setup.model.modelId).toBe("owner-default");
 });
 it("reports unused malformed definitions but refuses selecting them or wildcard-dropping malformed skills", async () => {
   const { root, configFile } = await fixture({ workers: [] });
@@ -250,7 +248,9 @@ it("cached local snapshots survive deletion and are not silently refreshed offli
   await rm(join(root, "skills"), { recursive: true });
   const cached = await loadEnvironment({ configFile, sourceMode: "offline" });
   expect(cached.assistant.instructions).toBe("Instructions for coordinator.");
-  expect(cached.work.participants.list()[0].available).toBe(true);
+  expect(cached.work.agents.map((profile) => profile.id)).toEqual([
+    "local:swe",
+  ]);
 });
 it("does not inspect the obsolete special assistant path", async () => {
   const { root, configFile } = await fixture();

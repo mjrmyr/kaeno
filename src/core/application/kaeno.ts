@@ -34,7 +34,7 @@ import {
   WORK_TOOLS,
   Work,
   workTurns,
-  type Participants,
+  type AgentProfile,
   type WorkEnvironment,
 } from "../work/index.ts";
 
@@ -68,10 +68,11 @@ export interface KaenoExtension {
 
 /** Durable multi-agent WORK. Absent: Kaeno runs standalone without WORK tools. */
 export interface WorkOptions {
-  participants: Participants;
-  /** Where participants run; absent means they only have their selected tools. */
+  /** Agents WORK may start. Copied and checked against the approved worker surface when Kaeno opens. */
+  agents: readonly AgentProfile[];
+  /** Where agents run; absent means they only have their selected tools. */
   environment?: WorkEnvironment;
-  /** Tool names participants may select, from installed extensions. */
+  /** Tool names agents may select, from installed extensions. */
   tools: readonly string[];
   maxDepth?: number;
   maxConcurrent?: number;
@@ -189,12 +190,13 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
     }).parse(workOptions);
   }
   let workerSurface: SetupSurface | undefined;
+  const agents = structuredClone(workOptions?.agents ?? []);
   const work = workOptions
     ? new Work(
         reference.getHarness,
         workTurns(() => turns),
         {
-          participants: workOptions.participants,
+          agents,
           environment: workOptions.environment,
           surface: () => {
             if (!workerSurface) {
@@ -265,7 +267,9 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
   );
 
   // Selection is explicit for both CHAT and WORK. Installed tools are never offered implicitly.
-  const chatSurface = surfaceOf(durable, () => true);
+  const installed = surfaceOf(durable, () => true);
+  const parentTools = new Set<string>(WORK_TOOLS.parent);
+  const chatSurface = surfaceOf(durable, (name) => !parentTools.has(name));
   assertSetupFits("Assistant", options.assistant, chatSurface);
   for (const binding of options.assistant.bindings ?? []) {
     byName.get(binding.owner)?.validateBinding?.(binding);
@@ -275,14 +279,27 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
       throw new Error("WORK tool/task definition is not installed");
     }
     for (const name of workOptions.tools) {
-      if (!chatSurface.tools.has(name)) {
+      if (!installed.tools.has(name)) {
         throw new Error(`Approved worker tool "${name}" is not installed`);
       }
     }
     const approved = new Set(workOptions.tools);
-    // Protocol tools are native tools too: the host must explicitly approve them before a
-    // participant definition can select them.
-    workerSurface = surfaceOf(durable, (name) => approved.has(name));
+    // Protocol tools are native tools too: the host must explicitly approve them before an
+    // agent definition can select them.
+    const surface = surfaceOf(durable, (name) => approved.has(name));
+    workerSurface = surface;
+    // Every agent is checked once here, so a misconfigured one fails startup instead of every start_work.
+    const ids = new Set<string>();
+    for (const agent of agents) {
+      if (ids.has(agent.id)) {
+        throw new Error(`Duplicate agent "${agent.id}"`);
+      }
+      ids.add(agent.id);
+      assertSetupFits(`Agent ${agent.id}`, agent.setup, surface);
+      for (const binding of agent.setup.bindings ?? []) {
+        byName.get(binding.owner)?.validateBinding?.(binding);
+      }
+    }
   }
 
   const threads = new ThreadDirectory(reference.getHarness, {

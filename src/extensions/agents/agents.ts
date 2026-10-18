@@ -6,12 +6,9 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ModelRef } from "@earendil-works/pi-durable";
 import { z } from "zod";
 import type {
+  AgentProfile,
   Binding,
   ConversationSetup,
-  ParticipantPlan,
-  Participants,
-  ParticipantSummary,
-  WorkPlan,
 } from "../../core/application/index.ts";
 import {
   agentOriginBinding,
@@ -47,7 +44,7 @@ export type SkillBinder = (
 ) => Binding | undefined;
 
 export interface AgentDefaults {
-  /** Model for definitions without one; absent makes such agents discoverable but unavailable. */
+  /** Model for definitions without one; absent makes such agents fail to resolve. */
   readonly model?: ModelRef;
   /** Tools for definitions that omit `tools`. */
   readonly tools: readonly string[];
@@ -186,89 +183,33 @@ export function resolveAgentSetup(
 }
 
 /**
- * WORK participants from agent definitions. Resolved once at construction; every available agent
- * is root-selectable and may delegate to every other one.
+ * WORK agents from definitions, in definition order. Throws on the first definition that cannot
+ * resolve (for example without a model). Tool and binding fit is checked by core when Kaeno opens.
  */
-export function agentParticipants(options: {
+export function resolveAgents(options: {
   agents: readonly AgentDefinition[];
   defaults: AgentDefaults;
   /** Skill binder per agent (native contributions may differ by agent). */
   skills?: (agent: AgentDefinition) => SkillBinder;
   /** Extension-owned scope supplied by trusted host composition, never by agent frontmatter. */
   bindings?: readonly Binding[];
-  /** Installed, host-approved worker tool names; absence leaves validation to the core host. */
-  tools?: readonly string[];
-}): Participants {
-  const resolved = options.agents.map(
-    (
-      agent,
-    ):
-      | { agent: AgentDefinition; plan: ParticipantPlan }
-      | { agent: AgentDefinition; reason: string } => {
-      try {
-        const setup = resolveAgentSetup(
+}): AgentProfile[] {
+  return options.agents.map((agent) => {
+    try {
+      return {
+        id: agent.id,
+        description: agent.description,
+        setup: resolveAgentSetup(
           agent,
           options.defaults,
           options.skills?.(agent),
           options.bindings,
-        );
-        const missing = (setup.tools ?? []).filter(
-          (tool) =>
-            options.tools !== undefined && !options.tools.includes(tool),
-        );
-        if (missing.length > 0) {
-          throw new Error(
-            `tools are not installed/approved: ${missing.join(", ")}`,
-          );
-        }
-        return {
-          agent,
-          plan: {
-            id: agent.id,
-            description: agent.description,
-            setup,
-          } satisfies ParticipantPlan,
-        };
-      } catch (error) {
-        return {
-          agent,
-          reason: error instanceof Error ? error.message : String(error),
-        };
-      }
-    },
-  );
-  const plans: Record<string, ParticipantPlan> = {};
-  for (const entry of resolved) {
-    if ("plan" in entry) {
-      plans[entry.agent.id] = entry.plan;
+        ),
+      };
+    } catch (error) {
+      throw new Error(
+        `Agent ${agent.id} is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
-  }
-  return {
-    list: (): ParticipantSummary[] =>
-      resolved.map((entry) =>
-        "plan" in entry
-          ? {
-              id: entry.agent.id,
-              description: entry.agent.description,
-              available: true,
-            }
-          : {
-              id: entry.agent.id,
-              description: entry.agent.description,
-              available: false,
-              reason: entry.reason,
-            },
-      ),
-    plan: (root: string): WorkPlan => {
-      if (!Object.hasOwn(plans, root)) {
-        const entry = resolved.find((candidate) => candidate.agent.id === root);
-        throw new Error(
-          entry && "reason" in entry
-            ? `Agent ${root} is unavailable: ${entry.reason}`
-            : `Unknown agent ${root}`,
-        );
-      }
-      return { root, participants: structuredClone(plans) };
-    },
-  };
+  });
 }

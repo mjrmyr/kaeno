@@ -11,10 +11,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import {
-  agentParticipants,
   parseAgent,
   parseAgents,
   resolveAgentSetup,
+  resolveAgents,
 } from "../../src/extensions/agents/index.ts";
 import { openKaeno, type Binding } from "../../src/core/application/index.ts";
 import type {
@@ -149,18 +149,17 @@ it("resolves worker-specific native contributions without leaking skills between
       "AGENT.md",
     ),
   );
-  const participants = agentParticipants({
+  const [first, second] = resolveAgents({
     agents,
     defaults: { model, tools: ["list_skills", "read_skill"] },
     skills: (agent) =>
       skillBinder(new SkillCatalog([]), agent.name === "first" ? [guide] : []),
   });
-  const plan = participants.plan("local:first");
-  expect(plan.participants["local:first"].setup.tools).toEqual([]);
-  expect(plan.participants["local:first"].setup.bindings).toEqual([
+  expect(first.setup.tools).toEqual([]);
+  expect(first.setup.bindings).toEqual([
     bind(skillBinder(new SkillCatalog([]), [guide]), []),
   ]);
-  expect(plan.participants["local:second"].setup.bindings).toEqual([]);
+  expect(second.setup.bindings).toEqual([]);
 });
 
 it("does not create an empty skills binding without native contributions", () => {

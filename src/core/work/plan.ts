@@ -9,40 +9,29 @@ import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { z } from "zod";
 import {
   assertSetupFits,
+  qualifiedIdMatches,
   setupSchema,
   type ConversationSetup,
   type SetupSurface,
 } from "../conversation/index.ts";
 
-/** One participant WORK can start: an opaque ID, a description for choosing it, and its setup. */
-export interface ParticipantPlan {
+/**
+ * An agent WORK can start: the ID the model picks it by, a description for choosing it, and the
+ * resolved setup it runs with. Where it came from (Markdown, a repository, code) is not core's concern.
+ */
+export interface AgentProfile {
   readonly id: string;
   readonly description: string;
   readonly setup: ConversationSetup;
 }
 
 /**
- * Participants frozen when CHAT admits a root WORK. Every participant may delegate to every
- * other one; children always start from this saved plan, never from a live catalog.
+ * Agents frozen when CHAT admits a root WORK. Every agent may delegate to every other one;
+ * children always start from this saved plan, never from the agents configured now.
  */
 export interface WorkPlan {
   readonly root: string;
-  readonly participants: Readonly<Record<string, ParticipantPlan>>;
-}
-
-export interface ParticipantSummary {
-  readonly id: string;
-  readonly description: string;
-  /** False when the definition is discoverable but cannot run, for example without a model. */
-  readonly available: boolean;
-  readonly reason?: string;
-}
-
-/** Consumer-owned: who can participate. Pure over data loaded at startup; no I/O. */
-export interface Participants {
-  list(): readonly ParticipantSummary[];
-  /** Plan rooted at an available participant ID; throws an actionable error otherwise. */
-  plan(root: string): WorkPlan;
+  readonly agents: Readonly<Record<string, AgentProfile>>;
 }
 
 /** A running WORK as its environment sees it. */
@@ -111,7 +100,10 @@ const planSchema = z
     }
   });
 
-/** Boundary: parse a stored or supplied plan. */
+/**
+ * Boundary: parse a stored or supplied plan. The stored key stays `participants` (kaeno.work v3,
+ * kaeno.work-node v1); only this codec knows it.
+ */
 export function readPlan(value: unknown): WorkPlan {
   const parsed = planSchema.safeParse(value);
   if (!parsed.success) {
@@ -119,36 +111,48 @@ export function readPlan(value: unknown): WorkPlan {
       `WORK has no valid saved plan; cannot resume safely (cancel and submit a new request): ${parsed.error.message}`,
     );
   }
-  return parsed.data;
+  return { root: parsed.data.root, agents: parsed.data.participants };
 }
 
 /** Storage copy of a validated plan. */
 export function storedPlan(plan: WorkPlan): JsonValue {
   return jsonValueSchema.parse(
-    copyJson(plan, { omitUndefinedProperties: true }),
+    copyJson(
+      { root: plan.root, participants: plan.agents },
+      { omitUndefinedProperties: true },
+    ),
   );
 }
 
-/** Validate every participant against the worker surface before it is saved or resumed. */
+/** The frozen plan for a root: every configured agent, normalized exactly as a stored plan is read. */
+export function planFor(
+  root: string,
+  agents: readonly AgentProfile[],
+): WorkPlan {
+  return readPlan({
+    root,
+    participants: Object.fromEntries(
+      agents.map((agent) => [
+        agent.id,
+        { id: agent.id, description: agent.description, setup: agent.setup },
+      ]),
+    ),
+  });
+}
+
+/** Validate every agent against the worker surface before it is saved or resumed. */
 export function assertPlanFits(plan: WorkPlan, surface: SetupSurface): void {
-  for (const participant of Object.values(plan.participants)) {
-    assertSetupFits(
-      `Participant ${participant.id}`,
-      participant.setup,
-      surface,
-    );
+  for (const agent of Object.values(plan.agents)) {
+    assertSetupFits(`Agent ${agent.id}`, agent.setup, surface);
   }
 }
 
-/** Resolve a requested name to one ID: exact, or the unique `<source>:<name>` match. */
-export function resolveParticipantId(
+/** Resolve a requested name to one agent ID: exact, or the unique `<source>:<name>` match. */
+export function resolveAgentId(
   requested: string,
   ids: readonly string[],
 ): string {
-  if (ids.includes(requested)) {
-    return requested;
-  }
-  const matches = ids.filter((id) => id.endsWith(`:${requested}`));
+  const matches = qualifiedIdMatches(requested, ids);
   if (matches.length === 1) {
     return matches[0];
   }
@@ -159,11 +163,11 @@ export function resolveParticipantId(
   );
 }
 
-/** Model-facing participant listing. */
-export function describeParticipants(
-  participants: readonly { id: string; description: string }[],
+/** Model-facing agent listing. */
+export function describeAgents(
+  agents: readonly { id: string; description: string }[],
 ): string {
-  return participants
-    .map((participant) => `- ${participant.id}: ${participant.description}`)
+  return agents
+    .map((agent) => `- ${agent.id}: ${agent.description}`)
     .join("\n");
 }

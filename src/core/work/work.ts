@@ -1,6 +1,6 @@
-// WORK: one durable participant conversation, optionally in its own environment. CHAT starts root WORK; WORK may
+// WORK: one durable agent conversation, optionally in its own environment. CHAT starts root WORK; WORK may
 // start child WORK up to maxDepth. Communication follows parent↔child edges only: messages go down, messages and
-// reports go up. Every participant may delegate to every participant in the plan frozen at root admission.
+// reports go up. Every agent may delegate to every agent in the plan frozen at root admission.
 import { copyJson, type Context, type JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Type } from "@earendil-works/pi-ai";
@@ -41,11 +41,12 @@ import {
 import type { Origin, Source } from "../turns/index.ts";
 import {
   assertPlanFits,
-  describeParticipants,
+  describeAgents,
+  planFor,
   readPlan,
-  resolveParticipantId,
+  resolveAgentId,
   storedPlan,
-  type Participants,
+  type AgentProfile,
   type WorkEnvironment,
   type WorkInstance,
   type WorkPlan,
@@ -183,9 +184,10 @@ export interface WorkDetails extends WorkView {
 }
 /** Core WORK settings supplied by application composition. */
 export interface WorkSettings {
-  participants: Participants;
+  /** Agents WORK may start, fit-checked once when Kaeno opens. */
+  agents: readonly AgentProfile[];
   environment?: WorkEnvironment;
-  /** The approved worker surface: tools participants may select, and installed binding owners. */
+  /** The approved worker surface: tools agents may select, and installed binding owners. */
   surface: () => SetupSurface;
   maxDepth: number;
   /** Unfinished WORK across the whole host; counted inside the admission transaction. */
@@ -373,7 +375,7 @@ export class Work {
                 ownership: { kind: "task", taskId: task.id },
               }));
             if (!found) {
-              await this.configureParticipant(
+              await this.configureAgent(
                 tx,
                 conversation.id,
                 plan,
@@ -518,7 +520,7 @@ export class Work {
             }
           : { kind: "work", conversationId: api.conversationId };
         // A replayed call that already launched its work keeps it; a new root plan is prepared outside
-        // the admission transaction from the participants loaded at startup, then saved inside it.
+        // the admission transaction from the agents loaded at startup, then saved inside it.
         const launched = (
           await api.snapshot(WorkIndex, api.conversationId, context)
         )?.launches[String(api.taskId)];
@@ -548,14 +550,14 @@ export class Work {
             return existing;
           }
           let plan: WorkPlan;
-          let participant: string;
+          let agentId: string;
           let depth: number;
           if (isRoot) {
             if (!rootPlan) {
               throw new Error("Work launch changed during admission; retry");
             }
             plan = rootPlan;
-            participant = rootPlan.root;
+            agentId = rootPlan.root;
             depth = 1;
           } else {
             plan = readPlan(caller.plan);
@@ -564,10 +566,7 @@ export class Work {
                 "This WORK is at the maximum nesting depth and cannot start child work",
               );
             }
-            participant = resolveParticipantId(
-              agent,
-              Object.keys(plan.participants),
-            );
+            agentId = resolveAgentId(agent, Object.keys(plan.agents));
             depth = caller.depth + 1;
           }
           assertPlanFits(plan, this.settings.surface());
@@ -610,7 +609,7 @@ export class Work {
             {
               title,
               brief,
-              agent: participant,
+              agent: agentId,
               depth,
               maxDepth: caller?.maxDepth ?? this.settings.maxDepth,
               parent: jsonValueSchema.parse(
@@ -838,64 +837,52 @@ export class Work {
       await runtime.waitForTask(child, context);
     }
   }
-  /** Model-facing guidance for CHAT, listing every participant it may start. */
+  /** Model-facing guidance for CHAT, listing every agent it may start. */
   describeForChat(): string {
-    const participants = this.settings.participants.list();
-    const available = participants.filter(
-      (participant) => participant.available,
-    );
-    const unavailable = participants.filter(
-      (participant) => !participant.available,
-    );
     return [
       "You support delegation with start_work. Delegate substantial or parallelizable work when an agent is available.",
       "Use a complete, self-contained brief. Work runs asynchronously; continue responding instead of waiting for it.",
       "Use list_work and inspect_work for progress, message_work for clarification, and cancel_work to stop work.",
       "Available agents (use the ID with start_work):",
-      describeParticipants(available) ||
-        (participants.length === 0
-          ? "No worker agents are configured. You cannot start new work until an agent is configured; this does not remove your delegation capability or prevent managing existing work."
-          : "No configured worker agents are currently available. You cannot start new work until an agent's configuration is fixed."),
-      ...unavailable.map(
-        (participant) =>
-          `Unavailable agent ${participant.id}: ${participant.reason ?? "unavailable"}`,
-      ),
+      describeAgents(this.settings.agents) ||
+        "No worker agents are configured. You cannot start new work until an agent is configured; this does not remove your delegation capability or prevent managing existing work.",
     ].join("\n");
   }
-  /** Pure: resolve and validate a root plan from the participants loaded at startup. */
+  /** Pure: the root plan for a requested agent, from the agents loaded at startup. */
   private prepareRootPlan(requested: string): WorkPlan {
-    const participants = this.settings.participants.list();
-    if (participants.length === 0) {
+    const agents = this.settings.agents;
+    if (agents.length === 0) {
       throw new Error(
         "No worker agents are configured. Configure at least one available agent before starting work. You can still list, inspect, message or cancel existing work.",
       );
     }
-    const ids = participants.map((participant) => participant.id);
-    const plan = readPlan(
-      this.settings.participants.plan(resolveParticipantId(requested, ids)),
+    return planFor(
+      resolveAgentId(
+        requested,
+        agents.map((agent) => agent.id),
+      ),
+      agents,
     );
-    assertPlanFits(plan, this.settings.surface());
-    return plan;
   }
-  private async configureParticipant(
+  private async configureAgent(
     tx: Tx,
     id: ConversationId,
     plan: WorkPlan,
-    participantId: string,
+    agentId: string,
     orchestrate: boolean,
   ): Promise<void> {
-    const participant = plan.participants[participantId];
-    if (!participant) {
-      throw new Error(`Missing saved participant "${participantId}"`);
+    const agent = plan.agents[agentId];
+    if (!agent) {
+      throw new Error(`Missing saved agent "${agentId}"`);
     }
     const canMessageParent =
-      participant.setup.tools?.includes(MESSAGE_PARENT) ?? false;
-    let instructions = `${participant.setup.instructions}\n\nYou are Kaeno WORK, responsible for one task. Do the work yourself with the tools you have and verify it. Messages from whoever started you may arrive while you work.${canMessageParent ? " If you cannot proceed without a decision or input, call message_parent and stop." : " If you need information, state the limitation in your report."} Your final answer is your report: concise, verified and complete.`;
-    if (orchestrate && participant.setup.tools?.includes(START_WORK)) {
-      instructions += `\n\nYou may hand independent parts to child WORK with start_work; each sees only its brief. Child messages and reports arrive later as messages: reply with message_work. While children run, end your turn; their messages wake you. Do not give your final report while children are still running.\n\nAgents you can start (use the ID):\n${describeParticipants(Object.values(plan.participants))}`;
+      agent.setup.tools?.includes(MESSAGE_PARENT) ?? false;
+    let instructions = `${agent.setup.instructions}\n\nYou are Kaeno WORK, responsible for one task. Do the work yourself with the tools you have and verify it. Messages from whoever started you may arrive while you work.${canMessageParent ? " If you cannot proceed without a decision or input, call message_parent and stop." : " If you need information, state the limitation in your report."} Your final answer is your report: concise, verified and complete.`;
+    if (orchestrate && agent.setup.tools?.includes(START_WORK)) {
+      instructions += `\n\nYou may hand independent parts to child WORK with start_work; each sees only its brief. Child messages and reports arrive later as messages: reply with message_work. While children run, end your turn; their messages wake you. Do not give your final report while children are still running.\n\nAgents you can start (use the ID):\n${describeAgents(Object.values(plan.agents))}`;
     }
     await applySetup(tx, id, {
-      setup: participant.setup,
+      setup: agent.setup,
       surface: this.settings.surface(),
       extraExtensions: [],
       instructions,
@@ -933,7 +920,7 @@ export class Work {
       );
     }
   }
-  /** Check extension-owned data even for participants whose conversations haven't been created yet. */
+  /** Check extension-owned data even for agents whose conversations haven't been created yet. */
   async validateSavedBindings(
     validate: (binding: Binding) => void,
     context: Context,
@@ -945,8 +932,8 @@ export class Work {
       const plan = readPlan(
         z.object({ plan: z.unknown() }).parse(record.input).plan,
       );
-      for (const participant of Object.values(plan.participants)) {
-        for (const binding of participant.setup.bindings ?? []) {
+      for (const agent of Object.values(plan.agents)) {
+        for (const binding of agent.setup.bindings ?? []) {
           validate(binding);
         }
       }

@@ -1,6 +1,6 @@
 export {
   AGENT_MANIFEST,
-  agentParticipants,
+  resolveAgents,
   parseAgent,
   parseAgents,
   parseModelRef,
