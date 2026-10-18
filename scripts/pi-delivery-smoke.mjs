@@ -4,13 +4,21 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { EventEmitter, once } from "node:events";
+// Exercises one provider of the extension: "kaeno-local" (default) or "kaeno".
+const provider = process.env.KAENO_SMOKE_TARGET ?? "kaeno-local";
+if (provider !== "kaeno" && provider !== "kaeno-local") {
+  throw new Error(
+    `KAENO_SMOKE_TARGET must be "kaeno" or "kaeno-local", not "${provider}"`,
+  );
+}
+const urlVariable = provider === "kaeno" ? "KAENO_URL" : "KAENO_LOCAL_URL";
 const directory = await mkdtemp(join(tmpdir(), "kaeno-pi-delivery-"));
 const agentDirectory = join(directory, "agent");
 await mkdir(join(agentDirectory, "extensions"), { recursive: true });
 // Match the installed layout, not an explicit -e path: dependency resolution differs.
 await symlink(
-  resolve("pi-extension/kaeno-local"),
-  join(agentDirectory, "extensions", "kaeno-local"),
+  resolve("pi-extension/kaeno"),
+  join(agentDirectory, "extensions", "kaeno"),
 );
 // Exercise the same navigation as /tree without depending on the interactive TUI.
 await writeFile(
@@ -80,15 +88,15 @@ function start() {
       "--no-skills",
       "--no-context-files",
       "--provider",
-      "kaeno-local",
+      provider,
       "--model",
-      "kaeno-local",
+      provider,
     ],
     {
       env: {
         ...process.env,
         PI_CODING_AGENT_DIR: agentDirectory,
-        KAENO_LOCAL_URL: url,
+        [urlVariable]: url,
       },
       stdio: ["pipe", "pipe", "pipe"],
     },
@@ -158,13 +166,13 @@ try {
   await client.wait(
     (event) =>
       event.type === "message_end" &&
-      event.message?.customType === "kaeno-local-reply",
+      event.message?.customType === `${provider}-reply`,
   );
   await client.wait(
     (event) =>
       event.type === "entry_appended" && event.entry?.data?.after === 2,
   );
-  client.send({ id: "fetch", type: "prompt", message: "/kaeno-local-replies" });
+  client.send({ id: "fetch", type: "prompt", message: `/${provider}-replies` });
   await client.wait(
     (event) => event.type === "response" && event.id === "fetch",
   );
@@ -174,7 +182,7 @@ try {
     .map((event) => event.message);
   if (
     messages.filter((message) => message.role === "assistant").length !== 1 ||
-    messages.filter((message) => message.customType === "kaeno-local-reply")
+    messages.filter((message) => message.customType === `${provider}-reply`)
       .length !== 1 ||
     posts !== 1
   ) {
@@ -219,7 +227,7 @@ try {
   await client.wait(
     (event) =>
       event.type === "message_end" &&
-      event.message?.customType === "kaeno-local-reply",
+      event.message?.customType === `${provider}-reply`,
   );
   await client.wait(
     (event) =>
