@@ -92,11 +92,15 @@ if (configuration.work) {
     });
   }
 }
-const models = createModels({
-  credentials: new FileCredentialStore(
-    process.env.KAENO_AUTH_FILE ?? DEFAULT_AUTH_FILE,
-  ),
-});
+const credentials = new FileCredentialStore(
+  process.env.KAENO_AUTH_FILE ?? DEFAULT_AUTH_FILE,
+);
+if (process.env.KAENO_AUTH_SEED_FILE) {
+  console.log(
+    `credential seed: ${await credentials.importSeed(process.env.KAENO_AUTH_SEED_FILE)}`,
+  );
+}
+const models = createModels({ credentials });
 models.setProvider(anthropicProvider());
 models.setProvider(openaiProvider());
 models.setProvider(openrouterProvider());

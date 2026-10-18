@@ -4,7 +4,7 @@ import type {
   CredentialInfo,
   CredentialStore,
 } from "@earendil-works/pi-ai";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -31,6 +31,11 @@ const credentialSchema = z.discriminatedUnion("type", [
 const documentSchema = z.object({
   deviceId: z.uuid(),
   credentials: z.record(z.string(), credentialSchema),
+  /** SHA-256 of the seed file this document was last imported from; see importSeed. */
+  seed: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
 });
 type AuthDocument = z.infer<typeof documentSchema>;
 
@@ -104,6 +109,40 @@ export class FileCredentialStore implements CredentialStore {
         await release();
       }
     }
+  }
+
+  /**
+   * Adopt a read-only credential file (for example a mounted Secret) as the live document, once
+   * per distinct seed. Refreshes rotate tokens, so after an import the live file is authoritative:
+   * the same seed is ignored on later starts, and a changed seed (a new login) replaces it.
+   */
+  async importSeed(
+    seedPath: string,
+    options?: AuthOperationOptions,
+  ): Promise<"imported" | "unchanged"> {
+    const text = await readFile(resolve(seedPath), {
+      encoding: "utf8",
+      signal: options?.signal,
+    });
+    let seed: AuthDocument;
+    // Do not include credential values in validation errors.
+    try {
+      seed = documentSchema.parse(JSON.parse(text));
+    } catch {
+      throw new Error(`Invalid credential seed file: ${resolve(seedPath)}`);
+    }
+    const hash = createHash("sha256").update(text).digest("hex");
+    let result: "imported" | "unchanged" = "unchanged";
+    await this.update(async (document) => {
+      if (document.seed === hash) {
+        return;
+      }
+      document.deviceId = seed.deviceId;
+      document.credentials = seed.credentials;
+      document.seed = hash;
+      result = "imported";
+    }, options);
+    return result;
   }
 
   async getDeviceId(): Promise<string> {
