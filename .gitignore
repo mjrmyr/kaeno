@@ -6,3 +6,5 @@ work-config.json
 .rig.env
 .env
 data
+.agents
+.kaeno

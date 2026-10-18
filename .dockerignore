@@ -2,3 +2,5 @@ node_modules
 .git
 docs
 test
+.agents/
+.kaeno/
