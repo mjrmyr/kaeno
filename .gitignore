@@ -8,3 +8,5 @@ work-config.json
 data
 .agents
 .kaeno
+*auth.json
+*auth.json.*

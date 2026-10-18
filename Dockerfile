@@ -11,5 +11,6 @@ RUN npm ci --omit=dev --ignore-scripts \
 COPY src ./src
 USER node
 ENV KAENO_DB=/data/kaeno.sqlite
+ENV KAENO_AUTH_FILE=/data/auth.json
 EXPOSE 8080
 CMD ["node", "src/main.ts"]

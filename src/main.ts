@@ -9,6 +9,7 @@ import { z } from "zod";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { openKaeno } from "./application/index.ts";
+import { DEFAULT_AUTH_FILE, FileCredentialStore } from "./auth/index.ts";
 import {
   loadFileEnvironment,
   loadGitHubConfiguration,
@@ -79,7 +80,11 @@ if (configuration.work) {
     limits,
   });
 }
-const models = createModels();
+const models = createModels({
+  credentials: new FileCredentialStore(
+    process.env.KAENO_AUTH_FILE ?? DEFAULT_AUTH_FILE,
+  ),
+});
 models.setProvider(anthropicProvider());
 models.setProvider(openaiProvider());
 models.setProvider(openrouterProvider());

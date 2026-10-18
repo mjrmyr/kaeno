@@ -4,3 +4,6 @@ docs
 test
 .agents/
 .kaeno/
+.env
+*auth.json
+*auth.json.*
