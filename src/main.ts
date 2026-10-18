@@ -1,7 +1,9 @@
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
+import { watchEvents, type ConversationId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { z } from "zod";
 import { createHash } from "node:crypto";
@@ -16,11 +18,6 @@ import {
   SandboxWorkEnvironment,
 } from "./sandbox/index.ts";
 
-if (process.env.KAENO_CONFIG || process.env.KAENO_WORK_CONFIG) {
-  throw new Error(
-    "JSON agent configuration is no longer supported. Move the assistant to ~/.kaeno/agent.md (or .kaeno/agent.md) and workers to ~/.agents/agents/<directory>/agent.md (or .agents/agents/<directory>/agent.md).",
-  );
-}
 const configuration = await loadFileEnvironment({
   defaultModel: process.env.KAENO_DEFAULT_MODEL
     ? parseModelRef(process.env.KAENO_DEFAULT_MODEL)
@@ -109,6 +106,56 @@ function close(): Promise<void> {
   return closing;
 }
 try {
+  const trace = await core.harness.watchTaskGraph(BACKGROUND_CONTEXT);
+  let previous = trace.value.tasks;
+  const observed = new Set<ConversationId>();
+  console.log("assistant tools:", configuration.assistant.tools ?? []);
+  trace.start(async ({ tasks }) => {
+    for (const task of Object.values(tasks)) {
+      if (!observed.has(task.conversationId)) {
+        const events = await watchEvents(
+          core.harness,
+          task.conversationId,
+          BACKGROUND_CONTEXT,
+        );
+        observed.add(task.conversationId);
+        events.start(async (batch) => {
+          for (const event of batch) {
+            if (
+              event.type === "message_end" ||
+              event.type.startsWith("tool_execution_") ||
+              event.type.startsWith("auto_retry_") ||
+              event.type === "task_failed" ||
+              event.type.startsWith("compaction_")
+            ) {
+              console.log(
+                `[conversation ${task.conversationId}]`,
+                JSON.stringify(event),
+              );
+            }
+          }
+        });
+      }
+      const before = previous[task.id];
+      if (
+        JSON.stringify(before?.state) !== JSON.stringify(task.state) ||
+        before?.abortRequested !== task.abortRequested
+      ) {
+        console.log(
+          `[conversation ${task.conversationId}] ${task.kind} #${task.id}: ${JSON.stringify(task.state)}${task.abortRequested ? " abort-requested" : ""}`,
+        );
+      }
+    }
+    for (const task of Object.values(previous)) {
+      if (!tasks[task.id]) {
+        console.log(
+          `[conversation ${task.conversationId}] ${task.kind} #${task.id}: no longer live`,
+        );
+      }
+    }
+    previous = tasks;
+  });
+
   const current = new ApiServer(core).server;
   server = current;
   await new Promise<void>((resolve, reject) => {
