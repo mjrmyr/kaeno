@@ -61,13 +61,13 @@ it("loads Kaeno config/skills from .kaeno and worker definitions/skills from hom
     owner: "kaeno-skills",
     value: {
       skills: [
-        { id: "kaeno-home:kaeno-guide" },
+        { id: "kaeno-global:kaeno-guide" },
         { id: "kaeno-local:local-kaeno" },
       ],
     },
   });
   expect(config.work?.participants.list().map(({ id }) => id)).toEqual([
-    "home:reviewer",
+    "global:reviewer",
     "local:coder",
   ]);
   expect(config.diagnostics).toEqual([]);
@@ -104,7 +104,7 @@ it("keeps same-name agents distinct across home and project sources", async () =
   );
   const config = await loadFileEnvironment({ root: project, home });
   expect(config.work?.participants.list().map(({ id }) => id)).toEqual([
-    "home:reviewer",
+    "global:reviewer",
     "local:reviewer",
   ]);
 });
@@ -147,7 +147,7 @@ it("does not load the same home/project directory twice when started in HOME", a
   );
   const config = await loadFileEnvironment({ root: home, home });
   expect(config.work?.participants.list().map(({ id }) => id)).toEqual([
-    "home:coder",
+    "global:coder",
   ]);
   expect(config.diagnostics).toEqual([]);
 });

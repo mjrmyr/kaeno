@@ -94,13 +94,13 @@ export async function loadFileEnvironment(
   const home = await realpath(options.home ?? homedir());
   const separate = root !== home;
   const agentSources = options.agentSources ?? [
-    directorySource("home", join(home, ".agents/agents")),
+    directorySource("global", join(home, ".agents/agents")),
     ...(separate
       ? [directorySource("local", join(root, ".agents/agents"))]
       : []),
   ];
   const skillSources = options.skillSources ?? [
-    directorySource("home", join(home, ".agents/skills")),
+    directorySource("global", join(home, ".agents/skills")),
     ...(separate
       ? [directorySource("local", join(root, ".agents/skills"))]
       : []),
@@ -109,7 +109,7 @@ export async function loadFileEnvironment(
   const generalPackages = await packagesFrom(skillSources, "SKILL.md");
   const ownPackages = await packagesFrom(
     [
-      directorySource("kaeno-home", join(home, ".kaeno/skills")),
+      directorySource("kaeno-global", join(home, ".kaeno/skills")),
       ...(separate
         ? [directorySource("kaeno-local", join(root, ".kaeno/skills"))]
         : []),

@@ -9,7 +9,7 @@ The CLI composes the built-in file environment:
 - Worker agents: `~/.agents/agents/<directory>/AGENT.md` and `.agents/agents/<directory>/AGENT.md`.
 - Skills assignable to workers: `~/.agents/skills/<directory>/SKILL.md` and `.agents/skills/<directory>/SKILL.md`.
 
-The startup directory is captured once. Home and project definitions have distinct source IDs; same-named entries remain distinct and are selected by their qualified IDs. The application configuration under `.kaeno` is separate from the reusable agent/skill catalogs under `.agents`. Kaeno automatically uses its dedicated `.kaeno/skills` entries when its `skills` field is omitted; an explicit list, including `[]`, overrides that default. Workers only receive the skills their definitions select.
+The startup directory is captured once. User-wide and project definitions have distinct source IDs: `global:` for `~/.agents` and `local:` for the startup directory's `.agents` (`kaeno-global:` and `kaeno-local:` for dedicated `.kaeno` skills). Bare skill names work when unique; same-named entries require a qualified ID. The application configuration under `.kaeno` is separate from the reusable agent/skill catalogs under `.agents`. Kaeno automatically uses its dedicated `.kaeno/skills` entries when its `skills` field is omitted; an explicit list, including `[]`, overrides that default. Workers only receive the skills their definitions select.
 
 ## Run
 
