@@ -1,6 +1,13 @@
-# kaeno-local for Pi
+# Kaeno for Pi
 
-A text-only Pi provider for the local Kaeno HTTP API. Kaeno owns model calls,
+Text-only Pi providers for the Kaeno HTTP API, one per Kaeno server:
+
+| Provider / model | Server                              | Default URL                 | Override          | Commands                                    |
+| ---------------- | ----------------------------------- | --------------------------- | ----------------- | ------------------------------------------- |
+| `kaeno`          | your homelab                        | `http://homelab-kaeno:8080` | `KAENO_URL`       | `/kaeno-replies`, `/kaeno-stop`             |
+| `kaeno-local`    | Kaeno on this machine (`npm start`) | `http://127.0.0.1:8080`     | `KAENO_LOCAL_URL` | `/kaeno-local-replies`, `/kaeno-local-stop` |
+
+Both are always available; the selected model decides which server a session talks to. Kaeno owns model calls,
 conversation history, tools, and workers; Pi only sends the latest user message
 and displays completed replies, including later worker reports. No Kaeno API key is needed. Model-provider
 credentials belong in Kaeno's `.env`, not Pi.
@@ -10,23 +17,30 @@ credentials belong in Kaeno's `.env`, not Pi.
 From the repository root (after `npm ci`):
 
 ```sh
-ln -s "$PWD/pi-extension/kaeno-local" ~/.pi/agent/extensions/kaeno-local
+ln -s "$PWD/pi-extension/kaeno" ~/.pi/agent/extensions/kaeno
 ```
 
-Keep the old `kaeno` extension if you still use the homelab server; this one has
-its own provider name, model ID, and commands. The extension resolves its `zod`
-and `pi-ai` runtime dependencies from this repository's `node_modules`.
+Remove any older `kaeno` or `kaeno-local` extension link first: this extension
+registers both provider names itself. It resolves its `zod` and `pi-ai` runtime
+dependencies from this repository's `node_modules`.
 
 ## Use
 
-Start Kaeno separately with `npm start`. Then:
+Homelab, reachable over Tailscale:
+
+```sh
+pi --provider kaeno --model kaeno --no-tools
+```
+
+Local, after starting Kaeno with `npm start`:
 
 ```sh
 pi --provider kaeno-local --model kaeno-local --no-tools
 ```
 
-Or run `/reload` in an existing Pi session and select **kaeno-local** with
-`/model`. Prefer a fresh session: previous Pi messages aren't uploaded to Kaeno.
+Or run `/reload` in an existing Pi session and select **kaeno** or **kaeno-local**
+with `/model`. Each provider keeps its own thread and delivery state, so switching
+models in a session talks to the other server's separate conversation. Prefer a fresh session: previous Pi messages aren't uploaded to Kaeno.
 Each Pi session maps to its own durable Kaeno thread. Resume the same Pi session
 to continue that thread. Forked/new sessions get a separate thread, not a copy
 of the old Kaeno conversation. `/tree` only changes Pi's active branch: it does
@@ -37,12 +51,14 @@ the whole Pi session, so navigating backward does not replay old replies. Use
 - Chat normally to send messages and wait for Kaeno's immediate reply.
 - Later replies arrive automatically (polled every second while this model is
   selected and Pi is idle). They are Kaeno's answers after processing worker
-  reports, not raw worker output. The TUI labels them **Kaeno (local)**. No extra
-  prompt or Pi-side model call is needed.
-- `/kaeno-local-replies` checks for **unread** replies immediately. It no longer
-  replays history and does not call a model.
-- `/kaeno-local-stop` requests cancellation of the current turn and background
-  work. Pressing Escape only cancels Pi's local wait; Kaeno keeps working.
+  reports, not raw worker output. The TUI labels them **Kaeno (homelab)** or
+  **Kaeno (local)**. No extra prompt or Pi-side model call is needed. Only the
+  selected provider polls; the other one makes no requests.
+- `/kaeno-replies` / `/kaeno-local-replies` check for **unread** replies
+  immediately. They don't replay history and don't call a model.
+- `/kaeno-stop` / `/kaeno-local-stop` request cancellation of the current turn
+  and background work. Pressing Escape only cancels Pi's local wait; Kaeno keeps
+  working.
 
 The delivery cursor is saved in the Pi session. Reloading or resuming catches
 up on unread replies without replaying already displayed messages. Reads are
@@ -62,20 +78,24 @@ or report model usage/cost. Retry identity is stable for the same session,
 message timestamp, and text. Print/JSON one-shot runs still exit after the initial
 answer; use interactive Pi or RPC mode to stay connected for later reports.
 
-The default URL is `http://127.0.0.1:8080`. Override it when launching Pi:
+Override a URL when launching Pi, for example the homelab's full MagicDNS name
+or another local port:
 
 ```sh
+KAENO_URL=http://homelab-kaeno.example.ts.net:8080 pi --model kaeno
 KAENO_LOCAL_URL=http://127.0.0.1:8081 pi --model kaeno-local
 ```
 
-The current Kaeno API is unauthenticated. Do not expose it to untrusted networks.
+The current Kaeno API is unauthenticated. Do not expose it to untrusted networks;
+on the homelab, Tailscale ACLs are the access control.
 
 ## Delivery regression check
 
 With `pi` installed on `PATH`, run from the repository root:
 
 ```sh
-node scripts/pi-delivery-smoke.mjs
+node scripts/pi-delivery-smoke.mjs                          # kaeno-local
+KAENO_SMOKE_TARGET=kaeno node scripts/pi-delivery-smoke.mjs  # kaeno
 ```
 
 This auto-discovers the extension through an installed-style directory symlink

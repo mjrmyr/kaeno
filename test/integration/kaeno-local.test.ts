@@ -8,7 +8,7 @@ import {
   receiptPrefix,
   streamKaeno,
   threadPath,
-} from "../../pi-extension/kaeno-local/client.ts";
+} from "../../pi-extension/kaeno/client.ts";
 
 let server: Server | undefined;
 afterEach(async () => {

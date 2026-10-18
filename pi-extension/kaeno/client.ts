@@ -34,7 +34,7 @@ export async function request(
   const response = await fetcher(`${baseUrl.replace(/\/$/, "")}${path}`, init);
   if (!response.ok) {
     throw new Error(
-      `kaeno-local: HTTP ${response.status}: ${await response.text()}`,
+      `Kaeno at ${baseUrl}: HTTP ${response.status}: ${await response.text()}`,
     );
   }
   return response;
@@ -97,11 +97,11 @@ export function streamKaeno(
               .join("\n")
       )?.trim();
       if (!text) {
-        throw new Error("Nothing to send to kaeno-local");
+        throw new Error("Nothing to send to Kaeno");
       }
       const session = options?.sessionId;
       if (!session) {
-        throw new Error("kaeno-local requires a Pi session ID");
+        throw new Error("Kaeno requires a Pi session ID");
       }
       const requestId = `pi-${hash(`${session}\n${user?.timestamp}\n${text}`).slice(0, 40)}`;
       await beforeSend?.();

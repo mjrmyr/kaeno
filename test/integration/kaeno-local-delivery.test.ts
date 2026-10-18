@@ -3,7 +3,7 @@ import {
   ReplyDelivery,
   type Reply,
   type ReplyPage,
-} from "../../pi-extension/kaeno-local/delivery.ts";
+} from "../../pi-extension/kaeno/delivery.ts";
 
 const reply = (id: number): Reply => ({
   id,
