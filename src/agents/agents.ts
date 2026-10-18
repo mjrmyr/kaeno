@@ -16,6 +16,7 @@ import type {
 import {
   discoveryMetadata,
   parseManifest,
+  type DefinitionOrigin,
   type DefinitionPackage,
   type Diagnostic,
 } from "../definitions/index.ts";
@@ -36,11 +37,14 @@ export interface AgentDefinition {
   /** Frontmatter keys this version does not use; kept, never interpreted. */
   readonly metadata: Readonly<Record<string, JsonValue>>;
   readonly location: string;
+  readonly origin?: DefinitionOrigin;
 }
 
 /** Turns skill references into a binding; satisfied by the skills extension. Optional. */
 export interface SkillBinder {
   readonly tools: readonly string[];
+  /** Bind even without source assignments when native skill contributions are present. */
+  readonly alwaysBind?: boolean;
   bind(references: readonly string[]): Binding;
 }
 
@@ -117,7 +121,12 @@ export function parseAgents(packages: readonly DefinitionPackage[]): {
           `${location}: duplicate agent name "${agent.name}" in source ${definition.source}`,
         );
       }
-      agents.push(agent);
+      agents.push({
+        ...agent,
+        ...(definition.origin
+          ? { origin: structuredClone(definition.origin) }
+          : {}),
+      });
     } catch (error) {
       diagnostics.push({
         location,
@@ -162,7 +171,7 @@ export function resolveAgentSetup(
   const tools = agent.tools ?? [
     ...new Set([...defaults.tools, ...(skills?.tools ?? [])]),
   ];
-  if (references.length > 0) {
+  if (references.length > 0 || skills?.alwaysBind) {
     if (!skills) {
       throw new Error(`skills are assigned but no skill catalog is installed`);
     }
@@ -184,7 +193,8 @@ export function resolveAgentSetup(
 export function agentParticipants(options: {
   agents: readonly AgentDefinition[];
   defaults: AgentDefaults;
-  skills?: SkillBinder;
+  /** Shared skill binder, or one supplied per agent for native contributions. */
+  skills?: SkillBinder | ((agent: AgentDefinition) => SkillBinder);
   /** Extension-owned scope supplied by trusted host composition, never by agent frontmatter. */
   bindingsFor?: (agent: AgentDefinition) => readonly Binding[];
   /** Installed, host-approved worker tool names; absence leaves validation to the core host. */
@@ -200,7 +210,9 @@ export function agentParticipants(options: {
         const setup = resolveAgentSetup(
           agent,
           options.defaults,
-          options.skills,
+          typeof options.skills === "function"
+            ? options.skills(agent)
+            : options.skills,
           options.bindingsFor,
         );
         const missing = (setup.tools ?? []).filter(

@@ -3,10 +3,12 @@
 import { createHash } from "node:crypto";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { join, posix } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import {
   discoveryMetadata,
   parseManifest,
+  type DefinitionOrigin,
   type DefinitionPackage,
   type Diagnostic,
 } from "../definitions/index.ts";
@@ -14,6 +16,7 @@ import {
 /** One skill as assigned to a conversation. */
 export interface BoundSkill {
   id: string;
+  origin?: DefinitionOrigin;
   description: string;
   disableModelInvocation: boolean;
   /** Content hash of the complete tree, including binary files and executable bits. */
@@ -150,10 +153,36 @@ export async function inspectSkill(root: string): Promise<InspectedSkill> {
   };
 }
 
+/** One bounded union of snapshots; identical IDs must describe identical content and provenance. */
+export function snapshotSkills(skills: readonly BoundSkill[]): BoundSkill[] {
+  const entries = new Map<string, BoundSkill>();
+  for (const skill of skills) {
+    const existing = entries.get(skill.id);
+    if (existing) {
+      if (!isDeepStrictEqual(existing, skill)) {
+        fail(`conflicting skill snapshots for ${skill.id}`);
+      }
+      continue;
+    }
+    entries.set(skill.id, skill);
+  }
+  const snapshots = [...entries.values()];
+  if (
+    Buffer.byteLength(JSON.stringify({ skills: snapshots })) > MAX_BOUND_BYTES
+  ) {
+    fail("assigned skill snapshots exceed 8 MiB");
+  }
+  return structuredClone(snapshots);
+}
+
 /** Skills loaded at startup; immutable for the process lifetime. */
 export class SkillCatalog {
   private readonly entries: ReadonlyMap<string, BoundSkill>;
-  constructor(skills: readonly BoundSkill[]) {
+  private readonly invalidSources: ReadonlySet<string>;
+  constructor(
+    skills: readonly BoundSkill[],
+    invalidSources: readonly string[] = [],
+  ) {
     const entries = new Map<string, BoundSkill>();
     for (const skill of skills) {
       if (entries.has(skill.id)) {
@@ -162,13 +191,14 @@ export class SkillCatalog {
       entries.set(skill.id, structuredClone(skill));
     }
     this.entries = entries;
+    this.invalidSources = new Set(invalidSources);
   }
   /** Combine independently loaded catalogs without rereading mutable source files. */
   merge(other: SkillCatalog): SkillCatalog {
-    return new SkillCatalog([
-      ...this.entries.values(),
-      ...other.entries.values(),
-    ]);
+    return new SkillCatalog(
+      [...this.entries.values(), ...other.entries.values()],
+      [...this.invalidSources, ...other.invalidSources],
+    );
   }
   list(): SkillSummary[] {
     return [...this.entries.values()].map(({ id, description }) => ({
@@ -193,30 +223,43 @@ export class SkillCatalog {
         : `unknown skill "${reference}"`,
     );
   }
-  /** Independent snapshots of the referenced skills, in reference order without duplicates. */
+  /** Expand only `source:*`; sort its members, preserving selector order and deduplicating overlaps. */
   bind(references: readonly string[]): BoundSkill[] {
-    const ids = [
-      ...new Set(references.map((reference) => this.resolve(reference))),
-    ];
-    let bytes = 0;
-    return ids.map((id) => {
-      const skill = this.entries.get(id);
-      if (!skill) {
-        fail(`unknown skill "${id}"`);
+    const ids = new Set<string>();
+    for (const reference of references) {
+      if (!reference.includes("*")) {
+        ids.add(this.resolve(reference));
+        continue;
       }
-      bytes += Object.values(skill.assets ?? {}).reduce(
-        (sum, asset) => sum + asset.base64.length,
-        0,
-      );
-      bytes += Object.values(skill.documents).reduce(
-        (sum, text) => sum + Buffer.byteLength(text),
-        0,
-      );
-      if (bytes > MAX_BOUND_BYTES) {
-        fail("assigned skill documents exceed 8 MiB");
+      const wildcard = /^([^:*]+):\*$/.exec(reference);
+      if (!wildcard) {
+        fail(`invalid skill wildcard "${reference}": expected source:*`);
       }
-      return structuredClone(skill);
-    });
+      const source = wildcard[1];
+      if (this.invalidSources.has(source)) {
+        fail(
+          `cannot expand "${reference}": source ${source} has invalid skill packages`,
+        );
+      }
+      const matches = [...this.entries.keys()]
+        .filter((id) => id.startsWith(`${source}:`))
+        .sort();
+      if (matches.length === 0) {
+        fail(`empty skill wildcard "${reference}"`);
+      }
+      for (const id of matches) {
+        ids.add(id);
+      }
+    }
+    return snapshotSkills(
+      [...ids].map((id) => {
+        const skill = this.entries.get(id);
+        if (!skill) {
+          fail(`unknown skill "${id}"`);
+        }
+        return skill;
+      }),
+    );
   }
 }
 
@@ -228,6 +271,7 @@ export async function loadSkills(
   const diagnostics: Diagnostic[] = [];
   const seen = new Set<string>();
   const duplicates = new Set<string>();
+  const invalidSources = new Set<string>();
   for (const definition of packages) {
     try {
       const inspected = await inspectSkill(definition.directory);
@@ -251,8 +295,12 @@ export async function loadSkills(
         treeHash: inspected.treeHash,
         documents: inspected.documents,
         assets: inspected.assets,
+        ...(definition.origin
+          ? { origin: structuredClone(definition.origin) }
+          : {}),
       });
     } catch (error) {
+      invalidSources.add(definition.source);
       diagnostics.push({
         location: definition.directory,
         message: error instanceof Error ? error.message : String(error),
@@ -262,6 +310,7 @@ export async function loadSkills(
   return {
     catalog: new SkillCatalog(
       skills.filter((skill) => !duplicates.has(skill.id)),
+      [...invalidSources],
     ),
     diagnostics,
   };

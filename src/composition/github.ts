@@ -2,10 +2,12 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { z } from "zod";
 import type { Binding, KaenoExtension } from "../application/index.ts";
+import type { RepositoryReader } from "../definitions/index.ts";
 import {
   GITHUB_TOOLS,
   githubBinding,
   githubExtension,
+  githubRepositoryReader,
 } from "../github/index.ts";
 
 const configSchema = z
@@ -21,6 +23,7 @@ export async function loadGitHubConfiguration(path: string): Promise<{
   extensions: KaenoExtension[];
   tools: readonly string[];
   bindingsFor(): readonly Binding[];
+  repositoryReader: RepositoryReader;
 }> {
   const absolute = resolve(path);
   const config = configSchema.parse(
@@ -39,6 +42,13 @@ export async function loadGitHubConfiguration(path: string): Promise<{
         installationId: config.installationId,
       }),
     ],
+    repositoryReader: githubRepositoryReader({
+      app: {
+        appId: config.appId,
+        privateKey,
+        installationId: config.installationId,
+      },
+    }),
     tools: GITHUB_TOOLS,
     bindingsFor: () => [binding],
   };

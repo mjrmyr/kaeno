@@ -1,6 +1,7 @@
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Diagnostic } from "./manifest.ts";
+import type { DefinitionOrigin } from "./origin.ts";
 
 /** One `<root>/<directory>/<manifest>` package found by a source. */
 export interface DefinitionPackage {
@@ -10,6 +11,7 @@ export interface DefinitionPackage {
   readonly directory: string;
   /** Raw manifest text, parsed by the consuming extension. */
   readonly manifest: string;
+  readonly origin?: DefinitionOrigin;
 }
 
 export interface DefinitionSource {

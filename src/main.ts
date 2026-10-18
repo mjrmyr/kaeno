@@ -11,12 +11,13 @@ import { resolve } from "node:path";
 import { openKaeno } from "./application/index.ts";
 import { DEFAULT_AUTH_FILE, FileCredentialStore } from "./auth/index.ts";
 import {
-  loadFileEnvironment,
+  loadEnvironment,
   loadGitHubConfiguration,
 } from "./composition/index.ts";
 import { parseModelRef } from "./agents/index.ts";
 import { ApiServer } from "./api/index.ts";
 import { RemoteExecutionEnv } from "./execution/index.ts";
+import { loadKubernetesConfiguration } from "./kubernetes/index.ts";
 import {
   DockerSandboxProvider,
   SandboxWorkEnvironment,
@@ -25,8 +26,12 @@ import {
 const github = process.env.KAENO_GITHUB_CONFIG
   ? await loadGitHubConfiguration(process.env.KAENO_GITHUB_CONFIG)
   : {};
-const configuration = await loadFileEnvironment({
+const configuration = await loadEnvironment({
   ...github,
+  configFile: process.env.KAENO_CONFIG ?? ".kaeno/config.json",
+  sourceMode: z
+    .enum(["refresh", "offline"])
+    .parse(process.env.KAENO_SOURCE_MODE ?? "refresh"),
   defaultModel: process.env.KAENO_DEFAULT_MODEL
     ? parseModelRef(process.env.KAENO_DEFAULT_MODEL)
     : undefined,
@@ -52,33 +57,42 @@ const port = z.coerce
   .max(65535)
   .parse(process.env.PORT ?? 8080);
 
-const limits = {
-  cpus: z.coerce
-    .number()
-    .positive()
-    .parse(process.env.KAENO_WORK_CPUS ?? 1),
-  memoryBytes: z.coerce
-    .number()
-    .int()
-    .positive()
-    .parse(process.env.KAENO_WORK_MEMORY_BYTES ?? 1_073_741_824),
-};
 if (configuration.work) {
-  configuration.work.environment = new SandboxWorkEnvironment({
-    sandbox: new DockerSandboxProvider({
-      namespace:
-        process.env.KAENO_SANDBOX_NAMESPACE ??
-        createHash("sha256")
-          .update(resolve(process.env.KAENO_DB ?? "/data/kaeno.sqlite"))
-          .digest("hex")
-          .slice(0, 16),
-      apiHost: process.env.KAENO_SANDBOX_API_HOST ?? "127.0.0.1",
-      createEnvironment: ({ url, token, id, cwd, fetch }) =>
+  if (process.env.KAENO_KUBERNETES_CONFIG) {
+    const kubernetes = await loadKubernetesConfiguration(
+      process.env.KAENO_KUBERNETES_CONFIG,
+      ({ url, token, id, cwd }) =>
         new RemoteExecutionEnv(url, token, id, cwd, fetch),
-    }),
-    image: process.env.KAENO_SANDBOX_IMAGE ?? "kaeno:local",
-    limits,
-  });
+    );
+    configuration.extensions.push(kubernetes.extension);
+    configuration.work.environment = kubernetes.environment;
+  } else {
+    configuration.work.environment = new SandboxWorkEnvironment({
+      sandbox: new DockerSandboxProvider({
+        namespace:
+          process.env.KAENO_SANDBOX_NAMESPACE ??
+          createHash("sha256")
+            .update(resolve(process.env.KAENO_DB ?? "/data/kaeno.sqlite"))
+            .digest("hex")
+            .slice(0, 16),
+        apiHost: process.env.KAENO_SANDBOX_API_HOST ?? "127.0.0.1",
+        createEnvironment: ({ url, token, id, cwd, fetch }) =>
+          new RemoteExecutionEnv(url, token, id, cwd, fetch),
+      }),
+      image: process.env.KAENO_SANDBOX_IMAGE ?? "kaeno:local",
+      limits: {
+        cpus: z.coerce
+          .number()
+          .positive()
+          .parse(process.env.KAENO_WORK_CPUS ?? 1),
+        memoryBytes: z.coerce
+          .number()
+          .int()
+          .positive()
+          .parse(process.env.KAENO_WORK_MEMORY_BYTES ?? 1_073_741_824),
+      },
+    });
+  }
 }
 const models = createModels({
   credentials: new FileCredentialStore(

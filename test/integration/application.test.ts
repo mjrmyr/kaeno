@@ -17,17 +17,27 @@ it("boots the actual core entrypoint and shuts down cleanly", async () => {
   }
   await new Promise<void>((done) => reservation.close(() => done()));
   await mkdir(join(root, ".kaeno"));
+  await mkdir(join(root, "agents/kaeno"), { recursive: true });
   await writeFile(
-    join(root, ".kaeno/AGENT.md"),
+    join(root, "agents/kaeno/AGENT.md"),
     "---\nname: kaeno\ndescription: Test assistant\nmodel: openai/gpt-4.1\n---\nAnswer clearly.\n",
+  );
+  const configFile = join(root, "config.json");
+  await writeFile(
+    configFile,
+    JSON.stringify({
+      sourceDirectory: "./sources",
+      localDefinitions: { agents: [{ alias: "local", directory: "./agents" }] },
+      kaeno: { agent: "local:kaeno" },
+      workers: [],
+    }),
   );
   const token = "test-token-with-at-least-32-characters";
   const child = spawn(process.execPath, [resolve("src/main.ts")], {
     env: {
       ...process.env,
       HOME: root,
-      KAENO_CONFIG: "",
-      KAENO_WORK_CONFIG: "",
+      KAENO_CONFIG: configFile,
       KAENO_DB: join(root, "kaeno.sqlite"),
       KAENO_TOKEN: token,
       PORT: String(address.port),

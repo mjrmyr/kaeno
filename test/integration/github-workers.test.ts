@@ -14,7 +14,7 @@ import { MemoryStorage } from "@earendil-works/pi-durable";
 import { expect, it, vi } from "vitest";
 import { openKaeno } from "../../src/application/index.ts";
 import {
-  loadFileEnvironment,
+  loadEnvironment,
   loadGitHubConfiguration,
 } from "../../src/composition/index.ts";
 import {
@@ -36,7 +36,7 @@ it("gives the assistant, root worker, and nested worker GitHub discovery by defa
   };
   try {
     await put(
-      ".kaeno/AGENT.md",
+      ".agents/agents/kaeno/AGENT.md",
       "---\nname: kaeno\ndescription: Assistant\nmodel: faux/faux-1\n---\nCHAT",
     );
     await put(
@@ -71,9 +71,22 @@ it("gives the assistant, root worker, and nested worker GitHub discovery by defa
       installationId,
       fetch,
     });
-    const config = await loadFileEnvironment({
-      root: directory,
-      home: directory,
+    const configFile = join(directory, "config.json");
+    await put(
+      "config.json",
+      JSON.stringify({
+        sourceDirectory: "./sources",
+        localDefinitions: {
+          agents: [{ alias: "global", directory: "./.agents/agents" }],
+          skills: [{ alias: "global", directory: "./.agents/skills" }],
+        },
+        defaultModel: "faux/faux-1",
+        kaeno: { agent: "global:kaeno" },
+        workers: ["global:coder", "global:reviewer"],
+      }),
+    );
+    const config = await loadEnvironment({
+      configFile,
       extensions: [extension],
       tools: GITHUB_TOOLS,
       bindingsFor: () => [githubBinding(installationId)],
@@ -186,9 +199,9 @@ it("gives the assistant, root worker, and nested worker GitHub discovery by defa
 it("configures GitHub for every agent while respecting explicit tool overrides", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-github-config-"));
   try {
-    await mkdir(join(directory, ".kaeno"));
+    await mkdir(join(directory, ".agents/agents/kaeno"), { recursive: true });
     await writeFile(
-      join(directory, ".kaeno/AGENT.md"),
+      join(directory, ".agents/agents/kaeno/AGENT.md"),
       "---\nname: kaeno\ndescription: Assistant\nmodel: faux/faux-1\n---\nCHAT",
     );
     await mkdir(join(directory, ".agents/agents/coder"), { recursive: true });
@@ -205,21 +218,50 @@ it("configures GitHub for every agent while respecting explicit tool overrides",
     };
     await writeFile(path, JSON.stringify(ownerConfig));
     const github = await loadGitHubConfiguration(path);
-    const config = await loadFileEnvironment({
-      root: directory,
-      home: directory,
-      ...github,
-    });
+    const configFile = join(directory, "config.json");
+    await writeFile(
+      configFile,
+      JSON.stringify({
+        sourceDirectory: "./sources",
+        localDefinitions: {
+          agents: [{ alias: "global", directory: "./.agents/agents" }],
+        },
+        defaultModel: "faux/faux-1",
+        kaeno: { agent: "global:kaeno" },
+        workers: ["global:coder"],
+      }),
+    );
+    const config = await loadEnvironment({ configFile, ...github });
     const setup =
       config.work?.participants.plan("global:coder").participants[
         "global:coder"
       ].setup;
-    expect(setup?.bindings).toEqual([githubBinding(installationId)]);
+    expect(
+      setup?.bindings?.filter(
+        (binding) => binding.owner !== "kaeno-definition-origins",
+      ),
+    ).toEqual([githubBinding(installationId)]);
+    expect(setup?.bindings).toContainEqual(
+      expect.objectContaining({
+        owner: "kaeno-definition-origins",
+        version: 1,
+      }),
+    );
     expect(setup?.tools).toEqual(expect.arrayContaining([...GITHUB_TOOLS]));
     expect(config.work?.tools).toEqual(
       expect.arrayContaining([...GITHUB_TOOLS]),
     );
-    expect(config.assistant.bindings).toEqual([githubBinding(installationId)]);
+    expect(
+      config.assistant.bindings?.filter(
+        (binding) => binding.owner !== "kaeno-definition-origins",
+      ),
+    ).toEqual([githubBinding(installationId)]);
+    expect(config.assistant.bindings).toContainEqual(
+      expect.objectContaining({
+        owner: "kaeno-definition-origins",
+        version: 1,
+      }),
+    );
     expect(config.assistant.tools).toEqual(
       expect.arrayContaining([...GITHUB_TOOLS]),
     );
@@ -237,30 +279,40 @@ it("configures GitHub for every agent while respecting explicit tool overrides",
       "---\nname: coder\ndescription: Codes\ntools: []\n---\nCODER",
     );
     await writeFile(
-      join(directory, ".kaeno/AGENT.md"),
+      join(directory, ".agents/agents/kaeno/AGENT.md"),
       "---\nname: kaeno\ndescription: Assistant\nmodel: faux/faux-1\ntools: [github_list_repositories]\n---\nCHAT",
     );
-    const overridden = await loadFileEnvironment({
-      root: directory,
-      home: directory,
-      ...github,
-    });
+    const overridden = await loadEnvironment({ configFile, ...github });
     expect(
       overridden.work?.participants.plan("global:coder").participants[
         "global:coder"
       ].setup.tools,
     ).toEqual([]);
     expect(overridden.assistant.tools).toEqual(["github_list_repositories"]);
-    const disabled = await loadFileEnvironment({
-      root: directory,
-      home: directory,
-    });
+    await expect(loadEnvironment({ configFile })).rejects.toThrow(
+      "not installed/approved: github_list_repositories",
+    );
+    await writeFile(
+      join(directory, ".agents/agents/kaeno/AGENT.md"),
+      "---\nname: kaeno\ndescription: Assistant\nmodel: faux/faux-1\n---\nCHAT",
+    );
+    const disabled = await loadEnvironment({ configFile });
     expect(
       disabled.work?.participants.plan("global:coder").participants[
         "global:coder"
       ].setup.bindings,
-    ).toEqual([]);
-    expect(disabled.assistant.bindings).toEqual([]);
+    ).toEqual([
+      expect.objectContaining({
+        owner: "kaeno-definition-origins",
+        version: 1,
+      }),
+    ]);
+    expect(disabled.assistant.bindings).toEqual([
+      expect.objectContaining({
+        owner: "kaeno-definition-origins",
+        version: 1,
+      }),
+    ]);
     expect(disabled.work?.tools).not.toContain("github_list_repositories");
   } finally {
     await rm(directory, { recursive: true, force: true });

@@ -31,6 +31,7 @@ const optionalFeatures = new Set([
   "definitions",
   "execution",
   "github",
+  "kubernetes",
   "sandbox",
   "skills",
 ]);

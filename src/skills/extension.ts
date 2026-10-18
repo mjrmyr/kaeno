@@ -7,10 +7,12 @@ import {
 import { z } from "zod";
 import type { Binding, KaenoExtension } from "../application/index.ts";
 import { readBinding } from "../conversation/index.ts";
+import { definitionOriginSchema } from "../definitions/index.ts";
 import {
   listSkills,
   readSkillDocument,
   skillPrompt,
+  snapshotSkills,
   type BoundSkill,
   type SkillCatalog,
 } from "./skills.ts";
@@ -23,6 +25,7 @@ const VERSION = 1;
 
 const boundSkillSchema = z.object({
   id: z.string().min(1),
+  origin: definitionOriginSchema.optional(),
   description: z.string(),
   disableModelInvocation: z.boolean(),
   treeHash: z.string().regex(/^[a-f0-9]{64}$/),
@@ -49,24 +52,35 @@ function boundSkills(binding: Binding | undefined): BoundSkill[] {
 }
 
 /** Binds catalog skills to a conversation; satisfies consumers' structural binder ports. */
-export function skillBinder(catalog: SkillCatalog): {
+export function skillBinder(
+  catalog: SkillCatalog,
+  contributions: readonly BoundSkill[] = [],
+): {
   readonly tools: readonly string[];
+  readonly alwaysBind: boolean;
   bind(references: readonly string[]): Binding;
 } {
+  const native = snapshotSkills(
+    contributions.map((skill) => boundSkillSchema.parse(skill)),
+  );
   return {
     tools: [LIST_SKILLS, READ_SKILL],
+    alwaysBind: native.length > 0,
     bind: (references) => ({
       owner: SKILLS_EXTENSION,
       version: VERSION,
       value: {
-        skills: catalog.bind(references).map((skill) => ({
-          id: skill.id,
-          description: skill.description,
-          disableModelInvocation: skill.disableModelInvocation,
-          treeHash: skill.treeHash,
-          documents: { ...skill.documents },
-          ...(skill.assets ? { assets: { ...skill.assets } } : {}),
-        })),
+        skills: snapshotSkills([...catalog.bind(references), ...native]).map(
+          (skill) => ({
+            id: skill.id,
+            ...(skill.origin ? { origin: { ...skill.origin } } : {}),
+            description: skill.description,
+            disableModelInvocation: skill.disableModelInvocation,
+            treeHash: skill.treeHash,
+            documents: { ...skill.documents },
+            ...(skill.assets ? { assets: { ...skill.assets } } : {}),
+          }),
+        ),
       },
     }),
   };

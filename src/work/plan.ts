@@ -59,6 +59,8 @@ export interface WorkEnvironmentRuntime extends Pick<
 export interface WorkEnvironment {
   /** Working directory given to participants inside the environment. */
   readonly cwd: string;
+  /** Optional live limit on unfinished works, checked at admission to avoid parent/child deadlocks. */
+  capacity?(context: Context): Promise<number>;
   ensure(
     work: WorkInstance,
     runtime: WorkEnvironmentRuntime,

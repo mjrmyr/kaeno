@@ -104,29 +104,19 @@ The extension requires supported, patched host/worker Git versions. Git bundles 
 ## Embedding
 
 ```ts
-import { loadFileEnvironment } from "../src/composition/index.ts";
 import {
-  githubBinding,
-  githubExtension,
-  GITHUB_TOOLS,
-} from "../src/github/index.ts";
+  loadEnvironment,
+  loadGitHubConfiguration,
+} from "../src/composition/index.ts";
 
-const installationId = 123;
-
-const configuration = await loadFileEnvironment({
-  extensions: [
-    githubExtension({
-      appId,
-      privateKey,
-      installationId,
-    }),
-  ],
-  tools: GITHUB_TOOLS,
-  bindingsFor: () => [githubBinding(installationId)],
+const github = await loadGitHubConfiguration("./.kaeno/github.json");
+const configuration = await loadEnvironment({
+  configFile: "./.kaeno/config.json",
+  ...github,
 });
 ```
 
-Pass the returned configuration to `openKaeno` with storage/models and the chosen WORK environment, as usual. Agents with an installation binding and selected tools can use the current GitHub installation access; there is no secondary permissions framework.
+Pass the returned configuration to `openKaeno` with storage/models and the chosen WORK environment, as usual. When the App configuration is enabled, the same host-only reader can fetch private agent/skill repositories as well as the existing GitHub tools; repository installation permissions remain the authorization boundary. Public repositories use the isolated anonymous reader without an App key.
 
 ## Verification
 

@@ -517,6 +517,14 @@ export class Work {
           launched === undefined && isRoot
             ? this.prepareRootPlan(agent)
             : undefined;
+        const capacity =
+          launched === undefined
+            ? await this.settings.environment?.capacity?.(context)
+            : undefined;
+        const limit = Math.min(
+          this.settings.maxConcurrent,
+          capacity ?? this.settings.maxConcurrent,
+        );
         const id = await api.commit(async (tx) => {
           if (
             parent.kind === "chat" &&
@@ -559,9 +567,9 @@ export class Work {
           // waits for one, so parents and children cannot deadlock. Counted inside this commit, so
           // concurrent start_work calls cannot overbook.
           const used = (await liveWork(tx)).length;
-          if (used >= this.settings.maxConcurrent) {
+          if (used >= limit) {
             throw new Error(
-              `No free work slot: ${used} of ${this.settings.maxConcurrent} are in use by unfinished works. Wait for a running work to report or cancel one, then retry.`,
+              `No free work slot: ${used} of ${limit} are in use by unfinished works. Wait for a running work to report or cancel one, then retry.`,
             );
           }
           const live = await liveWork(tx, api.conversationId);

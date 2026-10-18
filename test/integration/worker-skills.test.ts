@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { openKaeno } from "../../src/application/index.ts";
-import { loadFileEnvironment } from "../../src/composition/index.ts";
+import { loadEnvironment } from "../../src/composition/index.ts";
 
 it.each([false, true])(
   "gives root and nested workers lazy skill tools independently of assignments (%s)",
@@ -24,7 +24,7 @@ it.each([false, true])(
     };
     try {
       await put(
-        ".kaeno/AGENT.md",
+        ".agents/agents/kaeno/AGENT.md",
         "---\nname: kaeno\ndescription: Assistant\nmodel: faux/faux-1\n---\nCHAT",
       );
       await put(
@@ -47,10 +47,21 @@ it.each([false, true])(
         ".agents/skills/secret/SKILL.md",
         "---\nname: secret\ndescription: Unassigned description\n---\nUNASSIGNED INSTRUCTIONS",
       );
-      const config = await loadFileEnvironment({
-        root: directory,
-        home: directory,
-      });
+      const configFile = join(directory, "config.json");
+      await put(
+        "config.json",
+        JSON.stringify({
+          sourceDirectory: "./sources",
+          localDefinitions: {
+            agents: [{ alias: "global", directory: "./.agents/agents" }],
+            skills: [{ alias: "global", directory: "./.agents/skills" }],
+          },
+          defaultModel: "faux/faux-1",
+          kaeno: { agent: "global:kaeno" },
+          workers: ["global:parent", "global:leaf"],
+        }),
+      );
+      const config = await loadEnvironment({ configFile });
       const faux = fauxProvider();
       const models = createModels();
       models.setProvider(faux.provider);
