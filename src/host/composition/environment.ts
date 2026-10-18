@@ -142,7 +142,7 @@ export async function loadEnvironment(
         }
         return agent;
       };
-      const assistantDefinition = select(config.kaeno.agent);
+      const assistantDefinition = select(config.kaeno);
       const workerDefinitions = config.workers.map(select);
       const defaults = {
         model:

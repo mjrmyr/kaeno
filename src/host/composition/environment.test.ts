@@ -33,7 +33,7 @@ async function fixture(
         agents: [{ alias: "local", directory: "./agents" }],
         skills: [{ alias: "local", directory: "./skills" }],
       },
-      kaeno: { agent: "local:coordinator" },
+      kaeno: "local:coordinator",
       workers: ["local:swe"],
       ...overrides,
     }),
@@ -113,12 +113,13 @@ it.each([
     expect(binding === undefined).toBe(expected.length === 0);
   },
 );
-it("rejects a Kaeno skill list in the owner configuration", async () => {
-  const { configFile } = await fixture({
-    kaeno: { agent: "local:coordinator", skills: ["local:guide"] },
-  });
+it.each([
+  { agent: "local:coordinator" },
+  { agent: "local:coordinator", skills: ["local:guide"] },
+])("rejects the old kaeno object form (%j)", async (kaeno) => {
+  const { configFile } = await fixture({ kaeno });
   await expect(loadEnvironment({ configFile })).rejects.toThrow(
-    'kaeno: Unrecognized key: "skills"',
+    "kaeno: Invalid input: expected string, received object",
   );
 });
 it("native-only knowledge is additive even with source skills/tools explicitly empty", async () => {
@@ -232,7 +233,7 @@ it("reports unused malformed definitions but refuses selecting them or wildcard-
         agents: [{ alias: "local", directory: "./agents" }],
         skills: [{ alias: "local", directory: "./skills" }],
       },
-      kaeno: { agent: "local:coordinator" },
+      kaeno: "local:coordinator",
     }),
   );
   await put(
@@ -278,7 +279,7 @@ it("normalizes repository declarations, config-relative paths and identical cros
       skillRepositories: [
         { repository: "owner/repo", ref: "release", path: "skills" },
       ],
-      kaeno: { agent: "owner/repo:kaeno" },
+      kaeno: "owner/repo:kaeno",
     },
     "/tmp/example/config.json",
   );
@@ -302,14 +303,14 @@ it.each([
   { agentRepositories: [{ repository: "owner/repo", path: "../escape" }] },
   { agentRepositories: ["owner/repo:-x"] },
   { workers: ["local:swe", "local:swe"] },
-  { kaeno: { agent: "bare-name" } },
+  { kaeno: "bare-name" },
   { extraSkills: [] },
 ])("rejects ambiguous/unsafe/obsolete configuration %j", (fields) => {
   expect(() =>
     parseEnvironmentConfiguration(
       {
         sourceDirectory: "./sources",
-        kaeno: { agent: "local:kaeno" },
+        kaeno: "local:kaeno",
         ...fields,
       },
       "/tmp/config.json",
