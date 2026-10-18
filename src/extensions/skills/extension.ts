@@ -16,14 +16,15 @@ import {
   readSkillDocument,
   skillPrompt,
   snapshotSkills,
+  LIST_SKILLS,
+  READ_SKILL,
+  SKILL_TOOLS,
   type BoundSkill,
   type SkillCatalog,
 } from "./skills.ts";
 
 /** Owner name of skill bindings and the native skill tools/section. */
 export const SKILLS_EXTENSION = "kaeno-skills";
-export const LIST_SKILLS = "list_skills";
-export const READ_SKILL = "read_skill";
 const VERSION = 1;
 
 const boundSkillSchema = z.object({
@@ -67,7 +68,7 @@ export function skillBinder(
     contributions.map((skill) => boundSkillSchema.parse(skill)),
   );
   return {
-    tools: [LIST_SKILLS, READ_SKILL],
+    tools: [...SKILL_TOOLS],
     alwaysBind: native.length > 0,
     bind: (references) => ({
       owner: SKILLS_EXTENSION,
@@ -160,7 +161,7 @@ export function skillsExtension(): KaenoExtension {
         }),
       ],
     }),
-    readOnlyTools: [LIST_SKILLS, READ_SKILL],
+    readOnlyTools: SKILL_TOOLS,
     validateBinding: (binding) => {
       boundSkills(binding);
     },

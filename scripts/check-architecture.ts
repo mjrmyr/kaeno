@@ -73,6 +73,26 @@ function isTypeOnlyImport(node: ts.ImportDeclaration): boolean {
     clause.namedBindings.elements.every((element) => element.isTypeOnly)
   );
 }
+// WORK protocol names are owned by core/work/tools.ts; read them statically so the list is never copied.
+const workToolsFile = resolve(root, "src/core/work/tools.ts");
+const workToolNames = new Set<string>();
+for (const statement of program.getSourceFile(workToolsFile)?.statements ??
+  []) {
+  if (
+    ts.isVariableStatement(statement) &&
+    hasModifier(statement, ts.SyntaxKind.ExportKeyword)
+  ) {
+    for (const declaration of statement.declarationList.declarations) {
+      if (
+        declaration.initializer &&
+        ts.isStringLiteral(declaration.initializer)
+      ) {
+        workToolNames.add(declaration.initializer.text);
+      }
+    }
+  }
+}
+const workDirectory = resolve(root, "src/core/work") + sep;
 const paths = [
   ...(await filesIn(resolve(root, "src"))),
   ...(await filesIn(resolve(root, "scripts"))),
@@ -118,6 +138,19 @@ for (const path of paths) {
         file,
         node,
         "Replace nested ternaries with a named operation and if/switch.",
+      );
+    }
+    if (
+      layer !== undefined &&
+      !path.endsWith(".test.ts") &&
+      !path.startsWith(workDirectory) &&
+      (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) &&
+      workToolNames.has(node.text)
+    ) {
+      report(
+        file,
+        node,
+        `Use the WORK name constants from core instead of the literal "${node.text}".`,
       );
     }
     if (path.endsWith(".test.ts")) {

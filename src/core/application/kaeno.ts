@@ -29,6 +29,9 @@ import {
 import { ThreadDirectory } from "../threads/index.ts";
 import { defineControl, defineTurn, TurnCoordinator } from "../turns/index.ts";
 import {
+  START_WORK,
+  WORK_EXTENSION,
+  WORK_TOOLS,
   Work,
   workTurns,
   type Participants,
@@ -211,7 +214,7 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
       ? [
           {
             durable: work.extension,
-            readOnlyTools: ["list_work", "inspect_work"],
+            readOnlyTools: WORK_TOOLS.readOnly,
             ...(workEnvironment
               ? {
                   environment: (
@@ -268,7 +271,7 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
     byName.get(binding.owner)?.validateBinding?.(binding);
   }
   if (workOptions) {
-    if (!durable.some((extension) => extension.name === "kaeno-work")) {
+    if (!durable.some((extension) => extension.name === WORK_EXTENSION)) {
       throw new Error("WORK tool/task definition is not installed");
     }
     for (const name of workOptions.tools) {
@@ -289,7 +292,7 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
         surface: chatSurface,
         extraExtensions: [policy],
         instructions:
-          work && options.assistant.tools?.includes("start_work")
+          work && options.assistant.tools?.includes(START_WORK)
             ? `${options.assistant.instructions}\n\n${work.describeForChat()}`
             : options.assistant.instructions,
         cwd: null,

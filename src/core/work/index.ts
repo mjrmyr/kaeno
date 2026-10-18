@@ -26,3 +26,13 @@ export type {
   WorkSettings,
   WorkTurns,
 } from "./work.ts";
+export {
+  CANCEL_WORK,
+  INSPECT_WORK,
+  LIST_WORK,
+  MESSAGE_PARENT,
+  MESSAGE_WORK,
+  START_WORK,
+  WORK_EXTENSION,
+  WORK_TOOLS,
+} from "./tools.ts";

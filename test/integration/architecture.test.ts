@@ -106,7 +106,7 @@ it("rejects core and extension imports that cross layer boundaries", async () =>
     );
     await writeFile(
       join(directory, "src/extensions/agents/index.ts"),
-      'import type { Loaded } from "../../host/composition/index.ts"; export interface Definition { name: string; loaded: Loaded }',
+      'import type { Loaded } from "../../host/composition/index.ts"; export interface Definition { name: string; loaded: Loaded } export const tool = "start_work";',
     );
     await writeFile(
       join(directory, "src/core/work/index.ts"),
@@ -119,6 +119,10 @@ it("rejects core and extension imports that cross layer boundaries", async () =>
     await writeFile(
       join(directory, "src/host/composition/index.ts"),
       'import type { Work } from "../../core/work/index.ts"; export interface Loaded { path: string; work: Work }',
+    );
+    await writeFile(
+      join(directory, "src/core/work/tools.ts"),
+      'export const START_WORK = "start_work";',
     );
     await writeFile(
       join(directory, "src/misc/index.ts"),
@@ -143,6 +147,10 @@ it("rejects core and extension imports that cross layer boundaries", async () =>
     expect(result).toContain(
       'Place "src/misc" under src/core, src/extensions or src/host.',
     );
+    expect(result).toContain(
+      'Use the WORK name constants from core instead of the literal "start_work".',
+    );
+    expect(result).not.toContain("src/core/work/tools.ts:1");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

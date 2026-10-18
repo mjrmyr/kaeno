@@ -9,6 +9,7 @@ export { readBinding } from "../conversation/index.ts";
 export type { Binding, ConversationSetup } from "../conversation/index.ts";
 export { parseTaskId, parseConversationId } from "../durable/index.ts";
 export type { Stored } from "../durable/index.ts";
+export { WORK_TOOLS } from "../work/index.ts";
 export type {
   ParticipantPlan,
   ParticipantSummary,

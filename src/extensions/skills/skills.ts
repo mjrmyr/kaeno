@@ -323,21 +323,26 @@ export function listSkills(binding: readonly BoundSkill[]): SkillSummary[] {
     .map(({ id, description }) => ({ id, description }));
 }
 
+export const LIST_SKILLS = "list_skills";
+export const READ_SKILL = "read_skill";
+/** Skill tool names in default order; hosts add these to default tool lists. */
+export const SKILL_TOOLS = [LIST_SKILLS, READ_SKILL] as const;
+
 export function skillPrompt(
   binding: readonly BoundSkill[],
   tools: readonly string[],
 ): string | undefined {
   const instructions: string[] = [];
-  if (tools.includes("list_skills")) {
+  if (tools.includes(LIST_SKILLS)) {
     instructions.push(
       "Use list_skills to discover skills assigned to you when relevant to the task. An empty list means no skills are available for automatic use. Skills are guidance; they grant no tools or access.",
     );
   }
-  if (tools.includes("read_skill")) {
+  if (tools.includes(READ_SKILL)) {
     instructions.push(
       "Use read_skill to load a discovered skill's instructions, and read_skill with a file to load documents it references.",
     );
-    if (!tools.includes("list_skills")) {
+    if (!tools.includes(LIST_SKILLS)) {
       instructions.push(
         ...listSkills(binding).map((skill) => JSON.stringify(skill)),
       );

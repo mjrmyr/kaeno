@@ -7,6 +7,9 @@ export {
   skillFiles,
   skillMetadata,
   skillPrompt,
+  LIST_SKILLS,
+  READ_SKILL,
+  SKILL_TOOLS,
 } from "./skills.ts";
 export type {
   BoundSkill,
@@ -14,10 +17,4 @@ export type {
   SkillMetadata,
   SkillSummary,
 } from "./skills.ts";
-export {
-  LIST_SKILLS,
-  READ_SKILL,
-  SKILLS_EXTENSION,
-  skillBinder,
-  skillsExtension,
-} from "./extension.ts";
+export { SKILLS_EXTENSION, skillBinder, skillsExtension } from "./extension.ts";

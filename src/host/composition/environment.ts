@@ -1,13 +1,14 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
-import type {
-  Binding,
-  ConversationSetup,
-  KaenoExtension,
-  ModelRef,
-  WorkEnvironment,
-  WorkOptions,
+import {
+  WORK_TOOLS,
+  type Binding,
+  type ConversationSetup,
+  type KaenoExtension,
+  type ModelRef,
+  type WorkEnvironment,
+  type WorkOptions,
 } from "../../core/application/index.ts";
 import {
   agentParticipants,
@@ -36,15 +37,9 @@ import {
 } from "../../extensions/skills/index.ts";
 import { parseEnvironmentConfiguration } from "./configuration.ts";
 
-const ORCHESTRATION = [
-  "start_work",
-  "list_work",
-  "inspect_work",
-  "message_work",
-  "cancel_work",
-];
+const ORCHESTRATION = WORK_TOOLS.orchestration;
 const CODING = (CodingTools.tools ?? []).map((tool) => tool.name);
-const WORKER_TOOLS = [...CODING, ...ORCHESTRATION, "message_parent"];
+const WORKER_TOOLS = [...CODING, ...ORCHESTRATION, ...WORK_TOOLS.parent];
 
 async function packagesFrom(
   sources: readonly DefinitionSource[],

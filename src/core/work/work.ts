@@ -50,6 +50,15 @@ import {
   type WorkInstance,
   type WorkPlan,
 } from "./plan.ts";
+import {
+  CANCEL_WORK,
+  INSPECT_WORK,
+  LIST_WORK,
+  MESSAGE_PARENT,
+  MESSAGE_WORK,
+  START_WORK,
+  WORK_EXTENSION,
+} from "./tools.ts";
 /** Where messages and the final report go. CHAT parents route through the turn ledger; WORK parents get inputs. */
 const workParentSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -486,7 +495,7 @@ export class Work {
       },
     });
     const start = defineTool({
-      name: "start_work",
+      name: START_WORK,
       description:
         "Start a WORK agent. Returns immediately; its messages and final report arrive later as messages. Pick an agent listed in your instructions and give a complete, self-contained brief.",
       parameters: Type.Object({
@@ -634,7 +643,7 @@ export class Work {
       },
     });
     const list = defineTool({
-      name: "list_work",
+      name: LIST_WORK,
       description: "List the works you started and their current status.",
       parameters: Type.Object({}),
       replay: "safe",
@@ -648,7 +657,7 @@ export class Work {
       }),
     });
     const inspect = defineTool({
-      name: "inspect_work",
+      name: INSPECT_WORK,
       description:
         "Inspect one work you started, or any work below it: status, unanswered message, its latest answer and its children.",
       parameters: Type.Object({ id: Type.Integer({ minimum: 1 }) }),
@@ -669,7 +678,7 @@ export class Work {
       }),
     });
     const message = defineTool({
-      name: "message_work",
+      name: MESSAGE_WORK,
       description:
         "Send a message to a work you started: a reply to its message, a clarification or a correction. A busy work sees it after its current tool round; an idle one resumes.",
       parameters: Type.Object({
@@ -742,7 +751,7 @@ export class Work {
       },
     });
     const cancel = defineTool({
-      name: "cancel_work",
+      name: CANCEL_WORK,
       description:
         "Cancel a work you started. Its own children are cancelled too, and their environments are removed.",
       parameters: Type.Object({ id: Type.Integer({ minimum: 1 }) }),
@@ -779,7 +788,7 @@ export class Work {
       },
     });
     const messageParent = defineTool({
-      name: "message_parent",
+      name: MESSAGE_PARENT,
       description:
         "Send a message to whoever started you, for a decision or input you cannot get yourself. Ends your turn; the reply arrives as a message.",
       parameters: Type.Object({
@@ -808,7 +817,7 @@ export class Work {
     this.orchestrationTools = [start, list, inspect, message, cancel];
     this.parentTools = [messageParent];
     this.extension = defineExtension({
-      name: "kaeno-work",
+      name: WORK_EXTENSION,
       tools: [...this.orchestrationTools, ...this.parentTools],
       tasks: [WorkTask],
     });
@@ -880,9 +889,9 @@ export class Work {
       throw new Error(`Missing saved participant "${participantId}"`);
     }
     const canMessageParent =
-      participant.setup.tools?.includes("message_parent") ?? false;
+      participant.setup.tools?.includes(MESSAGE_PARENT) ?? false;
     let instructions = `${participant.setup.instructions}\n\nYou are Kaeno WORK, responsible for one task. Do the work yourself with the tools you have and verify it. Messages from whoever started you may arrive while you work.${canMessageParent ? " If you cannot proceed without a decision or input, call message_parent and stop." : " If you need information, state the limitation in your report."} Your final answer is your report: concise, verified and complete.`;
-    if (orchestrate && participant.setup.tools?.includes("start_work")) {
+    if (orchestrate && participant.setup.tools?.includes(START_WORK)) {
       instructions += `\n\nYou may hand independent parts to child WORK with start_work; each sees only its brief. Child messages and reports arrive later as messages: reply with message_work. While children run, end your turn; their messages wake you. Do not give your final report while children are still running.\n\nAgents you can start (use the ID):\n${describeParticipants(Object.values(plan.participants))}`;
     }
     await applySetup(tx, id, {
