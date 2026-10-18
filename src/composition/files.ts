@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import type {
+  Binding,
   ConversationSetup,
   KaenoExtension,
   ModelRef,
@@ -14,6 +15,7 @@ import {
   parseModelRef,
   parseAgents,
   resolveAgentSetup,
+  type AgentDefinition,
 } from "../agents/index.ts";
 import {
   directorySource,
@@ -83,6 +85,12 @@ export async function loadFileEnvironment(
     maxDepth?: number;
     maxConcurrent?: number;
     defaultModel?: ModelRef;
+    /** Native extensions are explicitly installed by the embedding host. */
+    extensions?: readonly KaenoExtension[];
+    /** Host-approved extension tools included in assistant and worker defaults. Explicit tool lists override them. */
+    tools?: readonly string[];
+    /** Trusted host policy, resolved once and frozen with each admitted WORK plan. */
+    bindingsFor?: (agent: AgentDefinition) => readonly Binding[];
   } = {},
 ): Promise<{
   assistant: ConversationSetup;
@@ -152,20 +160,29 @@ export async function loadFileEnvironment(
     options.defaultModel ??
     (definition.model ? parseModelRef(definition.model) : undefined);
   const workerSkills = skillBinder(general.catalog);
-  const workerTools = [...WORKER_TOOLS, ...workerSkills.tools];
+  const workerTools = [
+    ...WORKER_TOOLS,
+    ...workerSkills.tools,
+    ...(options.tools ?? []),
+  ];
   const participants = agentParticipants({
     agents: parsed.agents,
-    defaults: { model: defaultModel, tools: WORKER_TOOLS },
+    defaults: {
+      model: defaultModel,
+      tools: [...WORKER_TOOLS, ...(options.tools ?? [])],
+    },
     skills: workerSkills,
+    bindingsFor: options.bindingsFor,
     tools: workerTools,
   });
   const assistant = resolveAgentSetup(
     definition,
     {
       model: defaultModel,
-      tools: ORCHESTRATION,
+      tools: [...ORCHESTRATION, ...(options.tools ?? [])],
     },
     skillBinder(assistantSkills),
+    options.bindingsFor,
   );
   for (const participant of participants.list()) {
     if (!participant.available) {
@@ -177,7 +194,11 @@ export async function loadFileEnvironment(
   }
   return {
     assistant,
-    extensions: [{ durable: CodingTools }, skillsExtension()],
+    extensions: [
+      { durable: CodingTools },
+      skillsExtension(),
+      ...(options.extensions ?? []),
+    ],
     // Keep fixed WORK definitions installed even when a source disappears. The empty catalog
     // prevents new launches, while saved trees remain recoverable. Assistant orchestration tools
     // stay available independently of the catalog; explicit tool selections remain authoritative.

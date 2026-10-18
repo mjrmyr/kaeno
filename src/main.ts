@@ -9,7 +9,10 @@ import { z } from "zod";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { openKaeno } from "./application/index.ts";
-import { loadFileEnvironment } from "./composition/index.ts";
+import {
+  loadFileEnvironment,
+  loadGitHubConfiguration,
+} from "./composition/index.ts";
 import { parseModelRef } from "./agents/index.ts";
 import { ApiServer } from "./api/index.ts";
 import { RemoteExecutionEnv } from "./execution/index.ts";
@@ -18,7 +21,11 @@ import {
   SandboxWorkEnvironment,
 } from "./sandbox/index.ts";
 
+const github = process.env.KAENO_GITHUB_CONFIG
+  ? await loadGitHubConfiguration(process.env.KAENO_GITHUB_CONFIG)
+  : {};
 const configuration = await loadFileEnvironment({
+  ...github,
   defaultModel: process.env.KAENO_DEFAULT_MODEL
     ? parseModelRef(process.env.KAENO_DEFAULT_MODEL)
     : undefined,

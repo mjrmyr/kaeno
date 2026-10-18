@@ -151,13 +151,14 @@ export function resolveAgentSetup(
   agent: AgentDefinition,
   defaults: AgentDefaults,
   skills?: SkillBinder,
+  bindingsFor?: (agent: AgentDefinition) => readonly Binding[],
 ): ConversationSetup {
   const model = agent.model ? parseModelRef(agent.model) : defaults.model;
   if (!model) {
     throw new Error(`no model configured and no default model available`);
   }
   const references = agent.skills ?? [];
-  const bindings: Binding[] = [];
+  const bindings: Binding[] = [...(bindingsFor?.(agent) ?? [])];
   const tools = agent.tools ?? [
     ...new Set([...defaults.tools, ...(skills?.tools ?? [])]),
   ];
@@ -184,6 +185,8 @@ export function agentParticipants(options: {
   agents: readonly AgentDefinition[];
   defaults: AgentDefaults;
   skills?: SkillBinder;
+  /** Extension-owned scope supplied by trusted host composition, never by agent frontmatter. */
+  bindingsFor?: (agent: AgentDefinition) => readonly Binding[];
   /** Installed, host-approved worker tool names; absence leaves validation to the core host. */
   tools?: readonly string[];
 }): Participants {
@@ -198,6 +201,7 @@ export function agentParticipants(options: {
           agent,
           options.defaults,
           options.skills,
+          options.bindingsFor,
         );
         const missing = (setup.tools ?? []).filter(
           (tool) =>

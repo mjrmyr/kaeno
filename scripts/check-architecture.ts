@@ -30,6 +30,7 @@ const optionalFeatures = new Set([
   "composition",
   "definitions",
   "execution",
+  "github",
   "sandbox",
   "skills",
 ]);

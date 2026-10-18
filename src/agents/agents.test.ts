@@ -97,6 +97,39 @@ it.each(["", "\nskills: []"])(
     expect(bind).not.toHaveBeenCalled();
   },
 );
+it("freezes trusted extension bindings without changing explicit tool selection", () => {
+  const agent = parseAgent(
+    manifest(
+      "name: coder\ndescription: Codes\ntools: []\ngithub: self-granted",
+    ),
+    "local",
+    "x",
+  );
+  const binding = { owner: "external", version: 1, value: { scope: [123] } };
+  const participants = agentParticipants({
+    agents: [agent],
+    defaults: {
+      model: { provider: "openai", modelId: "x" },
+      tools: ["external_tool"],
+    },
+    bindingsFor: (definition) =>
+      definition.id === "local:coder" ? [binding] : [],
+  });
+  const plan = participants.plan(agent.id);
+  expect(plan.participants[agent.id].setup.tools).toEqual([]);
+  expect(plan.participants[agent.id].setup.bindings).toEqual([binding]);
+  binding.value.scope.push(456);
+  expect(plan.participants[agent.id].setup.bindings?.[0].value).toEqual({
+    scope: [123],
+  });
+  expect(
+    resolveAgentSetup(agent, {
+      model: { provider: "openai", modelId: "x" },
+      tools: [],
+    }).bindings,
+  ).toEqual([]);
+});
+
 it("keeps explicit empty tool/skill lists and never maps a tool name to a grant", () => {
   const agent = parseAgent(
     manifest("name: scout\ndescription: Investigates\ntools: []\nskills: []"),
