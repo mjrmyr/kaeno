@@ -48,9 +48,10 @@ export function createMockRuntime(
   tx = createMockTransaction(),
 ): Pick<
   Harness,
-  "commit" | "snapshot" | "getTask" | "abortTask" | "waitForTask"
+  "commit" | "snapshot" | "getTask" | "abortTask" | "waitForTask" | "inspect"
 > {
   return {
+    inspect: unexpected,
     commit: async (change) => change(tx),
     snapshot: async () => undefined,
     getTask: async () => undefined,

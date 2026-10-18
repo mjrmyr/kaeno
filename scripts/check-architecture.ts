@@ -15,6 +15,26 @@ const options = ts.parseJsonConfigFileContent(
 const program = ts.createProgram(options.fileNames, options.options);
 const checker = program.getTypeChecker();
 const errors: string[] = [];
+const coreFeatures = new Set([
+  "api",
+  "application",
+  "authority",
+  "conversation",
+  "durable",
+  "threads",
+  "turns",
+  "work",
+]);
+const optionalFeatures = new Set([
+  "agents",
+  "composition",
+  "definitions",
+  "execution",
+  "github",
+  "kubernetes",
+  "sandbox",
+  "skills",
+]);
 async function filesIn(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const groups = await Promise.all(
@@ -142,6 +162,7 @@ for (const path of paths) {
     if (
       owner &&
       owner !== "application" &&
+      owner !== "composition" &&
       !path.endsWith(".test.ts") &&
       ts.isNewExpression(node)
     ) {
@@ -158,6 +179,25 @@ for (const path of paths) {
           file,
           node,
           "Application composition constructs other features; inject their consumer-owned capabilities.",
+        );
+      }
+    }
+    if (
+      owner &&
+      coreFeatures.has(owner) &&
+      ts.isExportDeclaration(node) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteral(node.moduleSpecifier) &&
+      node.moduleSpecifier.text.startsWith(".")
+    ) {
+      const provider = featureOf(
+        resolve(dirname(path), node.moduleSpecifier.text),
+      );
+      if (provider && optionalFeatures.has(provider)) {
+        report(
+          file,
+          node,
+          `Core feature "${owner}" cannot re-export optional feature "${provider}".`,
         );
       }
     }
@@ -230,6 +270,18 @@ for (const path of paths) {
         ? resolve(dirname(path), specifier)
         : undefined;
       const targetOwner = target ? featureOf(target) : undefined;
+      if (
+        owner &&
+        coreFeatures.has(owner) &&
+        targetOwner &&
+        optionalFeatures.has(targetOwner)
+      ) {
+        report(
+          file,
+          node,
+          `Core feature "${owner}" cannot import optional feature "${targetOwner}"; compose it at the application boundary.`,
+        );
+      }
       if (
         targetOwner &&
         targetOwner !== owner &&

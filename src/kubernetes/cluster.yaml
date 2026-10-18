@@ -1,0 +1,110 @@
+# Example namespace-local prerequisites, owned/applied by the operator, not Kaeno.
+# Change namespace and host labels to match your deployment before applying.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kaeno-kubernetes-host
+  namespace: kaeno
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kaeno-kubernetes-host
+  namespace: kaeno
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, create, delete]
+  - apiGroups: [""]
+    resources: [resourcequotas]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kaeno-kubernetes-host
+  namespace: kaeno
+subjects:
+  - kind: ServiceAccount
+    name: kaeno-kubernetes-host
+    namespace: kaeno
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kaeno-kubernetes-host
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kaeno-sandbox
+  namespace: kaeno
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kaeno-sandbox
+  namespace: kaeno
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: kaeno-sandbox
+  ports:
+    - name: envd
+      port: 7070
+      targetPort: envd
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: kaeno-sandbox
+  namespace: kaeno
+spec:
+  scopes: [Terminating]
+  hard:
+    pods: "8"
+    requests.cpu: "4"
+    requests.memory: 4Gi
+    limits.cpu: "8"
+    limits.memory: 8Gi
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kaeno-sandbox
+  namespace: kaeno
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kaeno-sandbox
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kaeno
+      ports:
+        - protocol: TCP
+          port: 7070
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 127.0.0.0/8
+              - 169.254.0.0/16

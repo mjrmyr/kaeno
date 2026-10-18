@@ -1,6 +1,5 @@
 // Turn admission, provenance, causal delivery and replayable replies. All channels use this owner.
 import type { Context } from "@earendil-works/chord";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   AssistantEntry,
   defineDoc,
@@ -17,8 +16,12 @@ import {
 } from "@earendil-works/pi-durable";
 import { z } from "zod";
 import { requireConversation, type Stored } from "../durable/index.ts";
+export interface ChannelRoute {
+  channel: string;
+  address: string;
+}
 export interface Notify {
-  telegram?: number;
+  route?: ChannelRoute;
 }
 export interface Notifier {
   send(notify: Notify, text: string): Promise<void>;
@@ -29,11 +32,37 @@ export type Source =
       kind: "user";
     }
   | {
-      kind: "work-result";
-      workId: TaskId;
+      kind: "activity-result";
+      activityId: TaskId;
       requestId: string;
       epoch: number;
+      /** Consumer-owned display name for stale results. */
+      label?: string;
     };
+export type ResultSource = Exclude<Source, { kind: "user" }>;
+export function isResultSource(source: Source): source is ResultSource {
+  return source.kind !== "user";
+}
+export function resultActivityId(source: ResultSource): TaskId {
+  return source.activityId;
+}
+function sourceIdentity(source: Source): string {
+  return JSON.stringify(
+    source.kind === "user"
+      ? ["user"]
+      : [
+          source.kind,
+          source.activityId,
+          source.requestId,
+          source.epoch,
+          source.label,
+        ],
+  );
+}
+function staleResultText(source: ResultSource, input: TurnInput): string {
+  const label = source.label ?? `Activity #${source.activityId}`;
+  return `[${label}, started before /new]\n${input.report ?? input.content}`;
+}
 export interface Origin {
   conversationId: ConversationId;
   requestId: string;
@@ -139,7 +168,7 @@ export async function admitTurn(
   input: Omit<TurnInput, "epoch">,
 ): Promise<TaskId> {
   const ledger = await tx.doc(TurnLedger, input.conversationId);
-  if (ledger.control && input.source?.kind !== "work-result") {
+  if (ledger.control && (!input.source || !isResultSource(input.source))) {
     throw new Error("Chat control in progress; retry after it completes");
   }
   const existing = ledger.receipts[input.requestId];
@@ -149,14 +178,13 @@ export async function admitTurn(
       ? z
           .object({
             content: z.string(),
-            source: z.object({ kind: z.string() }).optional(),
           })
           .parse(record.input)
       : undefined;
     if (
-      prior &&
-      (prior.content !== input.content ||
-        (prior.source?.kind ?? "user") !== (input.source?.kind ?? "user"))
+      (prior && prior.content !== input.content) ||
+      sourceIdentity(existing.source) !==
+        sourceIdentity(input.source ?? { kind: "user" })
     ) {
       throw new Error(
         "Request ID already admitted with different content/provenance",
@@ -165,7 +193,7 @@ export async function admitTurn(
     return existing.taskId;
   }
   if (
-    input.source?.kind !== "work-result" &&
+    (!input.source || !isResultSource(input.source)) &&
     Object.values(ledger.receipts).filter((value) =>
       ["pending", "dispatching"].includes(value.delivery),
     ).length >= 64
@@ -189,7 +217,7 @@ export async function admitTurn(
     }
   }
   const source = input.source ?? { kind: "user" as const };
-  const epoch = source.kind === "work-result" ? source.epoch : ledger.epoch;
+  const epoch = isResultSource(source) ? source.epoch : ledger.epoch;
   const id = await tx.createTask(
     Turn,
     { ...input, source, epoch },
@@ -221,7 +249,7 @@ export async function activeTurn(
   const ledger = await harness.snapshot(TurnLedger, conversationId, context);
   const inputs = live?.run?.inputs ?? [];
   if (inputs.length !== 1) {
-    throw new Error("Work controls require one durably admitted turn");
+    throw new Error("Activity controls require one durably admitted turn");
   }
   const submission = await harness.submission(inputs[0], context);
   const record = await submission?.status(context);
@@ -229,7 +257,7 @@ export async function activeTurn(
     ? ledger?.receipts[record.requestId]
     : undefined;
   if (!receipt || !record?.requestId) {
-    throw new Error("Work controls require a durably admitted turn");
+    throw new Error("Activity controls require a durably admitted turn");
   }
   return {
     origin: {
@@ -252,46 +280,24 @@ export async function suppressReports(
       ledger.suppressed.push(id);
     }
   }
-  // Never forget suppression while a WORK or its independently owned report Turn can still dispatch.
-  if (ledger.suppressed.length > 1024) {
-    const live = new Set<number>(ids);
-    for (const status of [
-      "pending",
-      "running",
-      "waiting",
-      "completing",
-    ] as const) {
-      for (const task of (
-        await tx.scanTasks({ conversationId, kind: "kaeno.work", status }, 64)
-      ).items) {
-        live.add(task.id);
-      }
-      for (const task of (
-        await tx.scanTasks({ conversationId, kind: "kaeno.turn", status }, 128)
-      ).items) {
-        const source = z
-          .object({
-            source: z
-              .object({ kind: z.string(), workId: z.number().optional() })
-              .optional(),
-          })
-          .parse(task.input).source;
-        if (source?.kind === "work-result" && source.workId !== undefined) {
-          live.add(source.workId);
-        }
-      }
-    }
-    ledger.suppressed = ledger.suppressed.filter((id) => live.has(id));
-  }
+  // Retain tombstones: only the activity owner knows when no future report can arrive.
+  // Bounded task scans could forget live subjects (and independently owned result turns).
 }
 interface ControlInput {
   conversationId: ConversationId;
   action: "stop" | "reset" | "cancel";
-  workId?: TaskId;
+  activityId?: TaskId;
 }
+/** Runs in the admission transaction; the activity owner must reject foreign subjects. */
+export type ValidateActivityCancellation = (
+  tx: Tx,
+  conversationId: ConversationId,
+  activityId: TaskId,
+) => Promise<void>;
+/** Optional host cancellation replaces native cancellation, including stop's background sweep. */
 export function defineControl(
   harness: () => Harness,
-  cancel: (id: ConversationId, workId?: TaskId) => Promise<unknown>,
+  cancel?: (id: ConversationId, activityId?: TaskId) => Promise<unknown>,
 ): ControlTask {
   return defineTask<
     ControlInput,
@@ -301,12 +307,16 @@ export function defineControl(
     null
   >({
     name: "kaeno.control",
-    version: 1,
+    version: 2,
     initial: () => ({ phase: "execute" }),
     phases: {
       execute: async (task, runtime, context) => {
         if (task.input.action === "cancel") {
-          await cancel(task.input.conversationId, task.input.workId);
+          if (cancel) {
+            await cancel(task.input.conversationId, task.input.activityId);
+          } else if (task.input.activityId !== undefined) {
+            await harness().abortTask(task.input.activityId, context);
+          }
           await runtime.commit(
             () => ({
               status: "terminal",
@@ -346,7 +356,37 @@ export function defineControl(
         if (task.input.action === "reset") {
           await conversation.reset(undefined, context);
         } else {
-          await cancel(task.input.conversationId);
+          if (cancel) {
+            await cancel(task.input.conversationId);
+          } else {
+            const ids = await harness().commit(async (tx) => {
+              const ids: TaskId[] = [];
+              let cursor;
+              do {
+                const page = await tx.scanTasks(
+                  { conversationId: task.input.conversationId },
+                  256,
+                  cursor,
+                );
+                for (const record of page.items) {
+                  if (
+                    record.background &&
+                    record.owner === undefined &&
+                    record.kind !== "kaeno.turn" &&
+                    record.kind !== "kaeno.control" &&
+                    record.state.status !== "terminal"
+                  ) {
+                    ids.push(record.id);
+                  }
+                }
+                cursor = page.next;
+              } while (cursor);
+              return ids;
+            }, context);
+            for (const id of ids) {
+              await harness().abortTask(id, context);
+            }
+          }
         }
         await runtime.commit(async (tx) => {
           const ledger = await tx.doc(TurnLedger, task.input.conversationId);
@@ -388,6 +428,31 @@ export async function admitControl(
   if (ledger.control) {
     throw new Error("Chat control already in progress");
   }
+  if (action === "stop") {
+    const subjects = new Set<TaskId>();
+    for (const receipt of Object.values(ledger.receipts)) {
+      if (isResultSource(receipt.source)) {
+        subjects.add(receipt.source.activityId);
+      }
+    }
+    let cursor;
+    do {
+      const page = await tx.scanTasks({ conversationId }, 256, cursor);
+      for (const record of page.items) {
+        if (
+          record.background &&
+          record.owner === undefined &&
+          record.kind !== "kaeno.turn" &&
+          record.kind !== "kaeno.control" &&
+          record.state.status !== "terminal"
+        ) {
+          subjects.add(record.id);
+        }
+      }
+      cursor = page.next;
+    } while (cursor);
+    await suppressReports(tx, conversationId, [...subjects]);
+  }
   const id = await tx.createTask(
     Control,
     { conversationId, action },
@@ -397,42 +462,44 @@ export async function admitControl(
   ledger.control = id;
   return id;
 }
-export async function admitCancel(
+export async function admitActivityCancellation(
   tx: Tx,
   Control: ControlTask,
   conversationId: ConversationId,
-  workId: TaskId,
+  activityId: TaskId,
+  validate: ValidateActivityCancellation = validateNativeActivityCancellation,
 ): Promise<TaskId<null>> {
-  const work = await tx.task(workId);
-  if (
-    !work ||
-    work.kind !== "kaeno.work" ||
-    work.conversationId !== conversationId
-  ) {
-    throw new Error("Work is not owned by this chat");
-  }
+  await validate(tx, conversationId, activityId);
+  await suppressReports(tx, conversationId, [activityId]);
   return tx.createTask(
     Control,
-    { conversationId, action: "cancel", workId },
+    { conversationId, action: "cancel", activityId },
     { ownership: { kind: "conversation" }, conversationId, background: true },
   );
 }
-export async function resetEpoch(
-  harness: Harness,
+/** Only directly conversation-owned background activities are public cancellation subjects. */
+async function validateNativeActivityCancellation(
+  tx: Tx,
   conversationId: ConversationId,
-  Control: ControlTask,
+  activityId: TaskId,
 ): Promise<void> {
-  const id = await harness.commit(
-    (tx) => admitControl(tx, Control, conversationId, "reset"),
-    BACKGROUND_CONTEXT,
-  );
-  await harness.waitForTask(id, BACKGROUND_CONTEXT);
+  const activity = await tx.task(activityId);
+  if (
+    !activity ||
+    activity.conversationId !== conversationId ||
+    activity.owner !== undefined ||
+    !activity.background ||
+    activity.kind === "kaeno.turn" ||
+    activity.kind === "kaeno.control"
+  ) {
+    throw new Error("Activity is not owned by this conversation");
+  }
 }
-/** Definition name/version retained: existing v1 run/notify checkpoints remain executable. */
+/** Core-only v2 intentionally rejects old product payloads; no implicit migration. */
 export function defineTurn(notifier: () => Notifier): TurnTask {
   return defineTask<Stored<TurnInput>, TurnState, null>({
     name: "kaeno.turn",
-    version: 1,
+    version: 2,
     initial: () => ({ phase: "run" }),
     phases: {
       run: async (task, runtime, context) => {
@@ -469,14 +536,14 @@ export function defineTurn(notifier: () => Notifier): TurnTask {
           }
           await runtime.sleep(runtime.now() + 20, context);
         }
-        if (source.kind === "work-result") {
+        if (isResultSource(source)) {
           for (;;) {
             const ledger = await readTurnLedger(
               runtime,
               input.conversationId,
               context,
             );
-            if (ledger.suppressed.includes(source.workId)) {
+            if (ledger.suppressed.includes(resultActivityId(source))) {
               await runtime.commit(async (tx) => {
                 (await tx.doc(TurnLedger, input.conversationId)).receipts[
                   input.requestId
@@ -504,7 +571,7 @@ export function defineTurn(notifier: () => Notifier): TurnTask {
           context,
         );
         if (input.epoch !== undefined && input.epoch !== ledger.epoch) {
-          if (source.kind !== "work-result") {
+          if (!isResultSource(source)) {
             await runtime.commit(async (tx) => {
               (await tx.doc(TurnLedger, input.conversationId)).receipts[
                 input.requestId
@@ -521,7 +588,7 @@ export function defineTurn(notifier: () => Notifier): TurnTask {
               status: "running",
               checkpoint: {
                 phase: "notify",
-                text: `[Work #${source.workId}, started before /new]\n${input.report ?? input.content}`,
+                text: staleResultText(source, input),
               },
             }),
             context,
@@ -558,12 +625,12 @@ export function defineTurn(notifier: () => Notifier): TurnTask {
               continue;
             }
             await runtime.commit(async (tx) => {
-              if (source.kind === "work-result") {
+              if (isResultSource(source)) {
                 return {
                   status: "running",
                   checkpoint: {
                     phase: "notify",
-                    text: `[Work #${source.workId}, started before /new]\n${input.report ?? input.content}`,
+                    text: staleResultText(source, input),
                   },
                 };
               }
@@ -642,13 +709,15 @@ export function defineTurn(notifier: () => Notifier): TurnTask {
         // A pre-upgrade notify checkpoint is also initialized here. Recovery retries a claimed send (at-least-once).
         await runtime.commit(async (tx) => {
           const doc = await tx.doc(TurnLedger, conversationId);
-          const row = (doc.receipts[requestId] ??= {
+          doc.receipts[requestId] ??= {
             taskId: task.id,
             epoch: task.input.epoch ?? doc.epoch,
             notify: notify ?? {},
             source,
             delivery: "pending",
-          });
+          };
+          // Re-read through the document proxy: the initializer is a detached object.
+          const row = doc.receipts[requestId];
           if (["delivered", "failed", "cancelled"].includes(row.delivery)) {
             return {
               status: "terminal",
@@ -657,11 +726,11 @@ export function defineTurn(notifier: () => Notifier): TurnTask {
           }
           if (row.delivery !== "dispatching") {
             const suppressed =
-              source.kind === "work-result" &&
-              doc.suppressed.includes(source.workId);
+              isResultSource(source) &&
+              doc.suppressed.includes(resultActivityId(source));
             if (
               suppressed ||
-              (source.kind !== "work-result" && row.epoch !== doc.epoch)
+              (!isResultSource(source) && row.epoch !== doc.epoch)
             ) {
               row.delivery = "cancelled";
               return {
@@ -670,8 +739,8 @@ export function defineTurn(notifier: () => Notifier): TurnTask {
               };
             }
             row.text =
-              source.kind === "work-result" && source.epoch !== doc.epoch
-                ? `[Work #${source.workId}, started before /new]\n${task.input.report ?? task.input.content}`
+              isResultSource(source) && source.epoch !== doc.epoch
+                ? staleResultText(source, task.input)
                 : task.state.checkpoint.text;
             row.delivery = "dispatching";
           }
@@ -710,13 +779,14 @@ export function defineTurn(notifier: () => Notifier): TurnTask {
         }
         await runtime.commit(async (tx) => {
           const doc = await tx.doc(TurnLedger, conversationId);
-          const row = (doc.receipts[requestId] ??= {
+          doc.receipts[requestId] ??= {
             taskId: task.id,
             epoch: task.input.epoch ?? doc.epoch,
             notify: notify ?? {},
             source,
             delivery: "pending",
-          });
+          };
+          const row = doc.receipts[requestId];
           row.delivery = failed ? "failed" : "delivered";
           row.text = replyText;
           if (!doc.replies.some((value) => value.requestId === requestId)) {
@@ -740,8 +810,11 @@ export function defineTurn(notifier: () => Notifier): TurnTask {
     },
     abort: (task, runtime, context) =>
       runtime.commit(async (tx) => {
-        const row = (await tx.doc(TurnLedger, task.input.conversationId))
-          .receipts[task.input.requestId];
+        const ledger = await tx.doc(TurnLedger, task.input.conversationId);
+        if (ledger.submitting === task.id) {
+          delete ledger.submitting;
+        }
+        const row = ledger.receipts[task.input.requestId];
         if (row) {
           row.delivery = "cancelled";
         }

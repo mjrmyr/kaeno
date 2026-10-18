@@ -1,6 +1,7 @@
-// WORK: one durable agent in its own sandbox. CHAT starts root WORK; WORK may start child WORK up to the frozen
-// maxDepth. Communication follows parent↔child edges only: messages go down, messages and reports go up.
-import type { Context, JsonValue } from "@earendil-works/chord";
+// WORK: one durable participant conversation, optionally in its own environment. CHAT starts root WORK; WORK may
+// start child WORK up to maxDepth. Communication follows parent↔child edges only: messages go down, messages and
+// reports go up. Every participant may delegate to every participant in the plan frozen at root admission.
+import { copyJson, type Context, type JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Type } from "@earendil-works/pi-ai";
 import {
@@ -11,10 +12,13 @@ import {
   defineTool,
   LiveDoc,
   type ConversationId,
+  type Cursor,
   type EntryRecord,
   type Extension,
   type Harness,
+  type JsonObject,
   type NextTaskState,
+  type Submission,
   type TaskId,
   type TaskRecord,
   type TaskRuntime,
@@ -23,33 +27,60 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import { z } from "zod";
-import { ArtifactStore, type RunManifest } from "../artifacts/index.ts";
-import { parseTaskId, requireConversation } from "../durable/index.ts";
+import {
+  applySetup,
+  type Binding,
+  type SetupSurface,
+} from "../conversation/index.ts";
+import {
+  parseConversationId,
+  parseTaskId,
+  requireConversation,
+  type Stored,
+} from "../durable/index.ts";
 import type { Origin, Source } from "../turns/index.ts";
 import {
-  frozenEntry,
-  readBlueprint,
-  storageCopy,
-  type Stored,
-  type WorkBlueprint,
-} from "./work-blueprint.ts";
+  assertPlanFits,
+  describeParticipants,
+  readPlan,
+  resolveParticipantId,
+  storedPlan,
+  type Participants,
+  type WorkEnvironment,
+  type WorkInstance,
+  type WorkPlan,
+} from "./plan.ts";
 /** Where messages and the final report go. CHAT parents route through the turn ledger; WORK parents get inputs. */
+const workParentSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("chat"),
+    origin: z.object({
+      conversationId: z.number().int().positive(),
+      requestId: z.string(),
+      epoch: z.number().int().nonnegative(),
+      notify: z.object({
+        route: z
+          .object({ channel: z.string(), address: z.string() })
+          .optional(),
+      }),
+    }),
+  }),
+  z.object({
+    kind: z.literal("work"),
+    conversationId: z.number().int().positive(),
+  }),
+]);
 export type WorkParent =
-  | {
-      kind: "chat";
-      origin: Origin;
-    }
-  | {
-      kind: "work";
-      conversationId: ConversationId;
-    };
-interface WorkInput {
+  | { kind: "chat"; origin: Origin }
+  | { kind: "work"; conversationId: ConversationId };
+interface WorkInput extends JsonObject {
   title: string;
   brief: string;
   agent: string;
   depth: number;
-  parent: WorkParent;
-  blueprint: Stored<WorkBlueprint>;
+  maxDepth: number;
+  parent: JsonValue;
+  plan: JsonValue;
 }
 export interface WorkResult {
   status: "completed" | "failed";
@@ -84,18 +115,20 @@ type WorkState =
       failed: boolean;
     };
 type WorkTaskRuntime = TaskRuntime<
-  Stored<WorkInput>,
+  WorkInput,
   WorkState,
   Stored<WorkResult>,
   object
 >;
 export interface WorkRuntime extends Pick<
   Harness,
-  "snapshot" | "getTask" | "commit" | "abortTask"
+  "snapshot" | "getTask" | "commit" | "abortTask" | "inspect"
 > {}
 /** Children started by one conversation (CHAT or WORK), keyed by the start_work tool call that admitted them. */
 export const WorkIndex = defineDoc<{
   launches: Record<string, TaskId<WorkResult>>;
+  /** Durable steering intents, keyed by tool invocation; external dispatch follows this commit. */
+  messages?: Record<string, TaskId>;
 }>({
   kind: "kaeno.work-index",
   version: 1,
@@ -104,90 +137,66 @@ export const WorkIndex = defineDoc<{
   fork: "initial",
   initial: () => ({ launches: {} }),
 });
-interface WorkScopeState {
-  workId?: TaskId;
+interface WorkScopeState extends JsonObject {
+  workId: TaskId | null;
   depth: number;
-  agent?: string;
-  blueprint?: Stored<WorkBlueprint>;
-  message?: string;
+  maxDepth: number | null;
+  agent: string | null;
+  plan: JsonValue | null;
+  message: string | null;
 }
 /** A WORK conversation's place in its tree. CHAT conversations keep the initial value (depth 0, no work). */
-export const WorkScope = defineDoc<Stored<WorkScopeState>>({
-  kind: "kaeno.work-scope",
+export const WorkScope = defineDoc<WorkScopeState>({
+  kind: "kaeno.work-node",
   version: 1,
   scope: "conversation",
   history: "latest",
   fork: "initial",
-  initial: () => ({ depth: 0 }),
+  initial: () => ({
+    workId: null,
+    depth: 0,
+    maxDepth: null,
+    agent: null,
+    plan: null,
+    message: null,
+  }),
 });
-export interface WorkArtifactsSummary {
-  present: boolean;
-  truncated: boolean;
-  bytes: number;
-}
 export interface WorkView {
   id: TaskId;
   title: string;
   agent: string;
   status: string;
-  artifacts?: WorkArtifactsSummary;
 }
 export interface WorkDetails extends WorkView {
   message?: string;
   latest?: string;
   children: WorkView[];
 }
-export interface ArtifactsListing {
-  manifest: RunManifest;
-  files: string[];
-}
-export interface ArtifactFile {
-  path: string;
-  text?: string;
-  base64?: string;
-}
-export interface WorkSetup {
-  blueprint: WorkBlueprint;
-  agent: string;
-  workId: TaskId;
-  orchestrate: boolean;
-}
-export interface WorkAgents {
-  captureWorkBlueprint(agent: string): WorkBlueprint;
-  configureWorkConversation(
-    tx: Tx,
-    id: ConversationId,
-    setup: WorkSetup,
-  ): Promise<void>;
-  provisionWorkSandbox(
-    id: ConversationId,
-    workId: TaskId,
-    ctx: Context,
-  ): Promise<void>;
-  releaseWorkSandbox(id: ConversationId): Promise<void>;
-  /** How many sandboxes the cluster grants (the given resources); throws when it cannot say. */
-  sandboxPool(): Promise<{ slots: number; summary: string }>;
-}
-export interface WorkTemplateChoice {
-  name: string;
-  description: string;
-}
-export interface WorkTemplateSource {
-  listWorkTemplates(): readonly WorkTemplateChoice[];
+/** Core WORK settings supplied by application composition. */
+export interface WorkSettings {
+  participants: Participants;
+  environment?: WorkEnvironment;
+  /** The approved worker surface: tools participants may select, and installed binding owners. */
+  surface: () => SetupSurface;
+  maxDepth: number;
+  /** Unfinished WORK across the whole host; counted inside the admission transaction. */
+  maxConcurrent: number;
+  /** Unfinished WORK started by one conversation. */
+  maxActive?: number;
 }
 export interface WorkReport {
   workId: TaskId;
   key: string;
   content: string;
   report: string;
-  origin: Origin;
+  origin: Extract<WorkParent, { kind: "chat" }>["origin"];
 }
 export interface WorkTurns {
   getActiveTurn(
     id: ConversationId,
     ctx: Context,
   ): Promise<{
-    origin: Origin;
+    origin: Extract<WorkParent, { kind: "chat" }>["origin"];
     source: Source;
   }>;
   isOriginFenced(tx: Tx, origin: Origin): Promise<boolean>;
@@ -208,6 +217,28 @@ const LIVE = ["pending", "running", "waiting", "completing"] as const;
 const FINISHED = ["completed", "failed", "aborted", "faulted", "orphaned"];
 const workInputSchema = z.object({ title: z.string(), agent: z.string() });
 const resultSchema = z.object({ status: z.string() });
+const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
+  z.union([
+    z.string(),
+    z.number(),
+    z.boolean(),
+    z.null(),
+    z.array(jsonValueSchema),
+    z.record(z.string(), jsonValueSchema),
+  ]),
+);
+function readParent(value: JsonValue): WorkParent {
+  const parent = workParentSchema.parse(value);
+  return parent.kind === "chat"
+    ? {
+        ...parent,
+        origin: {
+          ...parent.origin,
+          conversationId: parseConversationId(parent.origin.conversationId),
+        },
+      }
+    : { ...parent, conversationId: parseConversationId(parent.conversationId) };
+}
 const checkpointSchema = z.object({
   phase: z.string(),
   conversation: z.number().optional(),
@@ -254,11 +285,16 @@ async function liveWork(
 ): Promise<TaskId[]> {
   const ids: TaskId[] = [];
   for (const status of LIVE) {
-    const page = await tx.scanTasks(
-      { conversationId, kind: "kaeno.work", status },
-      256,
-    );
-    ids.push(...page.items.map((task) => task.id));
+    let cursor: Cursor | undefined;
+    do {
+      const page = await tx.scanTasks(
+        { conversationId, kind: "kaeno.work", status },
+        256,
+        cursor,
+      );
+      ids.push(...page.items.map((task) => task.id));
+      cursor = page.next;
+    } while (cursor !== undefined);
   }
   return ids;
 }
@@ -300,37 +336,25 @@ export class Work {
   readonly parentTools: ToolRegistration[];
   private readonly harness: () => WorkRuntime;
   private readonly turns: WorkTurns;
-  private readonly templates: WorkTemplateSource;
-  private readonly agents: () => WorkAgents;
-  private readonly artifacts?: ArtifactStore;
+  private readonly settings: WorkSettings;
   private readonly maxActive: number;
   constructor(
     harness: () => WorkRuntime,
     turns: WorkTurns,
-    templates: WorkTemplateSource,
-    agents: () => WorkAgents,
-    artifacts?: ArtifactStore,
-    maxActive = 32,
+    settings: WorkSettings,
   ) {
     this.harness = harness;
     this.turns = turns;
-    this.templates = templates;
-    this.agents = agents;
-    this.artifacts = artifacts;
-    this.maxActive = maxActive;
-    const WorkTask = defineTask<
-      Stored<WorkInput>,
-      WorkState,
-      Stored<WorkResult>
-    >({
+    this.settings = settings;
+    this.maxActive = settings.maxActive ?? 32;
+    const WorkTask = defineTask<WorkInput, WorkState, Stored<WorkResult>>({
       name: "kaeno.work",
-      version: 2,
+      version: 3,
       initial: () => ({ phase: "start" }),
       phases: {
         start: (task, runtime, context) =>
           runtime.commit(async (tx) => {
-            const blueprint = readBlueprint(task.input.blueprint);
-            const template = frozenEntry(blueprint, task.input.agent).template;
+            const plan = readPlan(task.input.plan);
             const found = (
               await tx.scanConversations({ ownerTaskId: task.id }, 1)
             ).items[0];
@@ -340,23 +364,19 @@ export class Work {
                 ownership: { kind: "task", taskId: task.id },
               }));
             if (!found) {
-              await this.agents().configureWorkConversation(
+              await this.configureParticipant(
                 tx,
                 conversation.id,
-                {
-                  blueprint,
-                  agent: task.input.agent,
-                  workId: task.id,
-                  orchestrate:
-                    task.input.depth < blueprint.maxDepth &&
-                    template.delegates.length > 0,
-                },
+                plan,
+                task.input.agent,
+                task.input.depth < task.input.maxDepth,
               );
               const scope = await tx.doc(WorkScope, conversation.id);
               scope.workId = task.id;
               scope.depth = task.input.depth;
+              scope.maxDepth = task.input.maxDepth;
               scope.agent = task.input.agent;
-              scope.blueprint = storageCopy(blueprint);
+              scope.plan = storedPlan(plan);
             }
             return {
               status: "running",
@@ -377,7 +397,8 @@ export class Work {
           ),
         message: async (task, runtime, context) => {
           const { conversation, sent, seen, message } = task.state.checkpoint;
-          const { title, parent } = task.input;
+          const { title } = task.input;
+          const parent = readParent(task.input.parent);
           const label = `Work #${task.id} (${title})`;
           await this.deliverReport(
             runtime,
@@ -403,12 +424,18 @@ export class Work {
         },
         report: async (task, runtime, context) => {
           const { conversation, text, failed } = task.state.checkpoint;
-          const { title, parent } = task.input;
-          // Late messages must not start runs in a finished WORK; then its sandbox goes.
+          const { title } = task.input;
+          const parent = readParent(task.input.parent);
+          // Recovery/environment failures may reach report with children still running. Quiesce
+          // the whole subtree before retiring its parent conversation and resources.
+          await this.stopChildren(conversation, runtime, context);
           await (
             await runtime.conversation(conversation, context)
           )?.abort(context);
-          await this.agents().releaseWorkSandbox(conversation);
+          await this.settings.environment?.release(
+            { workId: task.id, conversationId: conversation },
+            this.harness(),
+          );
           const label = `Work #${task.id} (${title})`;
           await this.deliverReport(
             runtime,
@@ -438,25 +465,18 @@ export class Work {
           )
         ).items[0];
         if (conversation) {
-          // Children are background tasks of this WORK conversation: cascade explicitly, deepest first.
-          const children = await this.harness().commit(
-            (tx) => liveWork(tx, conversation.id),
-            context,
-          );
-          for (const child of children) {
-            await this.harness().abortTask(child, context);
-          }
-          for (const child of children) {
-            await runtime.waitForTask(child, context);
-          }
+          await this.stopChildren(conversation.id, runtime, context);
           // Withdraw reports children queued before they stopped.
           await (
             await runtime.conversation(conversation.id, context)
           )?.abort(context);
-          await this.agents().releaseWorkSandbox(conversation.id);
+          await this.settings.environment?.release(
+            { workId: task.id, conversationId: conversation.id },
+            this.harness(),
+          );
         }
         await runtime.commit(async (tx) => {
-          if (task.input.parent.kind === "chat") {
+          if (readParent(task.input.parent).kind === "chat") {
             await this.turns.suppressWorkReports(tx, task.conversationId, [
               task.id,
             ]);
@@ -468,9 +488,9 @@ export class Work {
     const start = defineTool({
       name: "start_work",
       description:
-        "Start a WORK agent in its own sandbox. Returns immediately; its messages and final report arrive later as messages. Pick a template listed in your instructions and give a complete, self-contained brief.",
+        "Start a WORK agent. Returns immediately; its messages and final report arrive later as messages. Pick an agent listed in your instructions and give a complete, self-contained brief.",
       parameters: Type.Object({
-        agent: Type.String({ description: "Work template name" }),
+        agent: Type.String({ description: "Agent ID from your instructions" }),
         title: Type.String({ minLength: 1, maxLength: 160 }),
         brief: Type.String({ minLength: 1, maxLength: 64000 }),
       }),
@@ -481,22 +501,30 @@ export class Work {
           api.conversationId,
           context,
         );
-        const parent: WorkParent =
-          caller?.workId === undefined
-            ? {
-                kind: "chat",
-                origin: await this.resolveAuthorizedOrigin(api, context),
-              }
-            : { kind: "work", conversationId: api.conversationId };
-        // Given resources: read before the commit (it is a Kubernetes call). A replayed call that
-        // already launched its work must not depend on the cluster, so it skips the read.
+        const isRoot = caller === undefined || caller.workId === null;
+        const parent: WorkParent = isRoot
+          ? {
+              kind: "chat",
+              origin: await this.resolveAuthorizedOrigin(api, context),
+            }
+          : { kind: "work", conversationId: api.conversationId };
+        // A replayed call that already launched its work keeps it; a new root plan is prepared outside
+        // the admission transaction from the participants loaded at startup, then saved inside it.
         const launched = (
           await api.snapshot(WorkIndex, api.conversationId, context)
         )?.launches[String(api.taskId)];
-        const pool =
-          launched === undefined
-            ? await this.agents().sandboxPool()
+        const rootPlan =
+          launched === undefined && isRoot
+            ? this.prepareRootPlan(agent)
             : undefined;
+        const capacity =
+          launched === undefined
+            ? await this.settings.environment?.capacity?.(context)
+            : undefined;
+        const limit = Math.min(
+          this.settings.maxConcurrent,
+          capacity ?? this.settings.maxConcurrent,
+        );
         const id = await api.commit(async (tx) => {
           if (
             parent.kind === "chat" &&
@@ -510,46 +538,39 @@ export class Work {
           if (existing) {
             return existing;
           }
-          let blueprint: WorkBlueprint;
+          let plan: WorkPlan;
+          let participant: string;
           let depth: number;
-          if (caller?.workId === undefined) {
-            const eligible = this.templates
-              .listWorkTemplates()
-              .map((template) => template.name);
-            if (!eligible.includes(agent)) {
-              throw new Error(
-                `Unknown work template "${agent}". Available: ${eligible.join(", ")}`,
-              );
+          if (isRoot) {
+            if (!rootPlan) {
+              throw new Error("Work launch changed during admission; retry");
             }
-            blueprint = this.agents().captureWorkBlueprint(agent);
+            plan = rootPlan;
+            participant = rootPlan.root;
             depth = 1;
           } else {
-            blueprint = readBlueprint(caller.blueprint);
-            if (caller.depth >= blueprint.maxDepth) {
+            plan = readPlan(caller.plan);
+            if (caller.maxDepth === null || caller.depth >= caller.maxDepth) {
               throw new Error(
                 "This WORK is at the maximum nesting depth and cannot start child work",
               );
             }
-            const allowed = frozenEntry(blueprint, caller.agent ?? "").template
-              .delegates;
-            if (!allowed.includes(agent)) {
-              throw new Error(
-                `Unknown work template "${agent}". Available: ${allowed.join(", ") || "none"}`,
-              );
-            }
+            participant = resolveParticipantId(
+              agent,
+              Object.keys(plan.participants),
+            );
             depth = caller.depth + 1;
           }
-          // Admission: every unfinished WORK holds one sandbox until it is terminal, and a parent keeps
-          // its sandbox while it waits for children. Starting work only when a sandbox is free for it
-          // now means no WORK ever waits for a slot, so parents and children cannot deadlock.
-          // Counted inside this commit, so concurrent start_work calls cannot overbook the pool.
-          if (pool !== undefined) {
-            const used = (await liveWork(tx)).length;
-            if (used >= pool.slots) {
-              throw new Error(
-                `No free sandbox: ${used} of ${pool.slots} are in use by unfinished works. Wait for a running work to report or cancel one, then retry. Pool: ${pool.summary}`,
-              );
-            }
+          assertPlanFits(plan, this.settings.surface());
+          // Every unfinished WORK may hold an environment until it is terminal, and a parent keeps its
+          // own while it waits for children. Starting work only when a slot is free now means no WORK
+          // waits for one, so parents and children cannot deadlock. Counted inside this commit, so
+          // concurrent start_work calls cannot overbook.
+          const used = (await liveWork(tx)).length;
+          if (used >= limit) {
+            throw new Error(
+              `No free work slot: ${used} of ${limit} are in use by unfinished works. Wait for a running work to report or cancel one, then retry.`,
+            );
           }
           const live = await liveWork(tx, api.conversationId);
           if (live.length >= this.maxActive) {
@@ -580,10 +601,13 @@ export class Work {
             {
               title,
               brief,
-              agent,
+              agent: participant,
               depth,
-              parent,
-              blueprint: storageCopy(blueprint),
+              maxDepth: caller?.maxDepth ?? this.settings.maxDepth,
+              parent: jsonValueSchema.parse(
+                copyJson(parent, { omitUndefinedProperties: true }),
+              ),
+              plan: storedPlan(plan),
             },
             {
               ownership: { kind: "conversation" },
@@ -602,7 +626,7 @@ export class Work {
           content: [
             {
               type: "text",
-              text: `Started work #${id}: ${title} (template ${agent}). ${next}`,
+              text: `Started work #${id}: ${title} (agent ${agent}). ${next}`,
             },
           ],
           details: { workId: id, agent },
@@ -659,9 +683,10 @@ export class Work {
           api.conversationId,
           context,
         );
-        if (caller?.workId === undefined) {
-          await this.resolveAuthorizedOrigin(api, context);
-        }
+        const isRoot = caller === undefined || caller.workId === null;
+        const origin = isRoot
+          ? await this.resolveAuthorizedOrigin(api, context)
+          : undefined;
         const target = await this.requireChild(
           api.conversationId,
           parseTaskId(id),
@@ -670,6 +695,31 @@ export class Work {
         if (target.conversation === undefined) {
           throw new Error(`Work #${id} is still starting; retry shortly`);
         }
+        // Commit the effect intent with its origin fence and ownership checks. Submission is
+        // dispatched afterward and may finish in flight after a later stop/reset, like other
+        // admitted effects; it must never acquire authority from an earlier invocation-only check.
+        await api.commit(async (tx) => {
+          if (origin && (await this.turns.isOriginFenced(tx, origin))) {
+            throw new Error("This turn was fenced by stop/reset");
+          }
+          const child = await tx.task(parseTaskId(id));
+          if (
+            !child ||
+            child.kind !== "kaeno.work" ||
+            child.conversationId !== api.conversationId ||
+            child.abortRequested ||
+            child.state.status === "terminal"
+          ) {
+            throw new Error(`Work #${id} is no longer a live child here`);
+          }
+          const index = await tx.doc(WorkIndex, api.conversationId);
+          const messages = (index.messages ??= {});
+          messages[String(api.taskId)] = parseTaskId(id);
+          const keys = Object.keys(messages);
+          for (const key of keys.slice(0, Math.max(0, keys.length - 512))) {
+            delete messages[key];
+          }
+        }, context);
         const conversation = await requireConversation(
           api,
           target.conversation,
@@ -678,7 +728,7 @@ export class Work {
         await conversation.submit(
           {
             type: "input",
-            content: `Message from your ${caller?.workId === undefined ? "CHAT" : "parent WORK"}:\n\n${text}`,
+            content: `Message from your ${isRoot ? "CHAT" : "parent WORK"}:\n\n${text}`,
             requestId: `message:${api.taskId}`,
             whenBusy: "steer",
           },
@@ -694,7 +744,7 @@ export class Work {
     const cancel = defineTool({
       name: "cancel_work",
       description:
-        "Cancel a work you started. Its own children are cancelled too, and sandboxes are removed.",
+        "Cancel a work you started. Its own children are cancelled too, and their environments are removed.",
       parameters: Type.Object({ id: Type.Integer({ minimum: 1 }) }),
       replay: "safe",
       execute: async ({ id }, api, context) => {
@@ -704,7 +754,8 @@ export class Work {
           api.conversationId,
           context,
         );
-        if (caller?.workId === undefined) {
+        const isRoot = caller === undefined || caller.workId === null;
+        if (isRoot) {
           const origin = await this.resolveAuthorizedOrigin(api, context);
           await api.commit(async (tx) => {
             if (await this.turns.isOriginFenced(tx, origin)) {
@@ -738,7 +789,7 @@ export class Work {
       execute: async ({ text }, api, context) => {
         await api.commit(async (tx) => {
           const scope = await tx.doc(WorkScope, api.conversationId);
-          if (scope.workId === undefined) {
+          if (scope.workId === null) {
             throw new Error("Only WORK has a parent to message");
           }
           scope.message = text;
@@ -761,6 +812,159 @@ export class Work {
       tools: [...this.orchestrationTools, ...this.parentTools],
       tasks: [WorkTask],
     });
+  }
+  private async stopChildren(
+    conversationId: ConversationId,
+    runtime: WorkTaskRuntime,
+    context: Context,
+  ): Promise<void> {
+    const children = await this.harness().commit(
+      (tx) => liveWork(tx, conversationId),
+      context,
+    );
+    for (const child of children) {
+      await this.harness().abortTask(child, context);
+    }
+    for (const child of children) {
+      await runtime.waitForTask(child, context);
+    }
+  }
+  /** Model-facing guidance for CHAT, listing every participant it may start. */
+  describeForChat(): string {
+    const participants = this.settings.participants.list();
+    const available = participants.filter(
+      (participant) => participant.available,
+    );
+    const unavailable = participants.filter(
+      (participant) => !participant.available,
+    );
+    return [
+      "You support delegation with start_work. Delegate substantial or parallelizable work when an agent is available.",
+      "Use a complete, self-contained brief. Work runs asynchronously; continue responding instead of waiting for it.",
+      "Use list_work and inspect_work for progress, message_work for clarification, and cancel_work to stop work.",
+      "Available agents (use the ID with start_work):",
+      describeParticipants(available) ||
+        (participants.length === 0
+          ? "No worker agents are configured. You cannot start new work until an agent is configured; this does not remove your delegation capability or prevent managing existing work."
+          : "No configured worker agents are currently available. You cannot start new work until an agent's configuration is fixed."),
+      ...unavailable.map(
+        (participant) =>
+          `Unavailable agent ${participant.id}: ${participant.reason ?? "unavailable"}`,
+      ),
+    ].join("\n");
+  }
+  /** Pure: resolve and validate a root plan from the participants loaded at startup. */
+  private prepareRootPlan(requested: string): WorkPlan {
+    const participants = this.settings.participants.list();
+    if (participants.length === 0) {
+      throw new Error(
+        "No worker agents are configured. Configure at least one available agent before starting work. You can still list, inspect, message or cancel existing work.",
+      );
+    }
+    const ids = participants.map((participant) => participant.id);
+    const plan = readPlan(
+      this.settings.participants.plan(resolveParticipantId(requested, ids)),
+    );
+    assertPlanFits(plan, this.settings.surface());
+    return plan;
+  }
+  private async configureParticipant(
+    tx: Tx,
+    id: ConversationId,
+    plan: WorkPlan,
+    participantId: string,
+    orchestrate: boolean,
+  ): Promise<void> {
+    const participant = plan.participants[participantId];
+    if (!participant) {
+      throw new Error(`Missing saved participant "${participantId}"`);
+    }
+    const canMessageParent =
+      participant.setup.tools?.includes("message_parent") ?? false;
+    let instructions = `${participant.setup.instructions}\n\nYou are Kaeno WORK, responsible for one task. Do the work yourself with the tools you have and verify it. Messages from whoever started you may arrive while you work.${canMessageParent ? " If you cannot proceed without a decision or input, call message_parent and stop." : " If you need information, state the limitation in your report."} Your final answer is your report: concise, verified and complete.`;
+    if (orchestrate && participant.setup.tools?.includes("start_work")) {
+      instructions += `\n\nYou may hand independent parts to child WORK with start_work; each sees only its brief. Child messages and reports arrive later as messages: reply with message_work. While children run, end your turn; their messages wake you. Do not give your final report while children are still running.\n\nAgents you can start (use the ID):\n${describeParticipants(Object.values(plan.participants))}`;
+    }
+    await applySetup(tx, id, {
+      setup: participant.setup,
+      surface: this.settings.surface(),
+      extraExtensions: [],
+      instructions,
+      cwd: this.settings.environment?.cwd ?? null,
+    });
+  }
+  /**
+   * Paused-startup check: every unfinished WORK's saved plan must still fit the installed worker
+   * surface. A removed tool or binding owner fails startup instead of silently changing saved work.
+   */
+  async assertSavedWorkFits(context: Context): Promise<void> {
+    const problems: string[] = [];
+    for (const { record } of (await this.harness().inspect(context)).tasks) {
+      if (record.kind !== "kaeno.work" || record.state.status === "terminal") {
+        continue;
+      }
+      try {
+        assertPlanFits(
+          readPlan(z.object({ plan: z.unknown() }).parse(record.input).plan),
+          this.settings.surface(),
+        );
+      } catch (error) {
+        problems.push(
+          `Work #${record.id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    if (problems.length > 0) {
+      throw new Error(
+        [
+          "Saved WORK no longer fits the installed worker surface:",
+          ...problems.map((problem) => `- ${problem}`),
+          "Restore the removed tools/extensions or cancel the affected work before restarting.",
+        ].join("\n"),
+      );
+    }
+  }
+  /** Check extension-owned data even for participants whose conversations haven't been created yet. */
+  async validateSavedBindings(
+    validate: (binding: Binding) => void,
+    context: Context,
+  ): Promise<void> {
+    for (const { record } of (await this.harness().inspect(context)).tasks) {
+      if (record.kind !== "kaeno.work" || record.state.status === "terminal") {
+        continue;
+      }
+      const plan = readPlan(
+        z.object({ plan: z.unknown() }).parse(record.input).plan,
+      );
+      for (const participant of Object.values(plan.participants)) {
+        for (const binding of participant.setup.bindings ?? []) {
+          validate(binding);
+        }
+      }
+    }
+  }
+  /** Remove environment resources that no longer back an unfinished WORK. */
+  async reconcileEnvironment(context: Context): Promise<void> {
+    const environment = this.settings.environment;
+    if (!environment) {
+      return;
+    }
+    const live: WorkInstance[] = [];
+    for (const { record } of (await this.harness().inspect(context)).tasks) {
+      if (record.kind !== "kaeno.work" || record.state.status === "terminal") {
+        continue;
+      }
+      const conversation = (
+        await this.harness().commit(
+          (tx) => tx.scanConversations({ ownerTaskId: record.id }, 1),
+          context,
+        )
+      ).items[0];
+      if (conversation) {
+        live.push({ workId: record.id, conversationId: conversation.id });
+      }
+    }
+    await environment.reconcile(live, this.harness());
   }
   async listWork(conversationId: ConversationId): Promise<WorkView[]> {
     const index = await this.harness().snapshot(
@@ -813,90 +1017,7 @@ export class Work {
       title: input.title,
       agent: input.agent,
       status: describeWork(record),
-      artifacts: await this.artifactsSummary(id),
     };
-  }
-  /** Artifacts summary for a WorkView; absent when nothing was collected or no store is wired. */
-  private async artifactsSummary(
-    id: TaskId,
-  ): Promise<WorkArtifactsSummary | undefined> {
-    const store = this.artifacts;
-    if (!store) {
-      return undefined;
-    }
-    try {
-      const manifest = await store.readManifest({ workId: id, taskId: id });
-      return {
-        present: true,
-        truncated: manifest.capture.truncated,
-        bytes: manifest.capture.bytes,
-      };
-    } catch {
-      return undefined;
-    }
-  }
-  /**
-   * Retrieval access: the CHAT root (depth 0, or no scope yet) reads every run; a WORK
-   * agent reads only its own run and the runs it started — parent↔child edges only.
-   */
-  private async artifactsReadable(
-    caller: ConversationId,
-    id: TaskId,
-  ): Promise<boolean> {
-    const scope = await this.harness().snapshot(
-      WorkScope,
-      caller,
-      BACKGROUND_CONTEXT,
-    );
-    if (!scope || scope.depth === 0) {
-      return true;
-    }
-    if (scope.workId === id) {
-      return true;
-    }
-    const index = await this.harness().snapshot(
-      WorkIndex,
-      caller,
-      BACKGROUND_CONTEXT,
-    );
-    return Object.values(index?.launches ?? {}).some((child) => child === id);
-  }
-  async readArtifacts(
-    caller: ConversationId,
-    id: TaskId,
-  ): Promise<ArtifactsListing | undefined> {
-    const store = this.artifacts;
-    if (!store || !(await this.artifactsReadable(caller, id))) {
-      return undefined;
-    }
-    try {
-      return {
-        manifest: await store.readManifest({ workId: id, taskId: id }),
-        files: await store.list({ workId: id, taskId: id }),
-      };
-    } catch {
-      return undefined;
-    }
-  }
-  async readArtifactFile(
-    caller: ConversationId,
-    id: TaskId,
-    path: string,
-  ): Promise<ArtifactFile | undefined> {
-    const store = this.artifacts;
-    if (!store || !(await this.artifactsReadable(caller, id))) {
-      return undefined;
-    }
-    try {
-      const data = await store.readFile({ workId: id, taskId: id }, path);
-      const text = Buffer.from(data).toString("utf8");
-      if (Buffer.compare(Buffer.from(text, "utf8"), Buffer.from(data)) === 0) {
-        return { path, text };
-      }
-      return { path, base64: Buffer.from(data).toString("base64") };
-    } catch {
-      return undefined;
-    }
   }
   private async inspectWork(
     caller: ConversationId,
@@ -912,7 +1033,7 @@ export class Work {
         owner === undefined || level > 16
           ? undefined
           : await this.harness().snapshot(WorkScope, owner, context);
-      if (scope?.workId === undefined) {
+      if (!scope || scope.workId === null) {
         throw new Error(`Work #${id} is not below this conversation`);
       }
       owner = (await this.harness().getTask(scope.workId, context))
@@ -942,7 +1063,7 @@ export class Work {
     );
     return {
       ...view,
-      message: scope?.message,
+      message: scope?.message ?? undefined,
       latest: latest?.slice(0, 4000),
       children: await this.listWork(conversation.id),
     };
@@ -993,9 +1114,13 @@ export class Work {
     runtime: WorkTaskRuntime,
     context: Context,
   ): Promise<void> {
-    // Converge on a running sandbox at every entry: after a restart the pod may be gone (409 adopts a live one).
+    // Converge on a ready environment at every entry: after a restart it may be gone.
     try {
-      await this.agents().provisionWorkSandbox(conversationId, workId, context);
+      await this.settings.environment?.ensure(
+        { workId, conversationId },
+        this.harness(),
+        context,
+      );
     } catch (error) {
       if (runtime.signal.aborted || context.abortSignal?.aborted) {
         throw error;
@@ -1006,7 +1131,7 @@ export class Work {
           checkpoint: {
             phase: "report",
             conversation: conversationId,
-            text: `Work failed: sandbox unavailable: ${String(error)}`,
+            text: `Work failed: environment unavailable: ${String(error)}`,
             failed: true,
           },
         }),
@@ -1024,9 +1149,11 @@ export class Work {
       { type: "input", content: brief, requestId: `work:${workId}` },
       context,
     );
+    let nudged: Submission | undefined;
     for (;;) {
       await conversation.waitForIdle(context);
       const briefStatus = await briefing.status(context);
+      const nudgeStatus = await nudged?.status(context);
       let changed = false;
       let nudge: string | undefined;
       await runtime.commit(async (tx, current) => {
@@ -1041,14 +1168,23 @@ export class Work {
         const latest = response?.id;
         const live = (await liveWork(tx, conversationId)).length > 0;
         if (latest === checkpoint.seen) {
-          if (latest === undefined && briefStatus.status === "unanswered") {
+          let unanswered: { reason: string } | undefined;
+          if (nudgeStatus?.status === "unanswered") {
+            unanswered = nudgeStatus;
+          } else if (
+            latest === undefined &&
+            briefStatus.status === "unanswered"
+          ) {
+            unanswered = briefStatus;
+          }
+          if (unanswered) {
             changed = true;
             return {
               status: "running",
               checkpoint: {
                 phase: "report",
                 conversation: conversationId,
-                text: `Work failed: ${briefStatus.reason}`,
+                text: `Work failed: ${unanswered.reason}`,
                 failed: true,
               },
             };
@@ -1061,9 +1197,9 @@ export class Work {
         }
         changed = true;
         const scope = await tx.doc(WorkScope, conversationId);
-        if (scope.message !== undefined) {
+        if (scope.message !== null) {
           const message = scope.message;
-          delete scope.message;
+          scope.message = null;
           return {
             status: "running",
             checkpoint: {
@@ -1107,7 +1243,7 @@ export class Work {
         return;
       }
       if (nudge !== undefined) {
-        await conversation.submit(
+        nudged = await conversation.submit(
           {
             type: "input",
             content:
@@ -1169,7 +1305,7 @@ export class Work {
     ) {
       throw new Error("This turn was fenced by stop/reset");
     }
-    if (turn.source.kind === "work-result") {
+    if (turn.source.kind === "activity-result") {
       throw new Error(
         "Work-result turns are read-only; only a user can start, message or cancel work",
       );

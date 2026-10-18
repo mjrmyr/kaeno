@@ -4,13 +4,6 @@ export { invokeEnvironment, invokeHandle } from "./dispatch.ts";
 export type { EnvironmentHandle, EnvironmentResponse } from "./dispatch.ts";
 export { EnvironmentServer, setupSsh } from "./envd.ts";
 export {
-  captureFrameSchema,
-  DEFAULT_CAPTURE_ROOTS,
-  streamCapture,
-  type CaptureFrame,
-  type CaptureRootMapping,
-} from "./collect.ts";
-export {
   RemoteTextLineReader,
   RemoteBinaryReader,
   RemoteDirectoryReader,

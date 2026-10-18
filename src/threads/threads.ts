@@ -1,11 +1,9 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
-  AssistantEntry,
   defineDoc,
   InboxDoc,
   LiveDoc,
   type ConversationId,
-  type EntryId,
   type Harness,
   type Tx,
 } from "@earendil-works/pi-durable";
@@ -107,24 +105,4 @@ export class ThreadDirectory {
       );
     }
   }
-}
-export async function answerText(
-  harness: Harness,
-  answer: EntryId,
-): Promise<string> {
-  const entry = await harness.commit(
-    (tx) => tx.entry(AssistantEntry, answer),
-    BACKGROUND_CONTEXT,
-  );
-  const [message] = entry?.model ?? [];
-  if (!message) {
-    return "";
-  }
-  if (typeof message.content === "string") {
-    return message.content.trim();
-  }
-  return message.content
-    .flatMap((block) => (block.type === "text" ? [block.text] : []))
-    .join("")
-    .trim();
 }

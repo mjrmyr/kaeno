@@ -1,236 +1,277 @@
-import type { Context } from "@earendil-works/chord";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { Type } from "@earendil-works/pi-ai";
+// Markdown agent definitions: `<root>/<directory>/AGENT.md` with YAML frontmatter (name and description
+// required; model, skills and tools optional) and the system prompt as body. Pure resolution: this module
+// has no durable definitions and performs no I/O beyond what its caller already loaded.
+import type { JsonValue } from "@earendil-works/chord";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { ModelRef } from "@earendil-works/pi-durable";
+import { z } from "zod";
+import type {
+  Binding,
+  ConversationSetup,
+  ParticipantPlan,
+  Participants,
+  ParticipantSummary,
+  WorkPlan,
+} from "../application/index.ts";
 import {
-  defineExtension,
-  defineTool,
-  section,
-  type ConversationId,
-  type EnvTarget,
-  type Extension,
-  type Harness,
-  type TaskId,
-  type Tx,
-} from "@earendil-works/pi-durable";
-import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import { randomBytes } from "node:crypto";
-import type { SandboxCapture } from "../sandboxes/index.ts";
-import {
-  readSkillDocument,
-  skillPrompt,
-  type SandboxImages,
-  type SkillCopySelection,
-} from "../skills/index.ts";
-import type { WorkBlueprint } from "../work/index.ts";
-import { AgentFactory } from "./agent-factory.ts";
-import { agentLogHooks, type AgentTraceLogger } from "./agent-logs.ts";
-import { AgentState, persistAgentBinding, podName } from "./agent-state.ts";
-export interface AgentRuntime extends Pick<Harness, "snapshot"> {}
-export interface ManagedSandboxRecord {
-  pod: string;
-  token: string;
-  images: SandboxImages;
-  skillCacheClaim: string;
+  discoveryMetadata,
+  parseManifest,
+  type DefinitionOrigin,
+  type DefinitionPackage,
+  type Diagnostic,
+} from "../definitions/index.ts";
+
+export const AGENT_MANIFEST = "AGENT.md";
+
+export interface AgentDefinition {
+  /** `<source alias>:<name>`; the ID used with start_work. */
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly model?: string;
+  readonly thinkingLevel?: ModelThinkingLevel;
+  readonly skills?: readonly string[];
+  readonly tools?: readonly string[];
+  /** Markdown body: the agent's system prompt. */
+  readonly prompt: string;
+  /** Frontmatter keys this version does not use; kept, never interpreted. */
+  readonly metadata: Readonly<Record<string, JsonValue>>;
+  readonly location: string;
+  readonly origin?: DefinitionOrigin;
 }
-/** Agent-owned requirement, fulfilled structurally by SandboxManager. */
-export interface AgentSandboxes {
-  ensureSandbox(
-    launch: {
-      sandbox: ManagedSandboxRecord;
-      selection: SkillCopySelection;
-      conversationId: string;
-      taskId: TaskId;
-      template: string;
-    },
-    ctx: Context,
-  ): Promise<void>;
-  removeSandbox(pod: string, capture?: SandboxCapture): Promise<void>;
-  getExecutionEnvironment(
-    sandbox: ManagedSandboxRecord,
-    cwd: string,
-  ): ExecutionEnv;
-  sweepOrphanedSandboxes(): Promise<void>;
-  sandboxPool(): Promise<{ slots: number; summary: string }>;
+
+/** Turns skill references into a binding; satisfied by the skills extension. Optional. */
+export interface SkillBinder {
+  readonly tools: readonly string[];
+  /** Bind even without source assignments when native skill contributions are present. */
+  readonly alwaysBind?: boolean;
+  bind(references: readonly string[]): Binding;
 }
-export class Agent {
-  readonly extension: Extension;
-  private readonly factory: AgentFactory;
-  private readonly harness: () => AgentRuntime;
-  private readonly sandboxes: AgentSandboxes;
-  private readonly images: SandboxImages;
-  private readonly skillCacheClaim: string;
-  constructor(
-    factory: AgentFactory,
-    harness: () => AgentRuntime,
-    sandboxes: AgentSandboxes,
-    images: SandboxImages,
-    skillCacheClaim: string,
-    logger: AgentTraceLogger,
-  ) {
-    this.factory = factory;
-    this.harness = harness;
-    this.sandboxes = sandboxes;
-    this.images = images;
-    this.skillCacheClaim = skillCacheClaim;
-    const readSkill = defineTool({
-      name: "read_skill",
-      description:
-        "Load instructions or a referenced text file from a skill assigned to this agent. Does not grant new tools.",
-      parameters: Type.Object({
-        skill: Type.String({ description: "Qualified owner/repo:skill-name" }),
-        file: Type.Optional(
-          Type.String({
-            description: "Relative text file, defaults to SKILL.md",
-          }),
-        ),
-      }),
-      replay: "safe",
-      execute: async (args, api, ctx) => {
-        const binding =
-          (await api.snapshot(AgentState, api.conversationId, ctx))?.skills ??
-          [];
-        const loaded = readSkillDocument(binding, args);
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Skill directory: ${loaded.sandboxRoot}\n\n${loaded.text}`,
-            },
-          ],
-        };
-      },
-    });
-    this.extension = defineExtension({
-      name: "kaeno",
-      tools: [readSkill],
-      hooks: agentLogHooks(AgentState, logger),
-      sections: [
-        section("skills", async ({ conversationId, read }, ctx) =>
-          skillPrompt(
-            (await read.snapshot(AgentState, conversationId, ctx))?.skills ??
-              [],
-          ),
-        ),
-      ],
-    });
-  }
-  captureWorkBlueprint(agent: string): WorkBlueprint {
-    return this.factory.captureWorkBlueprint(
-      agent,
-      this.images,
-      this.skillCacheClaim,
+
+export interface AgentDefaults {
+  /** Model for definitions without one; absent makes such agents discoverable but unavailable. */
+  readonly model?: ModelRef;
+  /** Tools for definitions that omit `tools`. */
+  readonly tools: readonly string[];
+}
+
+const KNOWN = new Set([
+  "name",
+  "description",
+  "model",
+  "thinkingLevel",
+  "skills",
+  "tools",
+]);
+const optionalFields = z.object({
+  model: z.string().trim().min(1).optional(),
+  thinkingLevel: z
+    .enum(["off", "minimal", "low", "medium", "high", "xhigh"])
+    .optional(),
+  skills: z.array(z.string().trim().min(1)).optional(),
+  tools: z.array(z.string().trim().min(1)).optional(),
+});
+
+/** Parse one `AGENT.md`. Throws an actionable error for invalid known fields. */
+export function parseAgent(
+  text: string,
+  source: string,
+  location: string,
+): AgentDefinition {
+  const manifest = parseManifest(text, location);
+  const { name, description } = discoveryMetadata(manifest, location);
+  const fields = optionalFields.safeParse(manifest.metadata);
+  if (!fields.success) {
+    throw new Error(
+      `${location}: invalid agent fields: ${fields.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ")}`,
     );
   }
-  /** Configure a WORK conversation and reserve its sandbox identity; the pod starts in provisionWorkSandbox. */
-  async configureWorkConversation(
-    tx: Tx,
-    id: ConversationId,
-    setup: {
-      blueprint: WorkBlueprint;
-      agent: string;
-      workId: TaskId;
-      orchestrate: boolean;
-    },
-  ): Promise<void> {
-    const binding = await this.factory.configureAgent(
-      tx,
-      id,
-      {
-        role: "work",
-        blueprint: setup.blueprint,
-        agent: setup.agent,
-        orchestrate: setup.orchestrate,
-      },
-      this.extension,
-    );
-    await persistAgentBinding(tx, id, binding, {
-      role: "work",
-      workId: setup.workId,
-    });
-    const state = await tx.doc(AgentState, id);
-    state.sandbox = {
-      pod: podName(id),
-      token: randomBytes(24).toString("hex"),
-      images: { execution: setup.blueprint.images.execution },
-      skillCacheClaim: setup.blueprint.skillCacheClaim,
-    };
-  }
-  async configureChatConversation(tx: Tx, id: ConversationId): Promise<void> {
-    const binding = await this.factory.configureAgent(
-      tx,
-      id,
-      { role: "chat" },
-      this.extension,
-    );
-    await persistAgentBinding(tx, id, binding, { role: "chat" });
-  }
-  async provisionWorkSandbox(
-    id: ConversationId,
-    workId: TaskId,
-    ctx: Context,
-  ): Promise<void> {
-    const state = await this.harness().snapshot(AgentState, id, ctx);
-    if (!state?.sandbox || !state.template) {
-      throw new Error(`WORK conversation ${id} has no sandbox record`);
-    }
-    await this.sandboxes.ensureSandbox(
-      {
-        sandbox: state.sandbox,
-        selection: (state.skills ?? []).map((skill) => ({
-          id: skill.id,
-          treeHash: skill.treeHash,
-        })),
-        conversationId: String(id),
-        taskId: workId,
-        template: state.template,
-      },
-      ctx,
-    );
-  }
-  async releaseWorkSandbox(id: ConversationId): Promise<void> {
-    const state = await this.harness().snapshot(
-      AgentState,
-      id,
-      BACKGROUND_CONTEXT,
-    );
-    const sandbox = state?.sandbox;
-    if (sandbox) {
-      // The capture identity lives on the conversation state; without it there is
-      // nothing to key the artifacts directory on, so skip collection entirely.
-      const workId = state?.workId;
-      await this.sandboxes.removeSandbox(
-        sandbox.pod,
-        workId === undefined || state?.template === undefined
-          ? undefined
-          : {
-              identity: { workId, taskId: workId },
-              header: {
-                conversationId: id,
-                pod: sandbox.pod,
-                template: state.template,
-              },
-            },
-      );
-    }
-  }
-  getExecutionEnvironment = async (
-    { conversationId, cwd, read }: EnvTarget,
-    ctx: Context,
-  ): Promise<ExecutionEnv | undefined> => {
-    const sandbox = (await read.snapshot(AgentState, conversationId, ctx))
-      ?.sandbox;
-    if (!sandbox) {
-      return undefined;
-    }
-    return this.sandboxes.getExecutionEnvironment(
-      sandbox,
-      cwd ?? this.factory.sandboxCwd,
-    );
+  return {
+    id: `${source}:${name}`,
+    name,
+    description,
+    ...fields.data,
+    prompt: manifest.body,
+    metadata: Object.fromEntries(
+      Object.entries(manifest.metadata).filter(([key]) => !KNOWN.has(key)),
+    ),
+    location,
   };
-  sweepOrphanedSandboxes(): Promise<void> {
-    return this.sandboxes.sweepOrphanedSandboxes();
+}
+
+/** Parse packages from definition sources; invalid packages become diagnostics. */
+export function parseAgents(packages: readonly DefinitionPackage[]): {
+  agents: AgentDefinition[];
+  diagnostics: Diagnostic[];
+} {
+  const agents: AgentDefinition[] = [];
+  const duplicates = new Set<string>();
+  const diagnostics: Diagnostic[] = [];
+  for (const definition of packages) {
+    const location = `${definition.directory}/${AGENT_MANIFEST}`;
+    try {
+      const agent = parseAgent(
+        definition.manifest,
+        definition.source,
+        location,
+      );
+      if (agents.some((existing) => existing.id === agent.id)) {
+        duplicates.add(agent.id);
+        throw new Error(
+          `${location}: duplicate agent name "${agent.name}" in source ${definition.source}`,
+        );
+      }
+      agents.push({
+        ...agent,
+        ...(definition.origin
+          ? { origin: structuredClone(definition.origin) }
+          : {}),
+      });
+    } catch (error) {
+      diagnostics.push({
+        location,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
-  sandboxPool(): Promise<{ slots: number; summary: string }> {
-    return this.sandboxes.sandboxPool();
+  return {
+    agents: agents.filter((agent) => !duplicates.has(agent.id)),
+    diagnostics,
+  };
+}
+
+/** `provider/model-id` into a model reference; the model registry decides availability. */
+export function parseModelRef(value: string): ModelRef {
+  const [provider, ...rest] = value.split("/");
+  const modelId = rest.join("/");
+  if (!provider || !modelId) {
+    throw new Error(`model "${value}" must be provider/model-id`);
   }
+  return { provider, modelId };
+}
+
+/**
+ * Effective setup of a definition: defaults for omitted fields, explicit lists kept exact.
+ * Omitted `tools` get the binder's discovery/reading tools even without assigned skills.
+ * Explicit lists remain exact; the knowledge extension may render its instructions inline
+ * when its reader tool is unavailable.
+ */
+export function resolveAgentSetup(
+  agent: AgentDefinition,
+  defaults: AgentDefaults,
+  skills?: SkillBinder,
+  bindingsFor?: (agent: AgentDefinition) => readonly Binding[],
+): ConversationSetup {
+  const model = agent.model ? parseModelRef(agent.model) : defaults.model;
+  if (!model) {
+    throw new Error(`no model configured and no default model available`);
+  }
+  const references = agent.skills ?? [];
+  const bindings: Binding[] = [...(bindingsFor?.(agent) ?? [])];
+  const tools = agent.tools ?? [
+    ...new Set([...defaults.tools, ...(skills?.tools ?? [])]),
+  ];
+  if (references.length > 0 || skills?.alwaysBind) {
+    if (!skills) {
+      throw new Error(`skills are assigned but no skill catalog is installed`);
+    }
+    bindings.push(skills.bind(references));
+  }
+  return {
+    model,
+    ...(agent.thinkingLevel ? { thinkingLevel: agent.thinkingLevel } : {}),
+    instructions: agent.prompt,
+    tools: [...tools],
+    bindings,
+  };
+}
+
+/**
+ * WORK participants from agent definitions. Resolved once at construction; every available agent
+ * is root-selectable and may delegate to every other one.
+ */
+export function agentParticipants(options: {
+  agents: readonly AgentDefinition[];
+  defaults: AgentDefaults;
+  /** Shared skill binder, or one supplied per agent for native contributions. */
+  skills?: SkillBinder | ((agent: AgentDefinition) => SkillBinder);
+  /** Extension-owned scope supplied by trusted host composition, never by agent frontmatter. */
+  bindingsFor?: (agent: AgentDefinition) => readonly Binding[];
+  /** Installed, host-approved worker tool names; absence leaves validation to the core host. */
+  tools?: readonly string[];
+}): Participants {
+  const resolved = options.agents.map(
+    (
+      agent,
+    ):
+      | { agent: AgentDefinition; plan: ParticipantPlan }
+      | { agent: AgentDefinition; reason: string } => {
+      try {
+        const setup = resolveAgentSetup(
+          agent,
+          options.defaults,
+          typeof options.skills === "function"
+            ? options.skills(agent)
+            : options.skills,
+          options.bindingsFor,
+        );
+        const missing = (setup.tools ?? []).filter(
+          (tool) =>
+            options.tools !== undefined && !options.tools.includes(tool),
+        );
+        if (missing.length > 0) {
+          throw new Error(
+            `tools are not installed/approved: ${missing.join(", ")}`,
+          );
+        }
+        return {
+          agent,
+          plan: {
+            id: agent.id,
+            description: agent.description,
+            setup,
+          } satisfies ParticipantPlan,
+        };
+      } catch (error) {
+        return {
+          agent,
+          reason: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+  );
+  const plans: Record<string, ParticipantPlan> = {};
+  for (const entry of resolved) {
+    if ("plan" in entry) {
+      plans[entry.agent.id] = entry.plan;
+    }
+  }
+  return {
+    list: (): ParticipantSummary[] =>
+      resolved.map((entry) =>
+        "plan" in entry
+          ? {
+              id: entry.agent.id,
+              description: entry.agent.description,
+              available: true,
+            }
+          : {
+              id: entry.agent.id,
+              description: entry.agent.description,
+              available: false,
+              reason: entry.reason,
+            },
+      ),
+    plan: (root: string): WorkPlan => {
+      if (!Object.hasOwn(plans, root)) {
+        const entry = resolved.find((candidate) => candidate.agent.id === root);
+        throw new Error(
+          entry && "reason" in entry
+            ? `Agent ${root} is unavailable: ${entry.reason}`
+            : `Unknown agent ${root}`,
+        );
+      }
+      return { root, participants: structuredClone(plans) };
+    },
+  };
 }

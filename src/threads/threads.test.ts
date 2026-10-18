@@ -59,7 +59,7 @@ it("lists conversations through the SDK boundary without calling Agent", async (
   ).toEqual([{ key: "api:one", conversationId: id, createdAt: 123 }]);
   expect(agent.configureChatConversation).not.toHaveBeenCalled();
 });
-it.each(["foreground", "background-turn", "background-work"])(
+it.each(["foreground", "background-turn", "background-activity"])(
   "refreshes only idle conversations with $0 tasks",
   async (kind) => {
     const tx = createMockTransaction();
@@ -67,7 +67,7 @@ it.each(["foreground", "background-turn", "background-work"])(
     const record: TaskRecord<null, JsonObject, null> = {
       id: taskId(24),
       conversationId: id,
-      kind: kind === "background-turn" ? "kaeno.turn" : "kaeno.work",
+      kind: kind === "background-turn" ? "kaeno.turn" : "example.activity",
       version: 1,
       input: null,
       background: kind !== "foreground",
@@ -86,7 +86,7 @@ it.each(["foreground", "background-turn", "background-work"])(
     };
     await new ThreadDirectory(() => runtime, agent).refreshIdleConversations();
     expect(agent.configureChatConversation).toHaveBeenCalledTimes(
-      kind === "background-work" ? 1 : 0,
+      kind === "background-activity" ? 1 : 0,
     );
   },
 );

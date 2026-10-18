@@ -11,18 +11,12 @@ import {
   type ServerResponse,
 } from "node:http";
 import { z } from "zod";
-import { CAPTURE_CAP_BYTES } from "../artifacts/index.ts";
 import { decode, encode } from "./codec.ts";
 import {
   invokeEnvironment,
   invokeHandle,
   type EnvironmentHandle,
 } from "./dispatch.ts";
-import {
-  DEFAULT_CAPTURE_ROOTS,
-  streamCapture,
-  type CaptureRootMapping,
-} from "./collect.ts";
 interface Client {
   env: ExecutionEnv;
   handles: Map<
@@ -40,16 +34,6 @@ const requestSchema = z.object({
   requestId: z.string().optional(),
   aborted: z.boolean().optional(),
 });
-/** One handled envd request; entries without `ms` were still in flight when captured. */
-interface RequestRecord {
-  at: string;
-  route: string;
-  op: string;
-  ms?: number;
-  error?: string;
-}
-/** Bounds the in-memory request log: the oldest entries are dropped first. */
-const REQUEST_LOG_LIMIT = 10000;
 export class EnvironmentServer {
   readonly server: Server;
   private readonly clients = new Map<string, Client>();
@@ -57,51 +41,17 @@ export class EnvironmentServer {
   private readonly token: string | (() => string);
   private readonly root: string;
   private readonly createEnvironment: (cwd: string) => ExecutionEnv;
-  private readonly requests: RequestRecord[] = [];
-  private readonly captureRoots: readonly CaptureRootMapping[];
-  private readonly captureCapBytes: number;
   constructor(
     token: string | (() => string),
     createEnvironment: (cwd: string) => ExecutionEnv,
     root = process.cwd(),
-    capture: {
-      roots?: readonly CaptureRootMapping[];
-      capBytes?: number;
-    } = {},
   ) {
     this.token = token;
     this.createEnvironment = createEnvironment;
     this.root = root;
-    this.captureRoots = capture.roots ?? DEFAULT_CAPTURE_ROOTS;
-    this.captureCapBytes = capture.capBytes ?? CAPTURE_CAP_BYTES;
     this.server = createServer((req, res) => {
       void this.handleRequest(req, res);
     });
-  }
-  private beginRequest(route: string, op: string): RequestRecord {
-    const record: RequestRecord = {
-      at: new Date().toISOString(),
-      route,
-      op,
-    };
-    this.requests.push(record);
-    if (this.requests.length > REQUEST_LOG_LIMIT) {
-      this.requests.shift();
-    }
-    return record;
-  }
-  private completeRequest(
-    record: RequestRecord,
-    ms: number,
-    error?: string,
-  ): void {
-    record.ms = ms;
-    if (error) {
-      record.error = error;
-    }
-  }
-  private requestLog(): string {
-    return this.requests.map((record) => JSON.stringify(record)).join("\n");
   }
   private clientFor(id: string, cwd: string): Client {
     const existing = this.clients.get(id);
@@ -139,9 +89,6 @@ export class EnvironmentServer {
         res.write(JSON.stringify(frame) + "\n");
       }
     };
-    let record: RequestRecord | undefined;
-    let failure: string | undefined;
-    const startedAt = Date.now();
     try {
       let raw = "";
       req.setEncoding("utf8");
@@ -151,10 +98,6 @@ export class EnvironmentServer {
       const input: unknown = JSON.parse(raw);
       const body = requestSchema.parse(input);
       const clientId = String(req.headers["x-env-client"] ?? "");
-      record = this.beginRequest(
-        req.url ?? "",
-        body.method ?? body.handle ?? "",
-      );
       if (req.url === "/cancel") {
         this.running
           .get(body.requestId ?? "")
@@ -199,17 +142,8 @@ export class EnvironmentServer {
         res.end();
         return;
       }
-      if (req.url === "/collect") {
-        // Snapshot first: the collect request itself appears in the log as in flight.
-        const requestLog = this.requestLog();
-        await streamCapture({
-          roots: this.captureRoots,
-          capBytes: this.captureCapBytes,
-          requestLog,
-          write: (frame) => write({ ret: frame }),
-        });
-        res.end();
-        return;
+      if (req.url !== "/call" && req.url !== "/handle") {
+        throw new Error(`Unknown route: ${req.url}`);
       }
       const client = this.clientFor(clientId, body.cwd ?? this.root);
       const method = z.string().parse(body.method);
@@ -225,9 +159,6 @@ export class EnvironmentServer {
         write({ ret: encode(result) });
         res.end();
         return;
-      }
-      if (req.url !== "/call") {
-        throw new Error(`Unknown route: ${req.url}`);
       }
       const { result, handle } = await invokeEnvironment(
         client.env,
@@ -259,7 +190,6 @@ export class EnvironmentServer {
       res.end();
     } catch (error) {
       // Recovery: report an operation failure over the protocol instead of crashing the request loop.
-      failure = error instanceof Error ? error.message : String(error);
       if (!res.headersSent) {
         res.writeHead(200, { "content-type": "application/x-ndjson" });
       }
@@ -267,10 +197,6 @@ export class EnvironmentServer {
         err: encode(error instanceof Error ? error : new Error(String(error))),
       });
       res.end();
-    } finally {
-      if (record) {
-        this.completeRequest(record, Date.now() - startedAt, failure);
-      }
     }
   }
 }

@@ -1,28 +1,16 @@
-# Generic sibling targets: neither image contains skill content or depends on agent configuration.
-FROM node:24-bookworm-slim AS runtime-base
+FROM node:24-bookworm-slim
 RUN apt-get update \
- && apt-get install -y --no-install-recommends bash ca-certificates curl git openssh-client python3 ripgrep \
- && rm -rf /var/lib/apt/lists/* \
- && groupadd -g 10001 agent && useradd -u 10001 -g 10001 -d /home/agent -s /bin/bash -M agent
+ && apt-get install -y --no-install-recommends ca-certificates curl git python3 python-is-python3 \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+RUN npm ci --omit=dev --ignore-scripts \
+ && npm cache clean --force \
+ && mkdir -p /data /workspace /home/agent \
+ && chown -R node:node /data /workspace /home/agent
 COPY src ./src
-USER 10001:10001
-
-FROM runtime-base AS sandbox
-# GitHub API access belongs to execution workers, not the orchestrator or skill resolver.
-USER root
-RUN apt-get update \
- && apt-get install -y --no-install-recommends gh \
- && rm -rf /var/lib/apt/lists/*
-USER 10001:10001
-CMD ["node", "src/envd.ts"]
-
-FROM runtime-base AS kaeno
-# The image build supplies the sandbox image's digest-pinned reference.
-ARG SANDBOX_IMAGE
-USER root
-RUN node --input-type=module -e 'import {writeFileSync} from "node:fs"; const ref=process.env.SANDBOX_IMAGE; if (!/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[a-f0-9]{64}$/.test(ref ?? "")) throw Error("SANDBOX_IMAGE must be pinned by digest"); writeFileSync("/app/build-info.json", JSON.stringify({sandboxImage:ref}));'
-USER 10001:10001
-CMD ["node", "src/kaeno.ts"]
+USER node
+ENV KAENO_DB=/data/kaeno.sqlite
+ENV KAENO_AUTH_FILE=/data/auth.json
+EXPOSE 8080
+CMD ["node", "src/main.ts"]

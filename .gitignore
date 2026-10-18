@@ -1,6 +1,12 @@
 node_modules/
-.kaeno/
-.kaeno-next/
+config.json
+work-config.json
 .DS_Store
 .playwright-mcp/
 .rig.env
+.env
+data
+.agents
+.kaeno
+*auth.json
+*auth.json.*

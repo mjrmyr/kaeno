@@ -1,99 +1,101 @@
 import { expect, it } from "vitest";
 import {
-  parseSandboxImages,
-  parseSkillRepositories,
-  parseSkillSelection,
+  listSkills,
   readSkillDocument,
-  ResolvedSkillCatalog,
+  SkillCatalog,
+  skillMetadata,
   skillPrompt,
-  splitSkillId,
   type BoundSkill,
 } from "./index.ts";
-it("normalizes repository identities and retains explicitly pinned refs", () => {
-  expect(parseSkillRepositories(["Demo/Skills:v1", "demo/other"])).toEqual([
-    { id: "demo/skills", ref: "v1" },
-    { id: "demo/other" },
-  ]);
-});
-it.each([
-  null,
-  "demo/skills",
-  ["demo/skills:-flag"],
-  ["demo/skills:../main"],
-  ["demo/skills:a b"],
-  ["demo/skills", "Demo/Skills"],
-])("rejects malformed or duplicate repository inputs (%j)", (value) => {
-  expect(() => parseSkillRepositories(value)).toThrow(/Skills/);
-});
-it("keeps explicit skill order and rejects undeclared repositories", () => {
-  const repositories = [{ id: "demo/skills" }];
+
+const skill: BoundSkill = {
+  id: "home:guide",
+  description: "Guide",
+  disableModelInvocation: false,
+  treeHash: "a".repeat(64),
+  documents: { "SKILL.md": "Instructions", "references/help.md": "Reference" },
+};
+it("parses mandatory metadata and leaves future metadata inert", () => {
   expect(
-    parseSkillSelection(
-      ["demo/skills:first", "demo/skills:second"],
-      repositories,
+    skillMetadata(
+      "---\nname: guide\ndescription: Useful guide\nfuture: true\n---\nInstructions",
+      "test",
     ),
-  ).toEqual(["demo/skills:first", "demo/skills:second"]);
-  expect(() =>
-    parseSkillSelection(["other/skills:guide"], repositories),
-  ).toThrow(/Skills/);
-  expect(splitSkillId("demo/skills:guide")).toEqual({
-    id: "demo/skills:guide",
-    repository: "demo/skills",
+  ).toEqual({
     name: "guide",
+    description: "Useful guide",
+    disableModelInvocation: false,
   });
 });
-const bindings: BoundSkill[] = [
-  {
-    id: "demo/skills:guide",
-    description: "Guide",
-    disableModelInvocation: false,
-    repositoryCommit: "a".repeat(40),
-    treeHash: "b".repeat(64),
-    sandboxRoot: "/workspace/guide",
-    documents: {
-      "SKILL.md": "Instructions",
-      "references/help.md": "Reference",
-    },
-  },
-];
-it("loads only assigned documents and hides disabled skills from automatic prompts", () => {
-  expect(skillPrompt(bindings)).toContain("demo/skills:guide");
-  expect(
-    skillPrompt([{ ...bindings[0], disableModelInvocation: true }]),
-  ).toBeUndefined();
-  expect(
-    readSkillDocument(bindings, { skill: "demo/skills:guide" }),
-  ).toMatchObject({ text: "Instructions" });
-});
-it("requires digest-qualified execution images", () => {
-  const execution = `ghcr.io/example/sandbox@sha256:${"a".repeat(64)}`;
-  expect(parseSandboxImages({ execution })).toEqual({ execution });
-  expect(() =>
-    parseSandboxImages({ execution: "ghcr.io/example/sandbox:latest" }),
-  ).toThrow(/digest/);
-});
-it("expands assigned selectors once and returns independent binding data", () => {
-  const catalog = new ResolvedSkillCatalog(
-    new Map(bindings.map((binding) => [binding.id, binding])),
-  );
-  const binding = catalog.bindSkills(["demo/skills:*", "demo/skills:guide"]);
+it("returns independent bound snapshots and resolves unambiguous bare references", () => {
+  const catalog = new SkillCatalog([skill]);
+  const binding = catalog.bind(["guide", "home:guide"]);
   expect(binding).toHaveLength(1);
   binding[0].documents["SKILL.md"] = "changed";
+  expect(catalog.bind(["guide"])[0].documents["SKILL.md"]).toBe("Instructions");
+  expect(() => catalog.bind(["missing"])).toThrow(/unknown skill/);
+});
+it("rejects duplicate IDs and ambiguous short names", () => {
+  expect(() => new SkillCatalog([skill, skill])).toThrow(/duplicate/);
+  const catalog = new SkillCatalog([skill, { ...skill, id: "local:guide" }]);
+  expect(() => catalog.bind(["guide"])).toThrow(/ambiguous/);
+  expect(catalog.bind(["local:guide"])[0].id).toBe("local:guide");
+});
+it("lists only assigned, discoverable metadata without bodies or assets", () => {
   expect(
-    catalog.bindSkills(["demo/skills:guide"])[0].documents["SKILL.md"],
+    listSkills([
+      skill,
+      { ...skill, id: "home:hidden", disableModelInvocation: true },
+    ]),
+  ).toEqual([{ id: "home:guide", description: "Guide" }]);
+  expect(listSkills([])).toEqual([]);
+});
+it.each([false, true])(
+  "uses lazy discovery guidance independently of assigned skills (%s)",
+  (assigned) => {
+    const prompt = skillPrompt(assigned ? [skill] : [], [
+      "list_skills",
+      "read_skill",
+    ]);
+    expect(prompt).toContain("Use list_skills");
+    expect(prompt).toContain("Use read_skill");
+    expect(prompt).toContain("An empty list means no skills are available");
+    expect(prompt).not.toContain("home:guide");
+    expect(prompt).not.toContain("Instructions");
+  },
+);
+it("respects explicit tool restrictions in skill guidance", () => {
+  expect(skillPrompt([skill], ["read_skill"])).toContain("home:guide");
+  expect(skillPrompt([skill], ["read_skill"])).not.toContain("Use list_skills");
+  expect(skillPrompt([skill], ["list_skills"])).toContain("Instructions");
+  expect(skillPrompt([skill], ["list_skills"])).not.toContain("Use read_skill");
+  expect(skillPrompt([skill], [])).toContain("Instructions");
+  expect(skillPrompt([skill], [])).not.toContain("Use read_skill");
+  expect(
+    skillPrompt([{ ...skill, disableModelInvocation: true }], []),
+  ).toBeUndefined();
+  expect(skillPrompt([], [])).toBeUndefined();
+});
+it("only reads assigned documents, including explicitly requested non-discoverable skills", () => {
+  expect(readSkillDocument([skill], { skill: "guide" })).toBe("Instructions");
+  expect(
+    readSkillDocument([{ ...skill, disableModelInvocation: true }], {
+      skill: "guide",
+    }),
   ).toBe("Instructions");
-  expect(() => catalog.bindSkills(["demo/skills:missing"])).toThrow(
-    /not present/,
+  expect(() => readSkillDocument([], { skill: "guide" })).toThrow(
+    /not assigned/,
   );
 });
 it.each([
   "../outside",
-  "/outside",
+  "/etc/passwd",
   "references/../help.md",
-  "missing.md",
   "references\\help.md",
-])("rejects unavailable or escaping skill document %s", (file) => {
+  "toString",
+  "missing.md",
+])("rejects unavailable or escaping document %s", (file) => {
   expect(() =>
-    readSkillDocument(bindings, { skill: "demo/skills:guide", file }),
+    readSkillDocument([skill], { skill: "home:guide", file }),
   ).toThrow(/Skills/);
 });

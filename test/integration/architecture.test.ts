@@ -73,3 +73,57 @@ it("architecture enforcement accepts public capabilities and rejects concrete co
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+it("rejects optional dependencies through core imports and public re-exports", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "kaeno-core-boundary-"));
+  try {
+    for (const path of [
+      "src/work",
+      "src/agents",
+      "src/application",
+      "scripts",
+      "test",
+    ]) {
+      await mkdir(join(directory, path), { recursive: true });
+    }
+    await writeFile(
+      join(directory, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          target: "ES2024",
+          module: "NodeNext",
+          moduleResolution: "NodeNext",
+          allowImportingTsExtensions: true,
+          noEmit: true,
+        },
+        include: ["src/**/*.ts"],
+      }),
+    );
+    await writeFile(
+      join(directory, "src/agents/index.ts"),
+      "export interface Definition { name: string }",
+    );
+    await writeFile(
+      join(directory, "src/work/index.ts"),
+      'import type { Definition } from "../agents/index.ts"; export interface Work { definition: Definition }',
+    );
+    await writeFile(
+      join(directory, "src/application/index.ts"),
+      'export type { Definition } from "../agents/index.ts";',
+    );
+    const result = await execute(process.execPath, [checker], {
+      cwd: directory,
+    }).then(
+      () => "unexpected success",
+      (error) => z.object({ stderr: z.string() }).parse(error).stderr,
+    );
+    expect(result).toContain(
+      'Core feature "work" cannot import optional feature "agents"',
+    );
+    expect(result).toContain(
+      'Core feature "application" cannot re-export optional feature "agents"',
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

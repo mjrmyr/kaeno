@@ -1,0 +1,176 @@
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
+import {
+  fauxAssistantMessage,
+  fauxProvider,
+  fauxText,
+  fauxToolCall,
+} from "@earendil-works/pi-ai/providers/faux";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { openKaeno } from "../src/application/index.ts";
+import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { agentParticipants, parseAgent } from "../src/agents/index.ts";
+import {
+  SkillCatalog,
+  skillBinder,
+  skillsExtension,
+} from "../src/skills/index.ts";
+import { ApiServer } from "../src/api/index.ts";
+import { RemoteExecutionEnv } from "../src/execution/index.ts";
+import {
+  DockerSandboxProvider,
+  SandboxWorkEnvironment,
+} from "../src/sandbox/index.ts";
+
+const directory = await mkdtemp(join(tmpdir(), "kaeno-work-smoke-"));
+const faux = fauxProvider({ provider: "openai" });
+const models = createModels();
+models.setProvider(faux.provider);
+let workerListedSkills = false;
+let workerRanShell = false;
+let workerShellResult = "";
+faux.setResponses(
+  Array.from({ length: 20 }, () => async (request) => {
+    const last = request.messages.findLast(
+      (message) => message.role !== "system",
+    );
+    const system = JSON.stringify(
+      request.messages.filter((message) => message.role === "system"),
+    );
+    const isWork = system.includes("You are Kaeno WORK");
+    if (isWork && last?.role === "user") {
+      return fauxAssistantMessage([fauxToolCall("list_skills", {})], {
+        stopReason: "toolUse",
+      });
+    }
+    if (
+      isWork &&
+      last?.role === "toolResult" &&
+      last.toolName === "list_skills"
+    ) {
+      workerListedSkills =
+        !last.isError &&
+        last.content.some((item) => item.type === "text" && item.text === "[]");
+      return fauxAssistantMessage(
+        [fauxToolCall("bash", { command: "echo WORK_CONTAINER_OK" })],
+        { stopReason: "toolUse" },
+      );
+    }
+    if (isWork && last?.role === "toolResult" && last.toolName === "bash") {
+      workerRanShell = true;
+      workerShellResult = JSON.stringify(last);
+      return fauxAssistantMessage([
+        fauxText("Verified command ran in the Docker sandbox."),
+      ]);
+    }
+    if (last?.role === "user" && String(last.content).includes("Work #")) {
+      return fauxAssistantMessage([
+        fauxText("Worker report received and summarized."),
+      ]);
+    }
+    if (last?.role === "toolResult" && last.toolName === "start_work") {
+      return fauxAssistantMessage([fauxText("Started the worker.")]);
+    }
+    if (
+      last?.role === "user" &&
+      String(last.content).includes("delegate-smoke")
+    ) {
+      return fauxAssistantMessage(
+        [
+          fauxToolCall("start_work", {
+            agent: "worker",
+            title: "Docker smoke test",
+            brief: "Run echo WORK_CONTAINER_OK and report the exact output.",
+          }),
+        ],
+        { stopReason: "toolUse" },
+      );
+    }
+    return fauxAssistantMessage([fauxText("Unexpected model step")]);
+  }),
+);
+const skills = skillBinder(new SkillCatalog([]));
+const participants = agentParticipants({
+  agents: [
+    parseAgent(
+      "---\nname: worker\ndescription: Local sandbox worker\nmodel: openai/faux-1\n---\nComplete the task and verify it.",
+      "local",
+      "smoke",
+    ),
+  ],
+  defaults: { tools: ["bash"] },
+  skills,
+});
+const core = await openKaeno({
+  storage: await openNodeSqliteStorage(join(directory, "core.sqlite")),
+  models,
+  assistant: {
+    model: { provider: "openai", modelId: "faux-1" },
+    instructions: "Be helpful.",
+    tools: ["start_work"],
+  },
+  extensions: [{ durable: CodingTools }, skillsExtension()],
+  work: {
+    participants,
+    tools: ["bash", ...skills.tools],
+    maxDepth: 1,
+    maxConcurrent: 2,
+    environment: new SandboxWorkEnvironment({
+      sandbox: new DockerSandboxProvider({
+        namespace: createHash("sha256")
+          .update(directory)
+          .digest("hex")
+          .slice(0, 16),
+        createEnvironment: ({ url, token, id, cwd, fetch }) =>
+          new RemoteExecutionEnv(url, token, id, cwd, fetch),
+      }),
+      image: process.env.KAENO_SANDBOX_IMAGE ?? "kaeno-sandbox:dev",
+      limits: { cpus: 1, memoryBytes: 536870912 },
+    }),
+  },
+});
+const server = new ApiServer(core).server;
+await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+try {
+  const thread = await core.threads.getOrCreateConversation("smoke");
+  const task = await core.harness.commit(
+    (tx) =>
+      core.turns.admitUserTurn(tx, thread, "delegate-smoke", "request-smoke"),
+    BACKGROUND_CONTEXT,
+  );
+  await core.harness.waitForTask(task, BACKGROUND_CONTEXT);
+  const end = Date.now() + 45_000;
+  let replies = await core.turns.readReplies(thread, 0);
+  while (
+    !replies.replies.some((reply) =>
+      reply.text.includes("Worker report received"),
+    ) &&
+    Date.now() < end
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    replies = await core.turns.readReplies(thread, 0);
+  }
+  const output = replies.replies.map((reply) => reply.text).join("\n---\n");
+  console.log(output);
+  if (!output.includes("Worker report received")) {
+    throw new Error("Timed out waiting for the worker report");
+  }
+  if (!workerListedSkills) {
+    throw new Error(
+      "The worker did not successfully discover its empty skill list",
+    );
+  }
+  if (!workerRanShell || !workerShellResult.includes("WORK_CONTAINER_OK")) {
+    throw new Error(
+      "The worker did not successfully run the command in Docker",
+    );
+  }
+} finally {
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  await core.close();
+  await rm(directory, { recursive: true, force: true });
+}
