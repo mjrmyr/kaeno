@@ -65,7 +65,7 @@ Definitions used by admitted work are frozen. On restart, missing saved native d
 
 This cut intentionally does not migrate the prior WORK/Telegram database or JSON configuration. Move the assistant to `.kaeno/agent.md` or `~/.kaeno/agent.md`, workers to per-directory `agent.md` files, and skills to per-directory `SKILL.md` files. The old `KAENO_CONFIG` and `KAENO_WORK_CONFIG` JSON paths are rejected. Use a fresh database for this release unless the previous workload has been deliberately drained/migrated and backed up.
 
-See [architecture](docs/architecture.md), [WORK](docs/work.md) and [extension composition](test/integration/extensions.test.ts).
+See the [core entry point](src/application/index.ts), [WORK implementation](src/work/work.ts) and [extension composition tests](test/integration/extensions.test.ts).
 
 ```sh
 npm run verify

@@ -28,7 +28,6 @@ const coreFeatures = new Set([
 const optionalFeatures = new Set([
   "agents",
   "composition",
-  "artifacts",
   "definitions",
   "execution",
   "sandbox",
