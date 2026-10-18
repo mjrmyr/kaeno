@@ -76,9 +76,9 @@ it("leaves agents discoverable without a model and activates them when a default
   ]);
 });
 it.each(["", "\nskills: []"])(
-  "defaults to skill tools even without assignments (%s)",
+  "uses the host's default tools and binds no skills without assignments (%s)",
   (skills) => {
-    const bind = vi.fn<SkillBinder["bind"]>();
+    const bind = vi.fn<SkillBinder>(() => undefined);
     const agent = parseAgent(
       manifest(`name: scout\ndescription: Investigates${skills}`),
       "local",
@@ -88,13 +88,13 @@ it.each(["", "\nskills: []"])(
       agent,
       {
         model: { provider: "openai", modelId: "x" },
-        tools: ["bash", "read_skill"],
+        tools: ["bash", "read_skill", "list_skills", "read_skill"],
       },
-      { tools: ["list_skills", "read_skill"], bind },
+      bind,
     );
     expect(setup.tools).toEqual(["bash", "read_skill", "list_skills"]);
     expect(setup.bindings).toEqual([]);
-    expect(bind).not.toHaveBeenCalled();
+    expect(bind).toHaveBeenCalledWith([]);
   },
 );
 it("freezes trusted extension bindings without changing explicit tool selection", () => {
@@ -112,8 +112,7 @@ it("freezes trusted extension bindings without changing explicit tool selection"
       model: { provider: "openai", modelId: "x" },
       tools: ["external_tool"],
     },
-    bindingsFor: (definition) =>
-      definition.id === "local:coder" ? [binding] : [],
+    bindings: [binding],
   });
   const plan = participants.plan(agent.id);
   expect(plan.participants[agent.id].setup.tools).toEqual([]);
@@ -142,10 +141,7 @@ it("keeps explicit empty tool/skill lists and never maps a tool name to a grant"
       model: { provider: "openai", modelId: "x" },
       tools: ["bash"],
     },
-    {
-      tools: ["list_skills", "read_skill"],
-      bind: vi.fn<SkillBinder["bind"]>(),
-    },
+    vi.fn<SkillBinder>(() => undefined),
   );
   expect(setup.tools).toEqual([]);
   expect(setup.bindings).toEqual([]);

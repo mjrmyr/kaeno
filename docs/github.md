@@ -73,7 +73,7 @@ configured installation for all agents
   -> authenticated host Git <-> credential-free bundle <-> worker api.env
 ```
 
-The small generic addition is `bindingsFor(agent)` in agent/file composition. File composition also accepts explicitly installed extensions and additional approved worker tool names. Host-supplied `tools` are included in assistant and worker defaults; explicit tool lists remain authoritative. Core still owns only opaque bindings and native extension selection; it parses no GitHub configuration.
+The small generic addition is a host-wide `bindings` list in environment composition; every selected agent carries those bindings. File composition also accepts explicitly installed extensions and additional approved worker tool names. Host-supplied `tools` are included in assistant and worker defaults; explicit tool lists remain authoritative. Core still owns only opaque bindings and native extension selection; it parses no GitHub configuration.
 
 A binding records only the installation ID. GitHub enforces repository access and permissions on every operation. A binding never selects tools. Every child worker receives the same configured installation in its own frozen setup. Private keys, App JWTs, and installation tokens are never written to bindings, prompts, results, Git remote URLs, or worker files.
 

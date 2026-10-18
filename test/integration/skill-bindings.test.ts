@@ -16,12 +16,20 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
-import { openKaeno } from "../../src/core/application/index.ts";
+import { openKaeno, type Binding } from "../../src/core/application/index.ts";
 import {
   SkillCatalog,
   skillBinder,
   skillsExtension,
 } from "../../src/extensions/skills/index.ts";
+
+function guideBinding(catalog: SkillCatalog): Binding {
+  const binding = skillBinder(catalog)(["guide"]);
+  if (!binding) {
+    throw new Error("expected a skills binding");
+  }
+  return binding;
+}
 
 it("replays a pending CHAT with its original assigned skill without a catalog or WORK", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-skill-bindings-"));
@@ -52,7 +60,7 @@ it("replays a pending CHAT with its original assigned skill without a catalog or
           model,
           instructions: "Use your skill",
           tools: ["list_skills", "read_skill"],
-          bindings: [skillBinder(catalog).bind(["guide"])],
+          bindings: [guideBinding(catalog)],
         },
         extensions: [
           skillsExtension(),
@@ -162,7 +170,7 @@ it("keeps explicit tools empty and presents assigned guidance inline without gra
       model,
       instructions: "Answer",
       tools: [],
-      bindings: [skillBinder(catalog).bind(["guide"])],
+      bindings: [guideBinding(catalog)],
     },
     extensions: [skillsExtension()],
   });

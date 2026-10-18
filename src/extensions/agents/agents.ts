@@ -14,6 +14,7 @@ import type {
   WorkPlan,
 } from "../../core/application/index.ts";
 import {
+  agentOriginBinding,
   discoveryMetadata,
   parseManifest,
   type DefinitionOrigin,
@@ -40,13 +41,10 @@ export interface AgentDefinition {
   readonly origin?: DefinitionOrigin;
 }
 
-/** Turns skill references into a binding; satisfied by the skills extension. Optional. */
-export interface SkillBinder {
-  readonly tools: readonly string[];
-  /** Bind even without source assignments when native skill contributions are present. */
-  readonly alwaysBind?: boolean;
-  bind(references: readonly string[]): Binding;
-}
+/** Turns skill references into one binding, or none when there is nothing to bind; satisfied by the skills extension. */
+export type SkillBinder = (
+  references: readonly string[],
+) => Binding | undefined;
 
 export interface AgentDefaults {
   /** Model for definitions without one; absent makes such agents discoverable but unavailable. */
@@ -152,30 +150,31 @@ export function parseModelRef(value: string): ModelRef {
 
 /**
  * Effective setup of a definition: defaults for omitted fields, explicit lists kept exact.
- * Omitted `tools` get the binder's discovery/reading tools even without assigned skills.
- * Explicit lists remain exact; the knowledge extension may render its instructions inline
- * when its reader tool is unavailable.
+ * Bindings are the host's (copied per agent), then the definition's origin, then its skills.
+ * An agent with an origin needs the definition-origins extension installed.
  */
 export function resolveAgentSetup(
   agent: AgentDefinition,
   defaults: AgentDefaults,
   skills?: SkillBinder,
-  bindingsFor?: (agent: AgentDefinition) => readonly Binding[],
+  hostBindings: readonly Binding[] = [],
 ): ConversationSetup {
   const model = agent.model ? parseModelRef(agent.model) : defaults.model;
   if (!model) {
     throw new Error(`no model configured and no default model available`);
   }
   const references = agent.skills ?? [];
-  const bindings: Binding[] = [...(bindingsFor?.(agent) ?? [])];
-  const tools = agent.tools ?? [
-    ...new Set([...defaults.tools, ...(skills?.tools ?? [])]),
-  ];
-  if (references.length > 0 || skills?.alwaysBind) {
-    if (!skills) {
-      throw new Error(`skills are assigned but no skill catalog is installed`);
-    }
-    bindings.push(skills.bind(references));
+  const bindings: Binding[] = structuredClone([...hostBindings]);
+  if (agent.origin) {
+    bindings.push(agentOriginBinding(agent.id, agent.origin));
+  }
+  const tools = agent.tools ?? [...new Set(defaults.tools)];
+  if (references.length > 0 && !skills) {
+    throw new Error(`skills are assigned but no skill catalog is installed`);
+  }
+  const skillBinding = skills?.(references);
+  if (skillBinding) {
+    bindings.push(skillBinding);
   }
   return {
     model,
@@ -193,10 +192,10 @@ export function resolveAgentSetup(
 export function agentParticipants(options: {
   agents: readonly AgentDefinition[];
   defaults: AgentDefaults;
-  /** Shared skill binder, or one supplied per agent for native contributions. */
-  skills?: SkillBinder | ((agent: AgentDefinition) => SkillBinder);
+  /** Skill binder per agent (native contributions may differ by agent). */
+  skills?: (agent: AgentDefinition) => SkillBinder;
   /** Extension-owned scope supplied by trusted host composition, never by agent frontmatter. */
-  bindingsFor?: (agent: AgentDefinition) => readonly Binding[];
+  bindings?: readonly Binding[];
   /** Installed, host-approved worker tool names; absence leaves validation to the core host. */
   tools?: readonly string[];
 }): Participants {
@@ -210,10 +209,8 @@ export function agentParticipants(options: {
         const setup = resolveAgentSetup(
           agent,
           options.defaults,
-          typeof options.skills === "function"
-            ? options.skills(agent)
-            : options.skills,
-          options.bindingsFor,
+          options.skills?.(agent),
+          options.bindings,
         );
         const missing = (setup.tools ?? []).filter(
           (tool) =>

@@ -18,7 +18,6 @@ import {
   type AgentDefinition,
 } from "../../extensions/agents/index.ts";
 import {
-  agentOriginBinding,
   definitionOriginsExtension,
   withDefinitionSources,
   type DefinitionPackage,
@@ -32,6 +31,7 @@ import {
   skillBinder,
   skillsExtension,
   SKILLS_EXTENSION,
+  SKILL_TOOLS,
   SkillCatalog,
   type BoundSkill,
 } from "../../extensions/skills/index.ts";
@@ -80,7 +80,8 @@ export interface LoadEnvironmentOptions {
   defaultModel?: ModelRef;
   extensions?: readonly KaenoExtension[];
   tools?: readonly string[];
-  bindingsFor?: (agent: AgentDefinition) => readonly Binding[];
+  /** Extension data every selected agent carries (e.g. a GitHub installation). */
+  bindings?: readonly Binding[];
   skillsFor?: (
     agent: AgentDefinition,
     role: "assistant" | "worker",
@@ -154,18 +155,12 @@ export async function loadEnvironment(
             ? parseModelRef(config.defaultModel)
             : undefined),
       };
-      const bindingsFor = (agent: AgentDefinition): readonly Binding[] => {
-        const bindings = [...(options.bindingsFor?.(agent) ?? [])];
-        if (bindings.some((binding) => binding.owner === SKILLS_EXTENSION)) {
-          throw new Error(
-            "Use skillsFor for native skill contributions; bindingsFor must not supply a second skills binding",
-          );
-        }
-        if (agent.origin) {
-          bindings.push(agentOriginBinding(agent.id, agent.origin));
-        }
-        return bindings;
-      };
+      const bindings = options.bindings ?? [];
+      if (bindings.some((binding) => binding.owner === SKILLS_EXTENSION)) {
+        throw new Error(
+          "Use skillsFor for native skill contributions; bindings must not supply a second skills binding",
+        );
+      }
       const binderFor = (
         agent: AgentDefinition,
         role: "assistant" | "worker",
@@ -173,14 +168,17 @@ export async function loadEnvironment(
       const assistantBinder = binderFor(assistantDefinition, "assistant");
       const assistant = resolveAgentSetup(
         assistantDefinition,
-        { ...defaults, tools: [...ORCHESTRATION, ...(options.tools ?? [])] },
+        {
+          ...defaults,
+          tools: [...ORCHESTRATION, ...(options.tools ?? []), ...SKILL_TOOLS],
+        },
         assistantBinder,
-        bindingsFor,
+        bindings,
       );
       const assistantTools = [
         ...CODING,
         ...ORCHESTRATION,
-        ...assistantBinder.tools,
+        ...SKILL_TOOLS,
         ...(options.tools ?? []),
       ];
       const missing = (assistant.tools ?? []).filter(
@@ -192,20 +190,16 @@ export async function loadEnvironment(
         );
       }
       const workerTools = [
-        ...new Set([
-          ...WORKER_TOOLS,
-          ...assistantBinder.tools,
-          ...(options.tools ?? []),
-        ]),
+        ...new Set([...WORKER_TOOLS, ...SKILL_TOOLS, ...(options.tools ?? [])]),
       ];
       const participants = agentParticipants({
         agents: workerDefinitions,
         defaults: {
           ...defaults,
-          tools: [...WORKER_TOOLS, ...(options.tools ?? [])],
+          tools: [...WORKER_TOOLS, ...(options.tools ?? []), ...SKILL_TOOLS],
         },
         skills: (agent) => binderFor(agent, "worker"),
-        bindingsFor,
+        bindings,
         tools: workerTools,
       });
       for (const worker of participants.list()) {

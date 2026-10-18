@@ -19,7 +19,7 @@ const configSchema = z
 export async function loadGitHubConfiguration(path: string): Promise<{
   extensions: KaenoExtension[];
   tools: readonly string[];
-  bindingsFor(): readonly Binding[];
+  bindings: readonly Binding[];
   repositoryReader: RepositoryReader;
 }> {
   const absolute = resolve(path);
@@ -47,6 +47,6 @@ export async function loadGitHubConfiguration(path: string): Promise<{
       },
     }),
     tools: GITHUB_TOOLS,
-    bindingsFor: () => [binding],
+    bindings: [binding],
   };
 }

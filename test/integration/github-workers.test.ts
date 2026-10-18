@@ -87,7 +87,7 @@ it("gives the assistant, root worker, and nested worker GitHub discovery by defa
       configFile,
       extensions: [extension],
       tools: GITHUB_TOOLS,
-      bindingsFor: () => [githubBinding(installationId)],
+      bindings: [githubBinding(installationId)],
     });
     const faux = fauxProvider();
     const models = createModels();

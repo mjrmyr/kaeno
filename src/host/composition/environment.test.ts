@@ -239,9 +239,7 @@ it("rejects a competing native skills owner", async () => {
   await expect(
     loadEnvironment({
       configFile,
-      bindingsFor: () => [
-        { owner: "kaeno-skills", version: 1, value: { skills: [] } },
-      ],
+      bindings: [{ owner: "kaeno-skills", version: 1, value: { skills: [] } }],
     }),
   ).rejects.toThrow("Use skillsFor");
 });

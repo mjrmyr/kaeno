@@ -55,22 +55,22 @@ function boundSkills(binding: Binding | undefined): BoundSkill[] {
   return bindingValueSchema.parse(binding.value).skills;
 }
 
-/** Binds catalog skills to a conversation; satisfies consumers' structural binder ports. */
+/**
+ * Binds catalog skills plus native contributions into one skills binding; satisfies consumers'
+ * structural binder ports. Returns undefined when there is nothing to bind.
+ */
 export function skillBinder(
   catalog: SkillCatalog,
   contributions: readonly BoundSkill[] = [],
-): {
-  readonly tools: readonly string[];
-  readonly alwaysBind: boolean;
-  bind(references: readonly string[]): Binding;
-} {
+): (references: readonly string[]) => Binding | undefined {
   const native = snapshotSkills(
     contributions.map((skill) => boundSkillSchema.parse(skill)),
   );
-  return {
-    tools: [...SKILL_TOOLS],
-    alwaysBind: native.length > 0,
-    bind: (references) => ({
+  return (references) => {
+    if (references.length === 0 && native.length === 0) {
+      return undefined;
+    }
+    return {
       owner: SKILLS_EXTENSION,
       version: VERSION,
       value: {
@@ -86,7 +86,7 @@ export function skillBinder(
           }),
         ),
       },
-    }),
+    };
   };
 }
 

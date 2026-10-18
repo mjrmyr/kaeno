@@ -21,6 +21,7 @@ import {
   SkillCatalog,
   skillBinder,
   skillsExtension,
+  SKILL_TOOLS,
 } from "../src/extensions/skills/index.ts";
 import { ApiServer } from "../src/extensions/api/index.ts";
 import { RemoteExecutionEnv } from "../src/extensions/execution/index.ts";
@@ -105,8 +106,8 @@ const participants = agentParticipants({
       "smoke",
     ),
   ],
-  defaults: { tools: ["bash"] },
-  skills,
+  defaults: { tools: ["bash", ...SKILL_TOOLS] },
+  skills: () => skills,
 });
 const core = await openKaeno({
   storage: await openNodeSqliteStorage(join(directory, "core.sqlite")),
@@ -119,7 +120,7 @@ const core = await openKaeno({
   extensions: [{ durable: CodingTools }, skillsExtension()],
   work: {
     participants,
-    tools: ["bash", ...skills.tools],
+    tools: ["bash", ...SKILL_TOOLS],
     maxDepth: 1,
     maxConcurrent: 2,
     environment: new SandboxWorkEnvironment({
