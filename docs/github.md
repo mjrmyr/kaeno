@@ -1,6 +1,6 @@
 # GitHub App extension
 
-The optional `src/github` extension lets a worker discover private repositories, check out code in its existing execution environment, and propose changes through a draft pull request. GitHub is not a core service or an agent-definition field. Other platforms can supply independent native extensions using the same composition seam.
+The optional `src/extensions/github` extension lets a worker discover private repositories, check out code in its existing execution environment, and propose changes through a draft pull request. GitHub is not a core service or an agent-definition field. Other platforms can supply independent native extensions using the same composition seam.
 
 ## Owner setup
 
@@ -104,10 +104,8 @@ The extension requires supported, patched host/worker Git versions. Git bundles 
 ## Embedding
 
 ```ts
-import {
-  loadEnvironment,
-  loadGitHubConfiguration,
-} from "../src/composition/index.ts";
+import { loadGitHubConfiguration } from "../src/extensions/github/index.ts";
+import { loadEnvironment } from "../src/host/composition/index.ts";
 
 const github = await loadGitHubConfiguration("./.kaeno/github.json");
 const configuration = await loadEnvironment({

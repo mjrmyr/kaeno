@@ -6,7 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import { openKaeno, type Kaeno } from "../../src/application/index.ts";
+import { openKaeno, type Kaeno } from "../../src/core/application/index.ts";
 
 it("reopens a core-only native conversation", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-minimal-"));

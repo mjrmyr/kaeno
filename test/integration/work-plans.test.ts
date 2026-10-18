@@ -21,7 +21,7 @@ import {
   openKaeno,
   type Participants,
   type WorkPlan,
-} from "../../src/application/index.ts";
+} from "../../src/core/application/index.ts";
 
 it("runs all-to-all delegation through core-only participant plans, keeps frozen children and exact tools", async () => {
   const faux = fauxProvider();

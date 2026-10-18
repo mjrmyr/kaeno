@@ -12,16 +12,14 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import { MemoryStorage } from "@earendil-works/pi-durable";
 import { expect, it, vi } from "vitest";
-import { openKaeno } from "../../src/application/index.ts";
-import {
-  loadEnvironment,
-  loadGitHubConfiguration,
-} from "../../src/composition/index.ts";
+import { openKaeno } from "../../src/core/application/index.ts";
+import { loadEnvironment } from "../../src/host/composition/index.ts";
 import {
   githubBinding,
   githubExtension,
   GITHUB_TOOLS,
-} from "../../src/github/index.ts";
+  loadGitHubConfiguration,
+} from "../../src/extensions/github/index.ts";
 
 const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
   .privateKey.export({ format: "pem", type: "pkcs8" })

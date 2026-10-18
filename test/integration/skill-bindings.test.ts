@@ -16,12 +16,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
-import { openKaeno } from "../../src/application/index.ts";
+import { openKaeno } from "../../src/core/application/index.ts";
 import {
   SkillCatalog,
   skillBinder,
   skillsExtension,
-} from "../../src/skills/index.ts";
+} from "../../src/extensions/skills/index.ts";
 
 it("replays a pending CHAT with its original assigned skill without a catalog or WORK", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-skill-bindings-"));

@@ -40,7 +40,7 @@ The CLI's HTTP adapter listens on `PORT` (default `8080`). It supports thread li
 
 ## Embed and extend
 
-The embedding entry point is `openKaeno` in `src/application/index.ts`. Callers supply resolved native assistant settings and explicitly install pi-durable extensions. `loadEnvironment` in `src/composition/index.ts` resolves the same configured sources for local, Docker, and Kubernetes hosts; source acquisition and catalogs do not enter durable core.
+The embedding entry point is `openKaeno` in `src/core/application/index.ts`. Callers supply resolved native assistant settings and explicitly install pi-durable extensions. `loadEnvironment` in `src/host/composition/index.ts` resolves the same configured sources for local, Docker, and Kubernetes hosts; source acquisition and catalogs do not enter durable core.
 
 Native extensions are trusted process code, fixed before the harness opens. There is no hot loader or plugin marketplace. Agent/skill Markdown is data, not executable extension code. An agent may author a patch or a future native extension, but adopting that code into the running process remains an owner-controlled release decision.
 
@@ -54,7 +54,7 @@ Definitions used by admitted work are frozen. On restart, missing saved native d
 
 This cut intentionally does not migrate the prior WORK/Telegram database or legacy JSON configuration. Define/select a catalog agent in `KAENO_CONFIG`; do not rely on `.kaeno/AGENT.md` as an assistant override. Use a fresh database for this release unless the previous workload has been deliberately drained/migrated and backed up.
 
-See the [core entry point](src/application/index.ts), [WORK implementation](src/work/work.ts) and [extension composition tests](test/integration/extensions.test.ts).
+See the [core entry point](src/core/application/index.ts), [WORK implementation](src/core/work/work.ts) and [extension composition tests](test/integration/extensions.test.ts).
 
 ```sh
 npm run verify

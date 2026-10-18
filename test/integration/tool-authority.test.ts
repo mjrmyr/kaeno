@@ -16,9 +16,9 @@ import {
   MemoryStorage,
 } from "@earendil-works/pi-durable";
 import { expect, it } from "vitest";
-import { assistantToolPolicy } from "../../src/authority/index.ts";
-import { parseTaskId } from "../../src/durable/index.ts";
-import { admitTurn, defineTurn } from "../../src/turns/index.ts";
+import { assistantToolPolicy } from "../../src/core/authority/index.ts";
+import { parseTaskId } from "../../src/core/durable/index.ts";
+import { admitTurn, defineTurn } from "../../src/core/turns/index.ts";
 
 it.each(["user", "activity-result"] as const)(
   "gates generic mutations but permits reads on admitted %s turns",

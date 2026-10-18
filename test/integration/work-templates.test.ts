@@ -12,11 +12,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import { openKaeno } from "../../src/application/index.ts";
+import { openKaeno } from "../../src/core/application/index.ts";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
-import { agentParticipants, parseAgent } from "../../src/agents/index.ts";
-import { SandboxWorkEnvironment } from "../../src/sandbox/index.ts";
-import type { SandboxProvider } from "../../src/sandbox/index.ts";
+import {
+  agentParticipants,
+  parseAgent,
+} from "../../src/extensions/agents/index.ts";
+import { SandboxWorkEnvironment } from "../../src/extensions/docker/index.ts";
+import type { SandboxProvider } from "../../src/extensions/docker/index.ts";
 
 it("offers and launches every configured worker even when none delegate to each other", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-templates-"));

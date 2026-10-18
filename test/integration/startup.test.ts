@@ -20,7 +20,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { assertRecoveryCompatible } from "../../src/durable/index.ts";
+import { assertRecoveryCompatible } from "../../src/core/durable/index.ts";
 
 // Native MemoryStorage has a terminal close. Keep its lifetime outside the
 // individual Harness instances so the same persisted records can be reopened.

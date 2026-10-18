@@ -15,12 +15,12 @@ import {
   parseAgent,
   parseAgents,
   resolveAgentSetup,
-} from "../../src/agents/index.ts";
-import { openKaeno } from "../../src/application/index.ts";
+} from "../../src/extensions/agents/index.ts";
+import { openKaeno } from "../../src/core/application/index.ts";
 import type {
   DefinitionOrigin,
   DefinitionPackage,
-} from "../../src/definitions/index.ts";
+} from "../../src/extensions/definitions/index.ts";
 import {
   loadSkills,
   readSkillDocument,
@@ -28,7 +28,7 @@ import {
   skillBinder,
   skillsExtension,
   type BoundSkill,
-} from "../../src/skills/index.ts";
+} from "../../src/extensions/skills/index.ts";
 
 const model = { provider: "faux", modelId: "faux-1" };
 const repositoryOrigin: DefinitionOrigin = {

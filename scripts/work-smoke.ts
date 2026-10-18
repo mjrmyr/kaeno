@@ -11,20 +11,23 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openKaeno } from "../src/application/index.ts";
+import { openKaeno } from "../src/core/application/index.ts";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
-import { agentParticipants, parseAgent } from "../src/agents/index.ts";
+import {
+  agentParticipants,
+  parseAgent,
+} from "../src/extensions/agents/index.ts";
 import {
   SkillCatalog,
   skillBinder,
   skillsExtension,
-} from "../src/skills/index.ts";
-import { ApiServer } from "../src/api/index.ts";
-import { RemoteExecutionEnv } from "../src/execution/index.ts";
+} from "../src/extensions/skills/index.ts";
+import { ApiServer } from "../src/extensions/api/index.ts";
+import { RemoteExecutionEnv } from "../src/extensions/execution/index.ts";
 import {
   DockerSandboxProvider,
   SandboxWorkEnvironment,
-} from "../src/sandbox/index.ts";
+} from "../src/extensions/docker/index.ts";
 
 const directory = await mkdtemp(join(tmpdir(), "kaeno-work-smoke-"));
 const faux = fauxProvider({ provider: "openai" });

@@ -14,8 +14,12 @@ import {
   MemoryStorage,
 } from "@earendil-works/pi-durable";
 import { expect, it } from "vitest";
-import { parseTaskId } from "../../src/durable/index.ts";
-import { admitTurn, defineTurn, TurnLedger } from "../../src/turns/index.ts";
+import { parseTaskId } from "../../src/core/durable/index.ts";
+import {
+  admitTurn,
+  defineTurn,
+  TurnLedger,
+} from "../../src/core/turns/index.ts";
 function required<T>(value: T | null | undefined): T {
   if (value === undefined || value === null) {
     throw new Error("Missing value");

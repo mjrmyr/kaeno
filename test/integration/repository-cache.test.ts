@@ -18,7 +18,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
-import { parseEnvironmentConfiguration } from "../../src/composition/index.ts";
+import { parseEnvironmentConfiguration } from "../../src/host/composition/index.ts";
 import {
   definitionTreeHash,
   withDefinitionSources,
@@ -26,8 +26,8 @@ import {
   type DefinitionSources,
   type RepositoryDefinitionSource,
   type RepositoryReader,
-} from "../../src/definitions/index.ts";
-import { githubRepositoryReader } from "../../src/github/index.ts";
+} from "../../src/extensions/definitions/index.ts";
+import { githubRepositoryReader } from "../../src/extensions/github/index.ts";
 
 const execute = promisify(execFile);
 const roots: string[] = [];
@@ -178,7 +178,7 @@ function launchPausedWriter(directory: string, marker: string) {
   const script = `
     import { mkdir, writeFile } from "node:fs/promises";
     import { join } from "node:path";
-    import { withDefinitionSources } from ${JSON.stringify(pathToFileURL(resolve("src/definitions/index.ts")).href)};
+    import { withDefinitionSources } from ${JSON.stringify(pathToFileURL(resolve("src/extensions/definitions/index.ts")).href)};
     await withDefinitionSources({
       directory: ${JSON.stringify(directory)},
       repositories: ${JSON.stringify(twoRepositories)},

@@ -31,13 +31,13 @@ import {
   kubernetesExtension,
   loadKubernetesConfiguration,
   type KubernetesExtensionOptions,
-} from "../../src/kubernetes/index.ts";
+} from "../../src/extensions/kubernetes/index.ts";
 import {
   EnvironmentServer,
   RemoteExecutionEnv,
-} from "../../src/execution/index.ts";
-import { openKaeno, type WorkPlan } from "../../src/application/index.ts";
-import type { WorkInstance } from "../../src/work/index.ts";
+} from "../../src/extensions/execution/index.ts";
+import { openKaeno, type WorkPlan } from "../../src/core/application/index.ts";
+import type { WorkInstance } from "../../src/core/work/index.ts";
 
 const resources = {
   requests: { cpu: "100m", memory: "128Mi" },

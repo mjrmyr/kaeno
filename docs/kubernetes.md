@@ -1,6 +1,6 @@
 # Kubernetes worker extension
 
-The optional Kubernetes extension replaces Docker as the worker execution backend. It is not a `kubectl` tool and grants agents no Kubernetes API access. It composes through `KaenoExtension` and `WorkEnvironment`; all Kubernetes implementation details live in `src/kubernetes/`.
+The optional Kubernetes extension replaces Docker as the worker execution backend. It is not a `kubectl` tool and grants agents no Kubernetes API access. It composes through `KaenoExtension` and `WorkEnvironment`; all Kubernetes implementation details live in `src/extensions/kubernetes/`.
 
 ## Configure
 
@@ -43,7 +43,7 @@ Credential paths resolve relative to the configuration file. HTTPS verifies the 
 
 ## Cluster prerequisites
 
-Review and adapt [`src/kubernetes/cluster.yaml`](../src/kubernetes/cluster.yaml). It provides an example of:
+Review and adapt [`src/extensions/kubernetes/cluster.yaml`](../src/extensions/kubernetes/cluster.yaml). It provides an example of:
 
 - Host service account and namespace-local RBAC: get/list/create/delete pods, get ResourceQuotas. No exec, patch, secrets, cluster-wide access, or quota administration.
 - Unprivileged sandbox service account, with token automount disabled.
@@ -53,7 +53,7 @@ Review and adapt [`src/kubernetes/cluster.yaml`](../src/kubernetes/cluster.yaml)
 
 Create the namespace separately. Set the host Deployment's `serviceAccountName` to `kaeno-kubernetes-host` and label its pod `app.kubernetes.io/name: kaeno`. Mount the configuration file and durable SQLite storage on the host. Adapt DNS labels, private pod/service CIDRs, metadata endpoints, CNI-specific behavior, and permitted egress for your cluster before applying the example. NetworkPolicy requires an enforcing CNI; pod security settings alone do not provide network isolation. The extension does not create infrastructure, grant RBAC, or alter network policy.
 
-Disable automatic sidecar injection for sandbox pods: identity checks and quota arithmetic assume exactly one execution container. The sandbox image must run `/app/src/envd.ts` with Node.js and support UID/GID 1000, as the current Dockerfile does. Configure image-pull credentials on the sandbox service account if needed. Those registry credentials are for the kubelet, not environment variables available to agents.
+Disable automatic sidecar injection for sandbox pods: identity checks and quota arithmetic assume exactly one execution container. The sandbox image must run `/app/src/host/envd.ts` with Node.js and support UID/GID 1000, as the current Dockerfile does. Configure image-pull credentials on the sandbox service account if needed. Those registry credentials are for the kubelet, not environment variables available to agents.
 
 ## Lifecycle and capacity
 
@@ -95,7 +95,7 @@ await openKaeno({
 });
 ```
 
-Import `kubernetesExtension` or `loadKubernetesConfiguration` from `src/kubernetes/index.ts`. The API client, pod schemas/specs, quantity parser, and reservation documents are not exported. Execution transport is injected by composition rather than constructed across feature boundaries.
+Import `kubernetesExtension` or `loadKubernetesConfiguration` from `src/extensions/kubernetes/index.ts`. The API client, pod schemas/specs, quantity parser, and reservation documents are not exported. Execution transport is injected by composition rather than constructed across feature boundaries.
 
 ## Boundary choice
 

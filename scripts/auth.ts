@@ -2,7 +2,10 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
-import { DEFAULT_AUTH_FILE, FileCredentialStore } from "../src/auth/index.ts";
+import {
+  DEFAULT_AUTH_FILE,
+  FileCredentialStore,
+} from "../src/host/auth/index.ts";
 
 const usage = "Usage: npm run auth -- login openai [--output <file>]";
 
