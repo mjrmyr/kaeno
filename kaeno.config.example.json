@@ -7,8 +7,7 @@
     "mjrmyr/myriad:5ca19933726862aa706199159b1fe1a02fccf56f"
   ],
   "kaeno": {
-    "agent": "mjrmyr/myriad:kaeno",
-    "skills": ["mjrmyr/myriad:p-mode", "mjrmyr/myriad:how"]
+    "agent": "mjrmyr/myriad:kaeno"
   },
   "workers": ["mjrmyr/myriad:swe"]
 }

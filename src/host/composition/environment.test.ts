@@ -91,31 +91,38 @@ it.each([undefined, []])(
     expect(config.assistant.tools).toContain("start_work");
   },
 );
-it.each([undefined, [], ["local:guide"]])(
-  "applies omitted/empty/explicit Kaeno skill selections (%s)",
-  async (skills) => {
-    const { root, configFile } = await fixture({
-      kaeno: { agent: "local:coordinator", skills },
-    });
+it.each([
+  { skills: "", expected: [] },
+  { skills: "skills: []\n", expected: [] },
+  { skills: "skills: [local:guide]\n", expected: ["local:guide"] },
+])(
+  "takes Kaeno's skills from its own profile ($skills)",
+  async ({ skills, expected }) => {
+    const { root, configFile } = await fixture();
     await put(
       join(root, "agents/coordinator/AGENT.md"),
-      agent("coordinator", "model: openai/test\nskills: [local:guide]\n"),
+      agent("coordinator", `model: openai/test\n${skills}`),
     );
     const config = await loadEnvironment({ configFile });
     const binding = config.assistant.bindings?.find(
       (item) => item.owner === "kaeno-skills",
     );
-    const expected = skills?.length === 0 ? [] : ["local:guide"];
     expect(binding?.value ?? { skills: [] }).toMatchObject({
       skills: expected.map((id) => ({ id })),
     });
     expect(binding === undefined).toBe(expected.length === 0);
   },
 );
-it("native-only knowledge is additive even with source skills/tools explicitly empty", async () => {
-  const { root, configFile } = await fixture({
-    kaeno: { agent: "local:coordinator", skills: [] },
+it("rejects a Kaeno skill list in the owner configuration", async () => {
+  const { configFile } = await fixture({
+    kaeno: { agent: "local:coordinator", skills: ["local:guide"] },
   });
+  await expect(loadEnvironment({ configFile })).rejects.toThrow(
+    'kaeno: Unrecognized key: "skills"',
+  );
+});
+it("native-only knowledge is additive even with source skills/tools explicitly empty", async () => {
+  const { root, configFile } = await fixture();
   await put(
     join(root, "agents/coordinator/AGENT.md"),
     agent("coordinator", "model: openai/test\ntools: []\n"),
@@ -225,8 +232,12 @@ it("reports unused malformed definitions but refuses selecting them or wildcard-
         agents: [{ alias: "local", directory: "./agents" }],
         skills: [{ alias: "local", directory: "./skills" }],
       },
-      kaeno: { agent: "local:coordinator", skills: ["local:*"] },
+      kaeno: { agent: "local:coordinator" },
     }),
+  );
+  await put(
+    join(root, "agents/coordinator/AGENT.md"),
+    agent("coordinator", "model: openai/test\nskills: [local:*]\n"),
   );
   await expect(loadEnvironment({ configFile })).rejects.toThrow(
     "invalid skill packages",
