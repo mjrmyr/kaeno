@@ -14,6 +14,11 @@ import { join } from "node:path";
 import { openKaeno } from "../src/application/index.ts";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { agentParticipants, parseAgent } from "../src/agents/index.ts";
+import {
+  SkillCatalog,
+  skillBinder,
+  skillsExtension,
+} from "../src/skills/index.ts";
 import { ApiServer } from "../src/api/index.ts";
 import { RemoteExecutionEnv } from "../src/execution/index.ts";
 import {
@@ -25,6 +30,7 @@ const directory = await mkdtemp(join(tmpdir(), "kaeno-work-smoke-"));
 const faux = fauxProvider({ provider: "openai" });
 const models = createModels();
 models.setProvider(faux.provider);
+let workerListedSkills = false;
 let workerRanShell = false;
 let workerShellResult = "";
 faux.setResponses(
@@ -37,6 +43,18 @@ faux.setResponses(
     );
     const isWork = system.includes("You are Kaeno WORK");
     if (isWork && last?.role === "user") {
+      return fauxAssistantMessage([fauxToolCall("list_skills", {})], {
+        stopReason: "toolUse",
+      });
+    }
+    if (
+      isWork &&
+      last?.role === "toolResult" &&
+      last.toolName === "list_skills"
+    ) {
+      workerListedSkills =
+        !last.isError &&
+        last.content.some((item) => item.type === "text" && item.text === "[]");
       return fauxAssistantMessage(
         [fauxToolCall("bash", { command: "echo WORK_CONTAINER_OK" })],
         { stopReason: "toolUse" },
@@ -75,15 +93,17 @@ faux.setResponses(
     return fauxAssistantMessage([fauxText("Unexpected model step")]);
   }),
 );
+const skills = skillBinder(new SkillCatalog([]));
 const participants = agentParticipants({
   agents: [
     parseAgent(
-      "---\nname: worker\ndescription: Local sandbox worker\nmodel: openai/faux-1\ntools: [bash]\n---\nComplete the task and verify it.",
+      "---\nname: worker\ndescription: Local sandbox worker\nmodel: openai/faux-1\n---\nComplete the task and verify it.",
       "local",
       "smoke",
     ),
   ],
-  defaults: { tools: [] },
+  defaults: { tools: ["bash"] },
+  skills,
 });
 const core = await openKaeno({
   storage: await openNodeSqliteStorage(join(directory, "core.sqlite")),
@@ -93,10 +113,10 @@ const core = await openKaeno({
     instructions: "Be helpful.",
     tools: ["start_work"],
   },
-  extensions: [{ durable: CodingTools }],
+  extensions: [{ durable: CodingTools }, skillsExtension()],
   work: {
     participants,
-    tools: ["bash"],
+    tools: ["bash", ...skills.tools],
     maxDepth: 1,
     maxConcurrent: 2,
     environment: new SandboxWorkEnvironment({
@@ -138,6 +158,11 @@ try {
   console.log(output);
   if (!output.includes("Worker report received")) {
     throw new Error("Timed out waiting for the worker report");
+  }
+  if (!workerListedSkills) {
+    throw new Error(
+      "The worker did not successfully discover its empty skill list",
+    );
   }
   if (!workerRanShell || !workerShellResult.includes("WORK_CONTAINER_OK")) {
     throw new Error(

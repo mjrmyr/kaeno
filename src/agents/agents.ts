@@ -143,8 +143,9 @@ export function parseModelRef(value: string): ModelRef {
 
 /**
  * Effective setup of a definition: defaults for omitted fields, explicit lists kept exact.
- * Omitted `tools` get the binder's lazy-access tools added. Explicit lists remain exact; the
- * knowledge extension may render its instructions inline when its reader tool is unavailable.
+ * Omitted `tools` get the binder's discovery/reading tools even without assigned skills.
+ * Explicit lists remain exact; the knowledge extension may render its instructions inline
+ * when its reader tool is unavailable.
  */
 export function resolveAgentSetup(
   agent: AgentDefinition,
@@ -157,15 +158,14 @@ export function resolveAgentSetup(
   }
   const references = agent.skills ?? [];
   const bindings: Binding[] = [];
-  let tools = agent.tools ?? defaults.tools;
+  const tools = agent.tools ?? [
+    ...new Set([...defaults.tools, ...(skills?.tools ?? [])]),
+  ];
   if (references.length > 0) {
     if (!skills) {
       throw new Error(`skills are assigned but no skill catalog is installed`);
     }
     bindings.push(skills.bind(references));
-    if (agent.tools === undefined) {
-      tools = [...new Set([...tools, ...skills.tools])];
-    }
   }
   return {
     model,

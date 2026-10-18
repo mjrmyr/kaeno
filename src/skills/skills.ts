@@ -267,21 +267,43 @@ export async function loadSkills(
   };
 }
 
+/** Only automatically discoverable, assigned metadata; never instruction bodies or assets. */
+export function listSkills(binding: readonly BoundSkill[]): SkillSummary[] {
+  return binding
+    .filter((skill) => !skill.disableModelInvocation)
+    .map(({ id, description }) => ({ id, description }));
+}
+
 export function skillPrompt(
   binding: readonly BoundSkill[],
+  tools: readonly string[],
 ): string | undefined {
-  const visible = binding.filter((skill) => !skill.disableModelInvocation);
-  if (!visible.length) {
-    return undefined;
+  const instructions: string[] = [];
+  if (tools.includes("list_skills")) {
+    instructions.push(
+      "Use list_skills to discover skills assigned to you when relevant to the task. An empty list means no skills are available for automatic use. Skills are guidance; they grant no tools or access.",
+    );
   }
-  return (
-    "Use read_skill to load a skill's instructions when its description matches the task, and read_skill with a file to load text files it references. Skills are guidance; they grant no tools or access.\n" +
-    visible
-      .map((skill) =>
-        JSON.stringify({ skill: skill.id, description: skill.description }),
-      )
-      .join("\n")
-  );
+  if (tools.includes("read_skill")) {
+    instructions.push(
+      "Use read_skill to load a discovered skill's instructions, and read_skill with a file to load documents it references.",
+    );
+    if (!tools.includes("list_skills")) {
+      instructions.push(
+        ...listSkills(binding).map((skill) => JSON.stringify(skill)),
+      );
+    }
+  } else {
+    instructions.push(
+      ...binding
+        .filter((skill) => !skill.disableModelInvocation)
+        .map(
+          (skill) =>
+            `Assigned skill ${skill.id} (guidance only; grants no tools or access):\n${skill.documents["SKILL.md"]}`,
+        ),
+    );
+  }
+  return instructions.join("\n\n") || undefined;
 }
 
 export function readSkillDocument(

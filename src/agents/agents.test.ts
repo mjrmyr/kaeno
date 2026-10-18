@@ -1,9 +1,10 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import {
   parseAgent,
   parseAgents,
   resolveAgentSetup,
   agentParticipants,
+  type SkillBinder,
 } from "./index.ts";
 const manifest = (frontmatter: string, body = "Prompt") =>
   `---\n${frontmatter}\n---\n${body}`;
@@ -74,16 +75,45 @@ it("leaves agents discoverable without a model and activates them when a default
     "local:scout",
   ]);
 });
+it.each(["", "\nskills: []"])(
+  "defaults to skill tools even without assignments (%s)",
+  (skills) => {
+    const bind = vi.fn<SkillBinder["bind"]>();
+    const agent = parseAgent(
+      manifest(`name: scout\ndescription: Investigates${skills}`),
+      "local",
+      "x",
+    );
+    const setup = resolveAgentSetup(
+      agent,
+      {
+        model: { provider: "openai", modelId: "x" },
+        tools: ["bash", "read_skill"],
+      },
+      { tools: ["list_skills", "read_skill"], bind },
+    );
+    expect(setup.tools).toEqual(["bash", "read_skill", "list_skills"]);
+    expect(setup.bindings).toEqual([]);
+    expect(bind).not.toHaveBeenCalled();
+  },
+);
 it("keeps explicit empty tool/skill lists and never maps a tool name to a grant", () => {
   const agent = parseAgent(
     manifest("name: scout\ndescription: Investigates\ntools: []\nskills: []"),
     "local",
     "x",
   );
-  const setup = resolveAgentSetup(agent, {
-    model: { provider: "openai", modelId: "x" },
-    tools: ["bash"],
-  });
+  const setup = resolveAgentSetup(
+    agent,
+    {
+      model: { provider: "openai", modelId: "x" },
+      tools: ["bash"],
+    },
+    {
+      tools: ["list_skills", "read_skill"],
+      bind: vi.fn<SkillBinder["bind"]>(),
+    },
+  );
   expect(setup.tools).toEqual([]);
   expect(setup.bindings).toEqual([]);
 });

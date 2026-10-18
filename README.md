@@ -11,6 +11,8 @@ The CLI composes the built-in file environment:
 
 The startup directory is captured once. User-wide and project definitions have distinct source IDs: `global:` for `~/.agents` and `local:` for the startup directory's `.agents` (`kaeno-global:` and `kaeno-local:` for dedicated `.kaeno` skills). Bare skill names work when unique; same-named entries require a qualified ID. The application configuration under `.kaeno` is separate from the reusable agent/skill catalogs under `.agents`. Kaeno automatically uses its dedicated `.kaeno/skills` entries when its `skills` field is omitted; an explicit list, including `[]`, overrides that default. Workers only receive the skills their definitions select.
 
+By default, Kaeno and every spawned worker have `list_skills` and `read_skill`, even with no assigned skills. They discover assigned skill IDs and descriptions with `list_skills`, then load relevant instructions with `read_skill`. An empty list means none are available for automatic use.
+
 ## Run
 
 Node.js 24 or newer:
@@ -51,7 +53,7 @@ The CLI provisions Docker only when worker agents are discovered. An available w
 
 Agent frontmatter `name` and `description` are required. Optional fields include `model`, `skills`, and `tools`. The Markdown body is the system prompt. An omitted worker model inherits Kaeno's model (or the explicit `KAENO_DEFAULT_MODEL` fallback); if there is no default, the agent remains discoverable but cannot be started. Omitted tools inherit the host's approved defaults. `tools: []` means no tools. Omitted skills means none. Unknown metadata is inert.
 
-A skill has `name` and `description` frontmatter, an optional supported `disable-model-invocation` flag, a Markdown instruction body, and optional relative assets. Skills provide knowledge only; they do not grant tools or credentials. Worker tools use `read_skill` to load assigned text documents; binary assets are retained and returned as base64. Scripts and asset bytes are not implicitly mounted or executed in the sandbox. When an explicit tool list omits `read_skill`, visible assigned skill instructions are rendered inline instead of granting a hidden tool.
+A skill has `name` and `description` frontmatter, an optional supported `disable-model-invocation` flag, a Markdown instruction body, and optional relative assets. Skills provide knowledge only; they do not grant tools or credentials. Skill discovery and reading use each conversation's saved bindings, not a live global catalog. `list_skills` excludes skills marked `disable-model-invocation`; explicitly requesting an assigned skill with `read_skill` remains supported. Binary assets are retained and returned as base64. Scripts and asset bytes are not implicitly mounted or executed in the sandbox. When an explicit tool list omits `read_skill`, visible assigned skill instructions are rendered inline instead of granting a hidden tool.
 
 The CLI's HTTP adapter listens on `PORT` (default `8080`). It supports thread listing, replies, stop and reset. This adapter does not implement transport authentication: run it on a trusted network or behind authenticated ingress. Setting a token environment variable alone does not secure the listener. Disconnecting a client does not cancel an admitted turn.
 
@@ -65,7 +67,7 @@ Native extensions are trusted process code, fixed before the harness opens. Ther
 
 Definitions used by admitted work are frozen. On restart, missing saved native definitions or incompatible work plans fail closed rather than silently binding a new tool surface. Take a consistent SQLite backup before opening a changed release; opening the harness writes recovery reconciliation state. External side effects are not transactional with SQLite and may be uncertain after a crash.
 
-This cut intentionally does not migrate the prior WORK/Telegram database or JSON configuration. Move the assistant to `.kaeno/AGENT.md` or `~/.kaeno/AGENT.md`, workers to per-directory `AGENT.md` files, and skills to per-directory `SKILL.md` files. The old `KAENO_CONFIG` and `KAENO_WORK_CONFIG` JSON paths are rejected. Use a fresh database for this release unless the previous workload has been deliberately drained/migrated and backed up.
+This cut intentionally does not migrate the prior WORK/Telegram database or JSON configuration. Move the assistant to `.kaeno/AGENT.md` or `~/.kaeno/AGENT.md`, workers to per-directory `AGENT.md` files, and skills to per-directory `SKILL.md` files. The old `KAENO_CONFIG` and `KAENO_WORK_CONFIG` JSON paths are no longer read. Use a fresh database for this release unless the previous workload has been deliberately drained/migrated and backed up.
 
 See the [core entry point](src/application/index.ts), [WORK implementation](src/work/work.ts) and [extension composition tests](test/integration/extensions.test.ts).
 

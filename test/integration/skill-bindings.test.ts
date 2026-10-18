@@ -51,7 +51,7 @@ it("replays a pending CHAT with its original assigned skill without a catalog or
         assistant: {
           model,
           instructions: "Use your skill",
-          tools: ["read_skill"],
+          tools: ["list_skills", "read_skill"],
           bindings: [skillBinder(catalog).bind(["guide"])],
         },
         extensions: [
@@ -83,16 +83,25 @@ it("replays a pending CHAT with its original assigned skill without a catalog or
       throw new Error("Expected conversation");
     }
     let observedSkill = "";
+    let observedList = "";
     faux.setResponses([
-      fauxAssistantMessage(
-        [
-          fauxToolCall("read_skill", {
-            skill: "home:guide",
-            file: "references/check.md",
-          }),
-        ],
-        { stopReason: "toolUse" },
-      ),
+      fauxAssistantMessage([fauxToolCall("list_skills", {})], {
+        stopReason: "toolUse",
+      }),
+      async (request) => {
+        observedList = JSON.stringify(
+          request.messages.findLast((message) => message.role === "toolResult"),
+        );
+        return fauxAssistantMessage(
+          [
+            fauxToolCall("read_skill", {
+              skill: "home:guide",
+              file: "references/check.md",
+            }),
+          ],
+          { stopReason: "toolUse" },
+        );
+      },
       async (request) => {
         observedSkill = JSON.stringify(request.messages);
         return fauxAssistantMessage("Read the original reference");
@@ -113,6 +122,9 @@ it("replays a pending CHAT with its original assigned skill without a catalog or
           ),
         ).toContain("Read the original reference");
       });
+      expect(observedList).toContain("home:guide");
+      expect(observedList).not.toContain("ORIGINAL SKILL");
+      expect(observedList).not.toContain("ORIGINAL REFERENCE");
       expect(observedSkill).toContain("ORIGINAL REFERENCE");
     } finally {
       await core.close();

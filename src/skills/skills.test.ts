@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import {
+  listSkills,
   readSkillDocument,
   SkillCatalog,
   skillMetadata,
@@ -40,12 +41,48 @@ it("rejects duplicate IDs and ambiguous short names", () => {
   expect(() => catalog.bind(["guide"])).toThrow(/ambiguous/);
   expect(catalog.bind(["local:guide"])[0].id).toBe("local:guide");
 });
-it("only reads assigned text and hides disabled skills from automatic discovery", () => {
-  expect(readSkillDocument([skill], { skill: "guide" })).toBe("Instructions");
-  expect(skillPrompt([skill])).toContain("home:guide");
+it("lists only assigned, discoverable metadata without bodies or assets", () => {
   expect(
-    skillPrompt([{ ...skill, disableModelInvocation: true }]),
+    listSkills([
+      skill,
+      { ...skill, id: "home:hidden", disableModelInvocation: true },
+    ]),
+  ).toEqual([{ id: "home:guide", description: "Guide" }]);
+  expect(listSkills([])).toEqual([]);
+});
+it.each([false, true])(
+  "uses lazy discovery guidance independently of assigned skills (%s)",
+  (assigned) => {
+    const prompt = skillPrompt(assigned ? [skill] : [], [
+      "list_skills",
+      "read_skill",
+    ]);
+    expect(prompt).toContain("Use list_skills");
+    expect(prompt).toContain("Use read_skill");
+    expect(prompt).toContain("An empty list means no skills are available");
+    expect(prompt).not.toContain("home:guide");
+    expect(prompt).not.toContain("Instructions");
+  },
+);
+it("respects explicit tool restrictions in skill guidance", () => {
+  expect(skillPrompt([skill], ["read_skill"])).toContain("home:guide");
+  expect(skillPrompt([skill], ["read_skill"])).not.toContain("Use list_skills");
+  expect(skillPrompt([skill], ["list_skills"])).toContain("Instructions");
+  expect(skillPrompt([skill], ["list_skills"])).not.toContain("Use read_skill");
+  expect(skillPrompt([skill], [])).toContain("Instructions");
+  expect(skillPrompt([skill], [])).not.toContain("Use read_skill");
+  expect(
+    skillPrompt([{ ...skill, disableModelInvocation: true }], []),
   ).toBeUndefined();
+  expect(skillPrompt([], [])).toBeUndefined();
+});
+it("only reads assigned documents, including explicitly requested non-discoverable skills", () => {
+  expect(readSkillDocument([skill], { skill: "guide" })).toBe("Instructions");
+  expect(
+    readSkillDocument([{ ...skill, disableModelInvocation: true }], {
+      skill: "guide",
+    }),
+  ).toBe("Instructions");
   expect(() => readSkillDocument([], { skill: "guide" })).toThrow(
     /not assigned/,
   );

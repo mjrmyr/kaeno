@@ -70,6 +70,13 @@ it("loads Kaeno config/skills from .kaeno and worker definitions/skills from hom
     "global:reviewer",
     "local:coder",
   ]);
+  const plan = config.work?.participants.plan("global:reviewer");
+  for (const participant of Object.values(plan?.participants ?? {})) {
+    expect(participant.setup.tools).toEqual(
+      expect.arrayContaining(["list_skills", "read_skill"]),
+    );
+    expect(participant.setup.bindings).toEqual([]);
+  }
   expect(config.diagnostics).toEqual([]);
 });
 it("uses ~/.kaeno when there is no project override and still works without worker catalogs", async () => {
@@ -91,6 +98,8 @@ it("uses ~/.kaeno when there is no project override and still works without work
     "inspect_work",
     "message_work",
     "cancel_work",
+    "list_skills",
+    "read_skill",
   ]);
 });
 it("keeps delegation independent of skills and unavailable worker definitions", async () => {
@@ -115,6 +124,7 @@ it("keeps delegation independent of skills and unavailable worker definitions", 
     "inspect_work",
     "message_work",
     "cancel_work",
+    "list_skills",
     "read_skill",
   ]);
   expect(config.work?.participants.list()).toMatchObject([
@@ -142,6 +152,36 @@ it.each(["[]", "[list_work]"])(
     );
     const config = await loadFileEnvironment({ root: project, home });
     expect(config.assistant.tools).toEqual(tools === "[]" ? [] : ["list_work"]);
+  },
+);
+it.each(["tools: []\n", "tools: [read_skill]\n"])(
+  "keeps assigned worker skills separate from tool permissions (%s)",
+  async (tools) => {
+    const project = await root();
+    const home = await root();
+    await put(
+      join(home, ".kaeno/AGENT.md"),
+      agent("kaeno", "Assistant", "openai/home"),
+    );
+    await put(join(home, ".agents/skills/shared/SKILL.md"), skill("shared"));
+    await put(
+      join(home, ".agents/agents/coder/AGENT.md"),
+      agent("coder", "Coder").replace(
+        "---\nPrompt",
+        `${tools}skills: [shared]\n---\nPrompt`,
+      ),
+    );
+    const config = await loadFileEnvironment({ root: project, home });
+    const setup =
+      config.work?.participants.plan("global:coder").participants[
+        "global:coder"
+      ].setup;
+    expect(setup?.tools).toEqual(
+      tools.includes("read_skill") ? ["read_skill"] : [],
+    );
+    expect(setup?.bindings).toMatchObject([
+      { owner: "kaeno-skills", value: { skills: [{ id: "global:shared" }] } },
+    ]);
   },
 );
 it("keeps same-name agents distinct across home and project sources", async () => {

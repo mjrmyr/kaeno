@@ -151,11 +151,13 @@ export async function loadFileEnvironment(
   const defaultModel =
     options.defaultModel ??
     (definition.model ? parseModelRef(definition.model) : undefined);
+  const workerSkills = skillBinder(general.catalog);
+  const workerTools = [...WORKER_TOOLS, ...workerSkills.tools];
   const participants = agentParticipants({
     agents: parsed.agents,
     defaults: { model: defaultModel, tools: WORKER_TOOLS },
-    skills: skillBinder(general.catalog),
-    tools: [...WORKER_TOOLS, "read_skill"],
+    skills: workerSkills,
+    tools: workerTools,
   });
   const assistant = resolveAgentSetup(
     definition,
@@ -182,7 +184,7 @@ export async function loadFileEnvironment(
     work: {
       participants,
       environment: options.environment,
-      tools: [...WORKER_TOOLS, "read_skill"],
+      tools: workerTools,
       maxDepth: options.maxDepth ?? 2,
       maxConcurrent: options.maxConcurrent ?? 4,
     },

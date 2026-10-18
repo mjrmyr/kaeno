@@ -1,6 +1,7 @@
 export {
   inspectSkill,
   loadSkills,
+  listSkills,
   readSkillDocument,
   SkillCatalog,
   skillFiles,
@@ -14,6 +15,7 @@ export type {
   SkillSummary,
 } from "./skills.ts";
 export {
+  LIST_SKILLS,
   READ_SKILL,
   SKILLS_EXTENSION,
   skillBinder,

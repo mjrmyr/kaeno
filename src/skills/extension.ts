@@ -8,14 +8,16 @@ import { z } from "zod";
 import type { Binding, KaenoExtension } from "../application/index.ts";
 import { readBinding } from "../conversation/index.ts";
 import {
+  listSkills,
   readSkillDocument,
   skillPrompt,
   type BoundSkill,
   type SkillCatalog,
 } from "./skills.ts";
 
-/** Owner name of skill bindings and the native skill tool/section. */
+/** Owner name of skill bindings and the native skill tools/section. */
 export const SKILLS_EXTENSION = "kaeno-skills";
+export const LIST_SKILLS = "list_skills";
 export const READ_SKILL = "read_skill";
 const VERSION = 1;
 
@@ -52,7 +54,7 @@ export function skillBinder(catalog: SkillCatalog): {
   bind(references: readonly string[]): Binding;
 } {
   return {
-    tools: [READ_SKILL],
+    tools: [LIST_SKILLS, READ_SKILL],
     bind: (references) => ({
       owner: SKILLS_EXTENSION,
       version: VERSION,
@@ -75,6 +77,29 @@ export function skillBinder(catalog: SkillCatalog): {
  * conversation, so recovery never needs the original skill directories.
  */
 export function skillsExtension(): KaenoExtension {
+  const list = defineTool({
+    name: LIST_SKILLS,
+    description:
+      "List IDs and descriptions of skills assigned to you for automatic use. An empty list means none are available.",
+    parameters: Type.Object({}),
+    replay: "safe",
+    execute: async (_args, api, context) => {
+      const binding = await readBinding(
+        api,
+        api.conversationId,
+        SKILLS_EXTENSION,
+        context,
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(listSkills(boundSkills(binding))),
+          },
+        ],
+      };
+    },
+  });
   const readSkill = defineTool({
     name: READ_SKILL,
     description:
@@ -105,31 +130,20 @@ export function skillsExtension(): KaenoExtension {
   return {
     durable: defineExtension({
       name: SKILLS_EXTENSION,
-      tools: [readSkill],
+      tools: [list, readSkill],
       sections: [
         section("skills", async ({ conversationId, read, agent }, context) => {
           const skills = boundSkills(
             await readBinding(read, conversationId, SKILLS_EXTENSION, context),
           );
-          if (agent.tools.some((tool) => tool.name === READ_SKILL)) {
-            return skillPrompt(skills);
-          }
-          const visible = skills.filter(
-            (skill) => !skill.disableModelInvocation,
+          return skillPrompt(
+            skills,
+            agent.tools.map((tool) => tool.name),
           );
-          if (visible.length === 0) {
-            return undefined;
-          }
-          return visible
-            .map(
-              (skill) =>
-                `Assigned skill ${skill.id} (guidance only; grants no tools or access):\n${skill.documents["SKILL.md"]}`,
-            )
-            .join("\n\n");
         }),
       ],
     }),
-    readOnlyTools: [READ_SKILL],
+    readOnlyTools: [LIST_SKILLS, READ_SKILL],
     validateBinding: (binding) => {
       boundSkills(binding);
     },
