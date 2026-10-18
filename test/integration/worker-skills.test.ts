@@ -57,7 +57,7 @@ it.each([false, true])(
             skills: [{ alias: "global", directory: "./.agents/skills" }],
           },
           defaultModel: "faux/faux-1",
-          kaeno: { agent: "global:kaeno" },
+          kaeno: "global:kaeno",
           workers: ["global:parent", "global:leaf"],
         }),
       );

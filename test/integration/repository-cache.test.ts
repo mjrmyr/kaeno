@@ -701,7 +701,7 @@ it.each([
         {
           sourceDirectory: "cache",
           agentRepositories: [{ repository: "owner/definitions", path }],
-          kaeno: { agent: "owner/definitions:reviewer" },
+          kaeno: "owner/definitions:reviewer",
         },
         join(root, "config.json"),
       ),

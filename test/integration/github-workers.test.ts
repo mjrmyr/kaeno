@@ -79,7 +79,7 @@ it("gives the assistant, root worker, and nested worker GitHub discovery by defa
           skills: [{ alias: "global", directory: "./.agents/skills" }],
         },
         defaultModel: "faux/faux-1",
-        kaeno: { agent: "global:kaeno" },
+        kaeno: "global:kaeno",
         workers: ["global:coder", "global:reviewer"],
       }),
     );
@@ -225,7 +225,7 @@ it("configures GitHub for every agent while respecting explicit tool overrides",
           agents: [{ alias: "global", directory: "./.agents/agents" }],
         },
         defaultModel: "faux/faux-1",
-        kaeno: { agent: "global:kaeno" },
+        kaeno: "global:kaeno",
         workers: ["global:coder"],
       }),
     );

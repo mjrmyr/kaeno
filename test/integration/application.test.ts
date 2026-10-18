@@ -28,7 +28,7 @@ it("boots the actual core entrypoint and shuts down cleanly", async () => {
     JSON.stringify({
       sourceDirectory: "./sources",
       localDefinitions: { agents: [{ alias: "local", directory: "./agents" }] },
-      kaeno: { agent: "local:kaeno" },
+      kaeno: "local:kaeno",
       workers: [],
     }),
   );

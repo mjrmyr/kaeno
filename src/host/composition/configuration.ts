@@ -93,12 +93,8 @@ const schema = z
       })
       .strict()
       .default({ agents: [], skills: [] }),
-    kaeno: z
-      .object({
-        agent: qualified,
-        skills: z.array(z.string().min(1)).optional(),
-      })
-      .strict(),
+    // The agent Kaeno runs as; its skills come from its own profile, like every worker's.
+    kaeno: qualified,
     workers: z.array(qualified).default([]),
     defaultModel: z.string().min(1).optional(),
   })
@@ -107,7 +103,7 @@ export interface EnvironmentConfiguration {
   sourceDirectory: string;
   repositories: RepositoryDefinitionSource[];
   directories: DirectoryDefinitionSource[];
-  kaeno: { agent: string; skills?: string[] };
+  kaeno: string;
   workers: string[];
   defaultModel?: string;
 }
