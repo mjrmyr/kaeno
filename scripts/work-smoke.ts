@@ -11,20 +11,21 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openKaeno } from "../src/application/index.ts";
+import { openKaeno } from "../src/core/application/index.ts";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
-import { agentParticipants, parseAgent } from "../src/agents/index.ts";
+import { resolveAgents, parseAgent } from "../src/extensions/agents/index.ts";
 import {
   SkillCatalog,
   skillBinder,
   skillsExtension,
-} from "../src/skills/index.ts";
-import { ApiServer } from "../src/api/index.ts";
-import { RemoteExecutionEnv } from "../src/execution/index.ts";
+  SKILL_TOOLS,
+} from "../src/extensions/skills/index.ts";
+import { ApiServer } from "../src/extensions/api/index.ts";
+import { RemoteExecutionEnv } from "../src/extensions/execution/index.ts";
 import {
   DockerSandboxProvider,
   SandboxWorkEnvironment,
-} from "../src/sandbox/index.ts";
+} from "../src/extensions/docker/index.ts";
 
 const directory = await mkdtemp(join(tmpdir(), "kaeno-work-smoke-"));
 const faux = fauxProvider({ provider: "openai" });
@@ -94,7 +95,7 @@ faux.setResponses(
   }),
 );
 const skills = skillBinder(new SkillCatalog([]));
-const participants = agentParticipants({
+const agents = resolveAgents({
   agents: [
     parseAgent(
       "---\nname: worker\ndescription: Local sandbox worker\nmodel: openai/faux-1\n---\nComplete the task and verify it.",
@@ -102,8 +103,8 @@ const participants = agentParticipants({
       "smoke",
     ),
   ],
-  defaults: { tools: ["bash"] },
-  skills,
+  defaults: { tools: ["bash", ...SKILL_TOOLS] },
+  skills: () => skills,
 });
 const core = await openKaeno({
   storage: await openNodeSqliteStorage(join(directory, "core.sqlite")),
@@ -115,8 +116,8 @@ const core = await openKaeno({
   },
   extensions: [{ durable: CodingTools }, skillsExtension()],
   work: {
-    participants,
-    tools: ["bash", ...skills.tools],
+    agents,
+    tools: ["bash", ...SKILL_TOOLS],
     maxDepth: 1,
     maxConcurrent: 2,
     environment: new SandboxWorkEnvironment({

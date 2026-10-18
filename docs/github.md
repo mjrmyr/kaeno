@@ -1,6 +1,6 @@
 # GitHub App extension
 
-The optional `src/github` extension lets a worker discover private repositories, check out code in its existing execution environment, and propose changes through a draft pull request. GitHub is not a core service or an agent-definition field. Other platforms can supply independent native extensions using the same composition seam.
+The optional `src/extensions/github` extension lets a worker discover private repositories, check out code in its existing execution environment, and propose changes through a draft pull request. GitHub is not a core service or an agent-definition field. Other platforms can supply independent native extensions using the same composition seam.
 
 ## Owner setup
 
@@ -73,7 +73,7 @@ configured installation for all agents
   -> authenticated host Git <-> credential-free bundle <-> worker api.env
 ```
 
-The small generic addition is `bindingsFor(agent)` in agent/file composition. File composition also accepts explicitly installed extensions and additional approved worker tool names. Host-supplied `tools` are included in assistant and worker defaults; explicit tool lists remain authoritative. Core still owns only opaque bindings and native extension selection; it parses no GitHub configuration.
+The small generic addition is a host-wide `bindings` list in environment composition; every selected agent carries those bindings. File composition also accepts explicitly installed extensions and additional approved worker tool names. Host-supplied `tools` are included in assistant and worker defaults; explicit tool lists remain authoritative. Core still owns only opaque bindings and native extension selection; it parses no GitHub configuration.
 
 A binding records only the installation ID. GitHub enforces repository access and permissions on every operation. A binding never selects tools. Every child worker receives the same configured installation in its own frozen setup. Private keys, App JWTs, and installation tokens are never written to bindings, prompts, results, Git remote URLs, or worker files.
 
@@ -104,10 +104,8 @@ The extension requires supported, patched host/worker Git versions. Git bundles 
 ## Embedding
 
 ```ts
-import {
-  loadEnvironment,
-  loadGitHubConfiguration,
-} from "../src/composition/index.ts";
+import { loadGitHubConfiguration } from "../src/extensions/github/index.ts";
+import { loadEnvironment } from "../src/host/composition/index.ts";
 
 const github = await loadGitHubConfiguration("./.kaeno/github.json");
 const configuration = await loadEnvironment({

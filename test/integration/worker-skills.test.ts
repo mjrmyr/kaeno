@@ -11,8 +11,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
-import { openKaeno } from "../../src/application/index.ts";
-import { loadEnvironment } from "../../src/composition/index.ts";
+import { openKaeno } from "../../src/core/application/index.ts";
+import { loadEnvironment } from "../../src/host/composition/index.ts";
 
 it.each([false, true])(
   "gives root and nested workers lazy skill tools independently of assignments (%s)",

@@ -7,7 +7,7 @@ import { expect, it } from "vitest";
 import {
   EnvironmentServer,
   RemoteExecutionEnv,
-} from "../../src/execution/index.ts";
+} from "../../src/extensions/execution/index.ts";
 
 it("serves file operations and cleanup without collecting or deleting workspace contents", async () => {
   const root = await mkdtemp(join(tmpdir(), "kaeno-execution-"));

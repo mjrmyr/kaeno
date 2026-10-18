@@ -8,7 +8,7 @@ import {
   MemoryStorage,
 } from "@earendil-works/pi-durable";
 import { expect, it } from "vitest";
-import { ThreadDirectory } from "../../src/threads/index.ts";
+import { ThreadDirectory } from "../../src/core/threads/index.ts";
 
 it("refreshes an idle thread without duplicating its conversation", async () => {
   const harness = await Harness.open(

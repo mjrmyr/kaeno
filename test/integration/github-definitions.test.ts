@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
-import { githubRepositoryReader } from "../../src/github/index.ts";
+import { githubRepositoryReader } from "../../src/extensions/github/index.ts";
 
 const execute = promisify(execFile);
 const roots: string[] = [];

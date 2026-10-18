@@ -15,26 +15,9 @@ const options = ts.parseJsonConfigFileContent(
 const program = ts.createProgram(options.fileNames, options.options);
 const checker = program.getTypeChecker();
 const errors: string[] = [];
-const coreFeatures = new Set([
-  "api",
-  "application",
-  "authority",
-  "conversation",
-  "durable",
-  "threads",
-  "turns",
-  "work",
-]);
-const optionalFeatures = new Set([
-  "agents",
-  "composition",
-  "definitions",
-  "execution",
-  "github",
-  "kubernetes",
-  "sandbox",
-  "skills",
-]);
+// Layers come from the path: src/<layer>/<feature>/... Core never depends on extensions or the host;
+// extensions may use core and each other; only the host composes concrete features.
+const layers = new Set(["core", "extensions", "host"]);
 async function filesIn(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const groups = await Promise.all(
@@ -48,12 +31,19 @@ async function filesIn(directory: string): Promise<string[]> {
   );
   return groups.flat();
 }
+function layerOf(path: string): string | undefined {
+  const [layer] = relative(resolve(root, "src"), path).split(sep);
+  return layer === undefined || layer === ".." ? undefined : layer;
+}
 function featureOf(path: string): string | undefined {
   const parts = relative(resolve(root, "src"), path).split(sep);
-  if (parts[0] === ".." || parts.length < 2) {
+  if (parts[0] === ".." || parts.length < 3) {
     return undefined;
   }
-  return parts[0];
+  return `${parts[0]}/${parts[1]}`;
+}
+function nameOf(feature: string): string {
+  return feature.slice(feature.indexOf("/") + 1);
 }
 function report(file: ts.SourceFile, node: ts.Node, message: string): void {
   const position = file.getLineAndCharacterOfPosition(node.getStart(file));
@@ -83,6 +73,43 @@ function isTypeOnlyImport(node: ts.ImportDeclaration): boolean {
     clause.namedBindings.elements.every((element) => element.isTypeOnly)
   );
 }
+// WORK protocol names are owned by core/work/tools.ts; read them statically so the list is never copied.
+const workToolsFile = resolve(root, "src/core/work/tools.ts");
+const workToolNames = new Set<string>();
+for (const statement of program.getSourceFile(workToolsFile)?.statements ??
+  []) {
+  if (
+    ts.isVariableStatement(statement) &&
+    hasModifier(statement, ts.SyntaxKind.ExportKeyword)
+  ) {
+    for (const declaration of statement.declarationList.declarations) {
+      if (
+        declaration.initializer &&
+        ts.isStringLiteral(declaration.initializer)
+      ) {
+        workToolNames.add(declaration.initializer.text);
+      }
+    }
+  }
+}
+const workDirectory = resolve(root, "src/core/work") + sep;
+// Core never reads files or definition formats: recovery must work with every source deleted.
+const coreForbiddenModules = new Set([
+  "fs",
+  "fs/promises",
+  "node:fs",
+  "node:fs/promises",
+  "yaml",
+]);
+function isForbiddenDynamicImport(node: ts.Node): boolean {
+  return (
+    ts.isCallExpression(node) &&
+    node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+    node.arguments[0] !== undefined &&
+    ts.isStringLiteral(node.arguments[0]) &&
+    coreForbiddenModules.has(node.arguments[0].text)
+  );
+}
 const paths = [
   ...(await filesIn(resolve(root, "src"))),
   ...(await filesIn(resolve(root, "scripts"))),
@@ -94,6 +121,14 @@ for (const path of paths) {
     throw new Error(`TypeScript configuration does not include ${path}`);
   }
   const owner = featureOf(path);
+  const layer = layerOf(path);
+  if (layer !== undefined && !layers.has(layer)) {
+    report(
+      file,
+      file,
+      `Place "src/${layer}" under src/core, src/extensions or src/host.`,
+    );
+  }
   const unit = path.endsWith(".test.ts") && owner !== undefined;
   const mockedModules = new Set<string>();
   const collectMocks = (node: ts.Node): void => {
@@ -120,6 +155,19 @@ for (const path of paths) {
         file,
         node,
         "Replace nested ternaries with a named operation and if/switch.",
+      );
+    }
+    if (
+      layer !== undefined &&
+      !path.endsWith(".test.ts") &&
+      !path.startsWith(workDirectory) &&
+      (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) &&
+      workToolNames.has(node.text)
+    ) {
+      report(
+        file,
+        node,
+        `Use the WORK name constants from core instead of the literal "${node.text}".`,
       );
     }
     if (path.endsWith(".test.ts")) {
@@ -161,8 +209,8 @@ for (const path of paths) {
     }
     if (
       owner &&
-      owner !== "application" &&
-      owner !== "composition" &&
+      owner !== "core/application" &&
+      layer !== "host" &&
       !path.endsWith(".test.ts") &&
       ts.isNewExpression(node)
     ) {
@@ -184,7 +232,7 @@ for (const path of paths) {
     }
     if (
       owner &&
-      coreFeatures.has(owner) &&
+      layer === "core" &&
       ts.isExportDeclaration(node) &&
       node.moduleSpecifier &&
       ts.isStringLiteral(node.moduleSpecifier) &&
@@ -193,11 +241,11 @@ for (const path of paths) {
       const provider = featureOf(
         resolve(dirname(path), node.moduleSpecifier.text),
       );
-      if (provider && optionalFeatures.has(provider)) {
+      if (provider && !provider.startsWith("core/")) {
         report(
           file,
           node,
-          `Core feature "${owner}" cannot re-export optional feature "${provider}".`,
+          `Core feature "${nameOf(owner)}" cannot re-export "${provider}".`,
         );
       }
     }
@@ -262,6 +310,20 @@ for (const path of paths) {
       );
     }
     if (
+      layer === "core" &&
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)
+        ? node.moduleSpecifier !== undefined &&
+          ts.isStringLiteral(node.moduleSpecifier) &&
+          coreForbiddenModules.has(node.moduleSpecifier.text)
+        : isForbiddenDynamicImport(node))
+    ) {
+      report(
+        file,
+        node,
+        "Core cannot read files or definition formats; load them in an extension or the host.",
+      );
+    }
+    if (
       ts.isImportDeclaration(node) &&
       ts.isStringLiteral(node.moduleSpecifier)
     ) {
@@ -270,16 +332,30 @@ for (const path of paths) {
         ? resolve(dirname(path), specifier)
         : undefined;
       const targetOwner = target ? featureOf(target) : undefined;
+      const targetLayer = target ? layerOf(target) : undefined;
+      if (layer === "core" && targetLayer && targetLayer !== "core") {
+        report(
+          file,
+          node,
+          `Core feature "${nameOf(owner ?? "core/")}" cannot import "${targetOwner ?? targetLayer}"; compose it in src/host.`,
+        );
+      }
+      if (layer === "extensions" && targetLayer === "host") {
+        report(
+          file,
+          node,
+          `Extension "${nameOf(owner ?? "extensions/")}" cannot import the host; the host composes extensions.`,
+        );
+      }
       if (
-        owner &&
-        coreFeatures.has(owner) &&
-        targetOwner &&
-        optionalFeatures.has(targetOwner)
+        (layer === "extensions" || layer === "host") &&
+        targetLayer === "core" &&
+        target !== resolve(root, "src/core/application/index.ts")
       ) {
         report(
           file,
           node,
-          `Core feature "${owner}" cannot import optional feature "${targetOwner}"; compose it at the application boundary.`,
+          "Import core only through src/core/application/index.ts.",
         );
       }
       if (

@@ -1,0 +1,138 @@
+import { expect, it, vi } from "vitest";
+import {
+  parseAgent,
+  parseAgents,
+  resolveAgentSetup,
+  resolveAgents,
+  type SkillBinder,
+} from "./index.ts";
+const manifest = (frontmatter: string, body = "Prompt") =>
+  `---\n${frontmatter}\n---\n${body}`;
+it("requires only name and description and preserves body and future metadata", () => {
+  const agent = parseAgent(
+    manifest(
+      `name: scout\ndescription: Investigates\nfuture:\n  option: true`,
+      "Investigate carefully.",
+    ),
+    "home",
+    "/agents/scout/AGENT.md",
+  );
+  expect(agent.id).toBe("home:scout");
+  expect(agent.prompt).toBe("Investigate carefully.");
+  expect(agent.metadata).toEqual({ future: { option: true } });
+  expect(() =>
+    parseAgent(manifest("name: missing-description"), "home", "x"),
+  ).toThrow(/description/);
+});
+it("keeps legacy or future delegation metadata inert; core uses all-to-all delegation", () => {
+  const agent = parseAgent(
+    manifest("name: scout\ndescription: Investigates\ndelegates: []"),
+    "home",
+    "x",
+  );
+  expect(agent.metadata).toEqual({ delegates: [] });
+  expect(
+    resolveAgents({
+      agents: [agent],
+      defaults: { model: { provider: "openai", modelId: "x" }, tools: [] },
+    }).map((profile) => profile.id),
+  ).toEqual(["home:scout"]);
+});
+it("reports duplicate IDs but preserves same names from distinct source aliases", () => {
+  const packages = ["home", "local"].map((source) => ({
+    source,
+    directory: source,
+    manifest: manifest("name: reviewer\ndescription: Reviews"),
+  }));
+  expect(parseAgents(packages).agents.map((agent) => agent.id)).toEqual([
+    "home:reviewer",
+    "local:reviewer",
+  ]);
+  expect(parseAgents([packages[0], packages[0]]).diagnostics).toHaveLength(1);
+});
+it("fails to resolve an agent without a model and resolves it when a default exists", () => {
+  const agent = parseAgent(
+    manifest("name: scout\ndescription: Investigates"),
+    "local",
+    "x",
+  );
+  expect(() =>
+    resolveAgents({ agents: [agent], defaults: { tools: [] } }),
+  ).toThrow("Agent local:scout is unavailable: no model");
+  const agents = resolveAgents({
+    agents: [agent],
+    defaults: { model: { provider: "openai", modelId: "x" }, tools: [] },
+  });
+  expect(agents.map((profile) => profile.id)).toEqual(["local:scout"]);
+  expect(agents[0].setup.tools).toEqual([]);
+});
+it.each(["", "\nskills: []"])(
+  "uses the host's default tools and binds no skills without assignments (%s)",
+  (skills) => {
+    const bind = vi.fn<SkillBinder>(() => undefined);
+    const agent = parseAgent(
+      manifest(`name: scout\ndescription: Investigates${skills}`),
+      "local",
+      "x",
+    );
+    const setup = resolveAgentSetup(
+      agent,
+      {
+        model: { provider: "openai", modelId: "x" },
+        tools: ["bash", "read_skill", "list_skills", "read_skill"],
+      },
+      bind,
+    );
+    expect(setup.tools).toEqual(["bash", "read_skill", "list_skills"]);
+    expect(setup.bindings).toEqual([]);
+    expect(bind).toHaveBeenCalledWith([]);
+  },
+);
+it("freezes trusted extension bindings without changing explicit tool selection", () => {
+  const agent = parseAgent(
+    manifest(
+      "name: coder\ndescription: Codes\ntools: []\ngithub: self-granted",
+    ),
+    "local",
+    "x",
+  );
+  const binding = { owner: "external", version: 1, value: { scope: [123] } };
+  const [profile] = resolveAgents({
+    agents: [agent],
+    defaults: {
+      model: { provider: "openai", modelId: "x" },
+      tools: ["external_tool"],
+    },
+    bindings: [binding],
+  });
+  expect(profile.setup.tools).toEqual([]);
+  expect(profile.setup.bindings).toEqual([binding]);
+  binding.value.scope.push(456);
+  expect(profile.setup.bindings?.[0].value).toEqual({
+    scope: [123],
+  });
+  expect(
+    resolveAgentSetup(agent, {
+      model: { provider: "openai", modelId: "x" },
+      tools: [],
+    }).bindings,
+  ).toEqual([]);
+});
+
+it("keeps explicit empty tool/skill lists and never maps a tool name to a grant", () => {
+  const agent = parseAgent(
+    manifest("name: scout\ndescription: Investigates\ntools: []\nskills: []"),
+    "local",
+    "x",
+  );
+  const setup = resolveAgentSetup(
+    agent,
+    {
+      model: { provider: "openai", modelId: "x" },
+      tools: ["bash"],
+    },
+    vi.fn<SkillBinder>(() => undefined),
+  );
+  expect(setup.tools).toEqual([]);
+  expect(setup.bindings).toEqual([]);
+});

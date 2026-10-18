@@ -15,9 +15,12 @@ it("architecture enforcement accepts public capabilities and rejects concrete co
   const directory = await mkdtemp(join(tmpdir(), "kaeno-architecture-"));
   try {
     await Promise.all(
-      ["src/provider", "src/consumer", "scripts", "test"].map((path) =>
-        mkdir(join(directory, path), { recursive: true }),
-      ),
+      [
+        "src/extensions/provider",
+        "src/extensions/consumer",
+        "scripts",
+        "test",
+      ].map((path) => mkdir(join(directory, path), { recursive: true })),
     );
     await writeFile(
       join(directory, "tsconfig.json"),
@@ -33,22 +36,22 @@ it("architecture enforcement accepts public capabilities and rejects concrete co
       }),
     );
     await writeFile(
-      join(directory, "src/provider/index.ts"),
+      join(directory, "src/extensions/provider/index.ts"),
       "export class Provider { private secret(): void {} public run(): void {} }",
     );
     await writeFile(
-      join(directory, "src/consumer/index.ts"),
+      join(directory, "src/extensions/consumer/index.ts"),
       "export interface Capability { run(): void } export function run(service: Capability): void { service.run(); }",
     );
     expect(
       (await execute(process.execPath, [checker], { cwd: directory })).stdout,
     ).toContain("Architecture checks passed");
     await writeFile(
-      join(directory, "src/consumer/index.ts"),
+      join(directory, "src/extensions/consumer/index.ts"),
       'import { Provider } from "../provider/index.ts"; export function run() { return new Provider(); } const t = 1, u = 2; const coerced = t as number; export * from "../provider/index.ts";',
     );
     await writeFile(
-      join(directory, "src/consumer/consumer.test.ts"),
+      join(directory, "src/extensions/consumer/consumer.test.ts"),
       'import { Provider } from "../provider/index.ts"; const service = new Provider(); service["secret"](); vi.spyOn(service, "secret");',
     );
     const result = await execute(process.execPath, [checker], {
@@ -74,13 +77,15 @@ it("architecture enforcement accepts public capabilities and rejects concrete co
   }
 });
 
-it("rejects optional dependencies through core imports and public re-exports", async () => {
+it("rejects core and extension imports that cross layer boundaries", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-core-boundary-"));
   try {
     for (const path of [
-      "src/work",
-      "src/agents",
-      "src/application",
+      "src/core/work",
+      "src/extensions/agents",
+      "src/core/application",
+      "src/host/composition",
+      "src/misc",
       "scripts",
       "test",
     ]) {
@@ -100,16 +105,28 @@ it("rejects optional dependencies through core imports and public re-exports", a
       }),
     );
     await writeFile(
-      join(directory, "src/agents/index.ts"),
-      "export interface Definition { name: string }",
+      join(directory, "src/extensions/agents/index.ts"),
+      'import type { Loaded } from "../../host/composition/index.ts"; export interface Definition { name: string; loaded: Loaded } export const tool = "start_work";',
     );
     await writeFile(
-      join(directory, "src/work/index.ts"),
-      'import type { Definition } from "../agents/index.ts"; export interface Work { definition: Definition }',
+      join(directory, "src/core/work/index.ts"),
+      'import { readFile } from "node:fs/promises"; import type { Definition } from "../../extensions/agents/index.ts"; export interface Work { definition: Definition } export const read = readFile; export const load = () => import("yaml");',
     );
     await writeFile(
-      join(directory, "src/application/index.ts"),
-      'export type { Definition } from "../agents/index.ts";',
+      join(directory, "src/core/application/index.ts"),
+      'export type { Definition } from "../../extensions/agents/index.ts";',
+    );
+    await writeFile(
+      join(directory, "src/host/composition/index.ts"),
+      'import type { Work } from "../../core/work/index.ts"; export interface Loaded { path: string; work: Work }',
+    );
+    await writeFile(
+      join(directory, "src/core/work/tools.ts"),
+      'export const START_WORK = "start_work";',
+    );
+    await writeFile(
+      join(directory, "src/misc/index.ts"),
+      "export interface Misc { name: string }",
     );
     const result = await execute(process.execPath, [checker], {
       cwd: directory,
@@ -118,11 +135,25 @@ it("rejects optional dependencies through core imports and public re-exports", a
       (error) => z.object({ stderr: z.string() }).parse(error).stderr,
     );
     expect(result).toContain(
-      'Core feature "work" cannot import optional feature "agents"',
+      'Core feature "work" cannot import "extensions/agents"',
     );
     expect(result).toContain(
-      'Core feature "application" cannot re-export optional feature "agents"',
+      'Core feature "application" cannot re-export "extensions/agents"',
     );
+    expect(result).toContain('Extension "agents" cannot import the host');
+    expect(result).toContain(
+      "src/host/composition/index.ts:1:1 Import core only through src/core/application/index.ts.",
+    );
+    expect(result).toContain(
+      'Place "src/misc" under src/core, src/extensions or src/host.',
+    );
+    expect(result).toContain(
+      'Use the WORK name constants from core instead of the literal "start_work".',
+    );
+    expect(result).not.toContain("src/core/work/tools.ts:1");
+    expect(
+      result.match(/Core cannot read files or definition formats/g),
+    ).toHaveLength(2);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

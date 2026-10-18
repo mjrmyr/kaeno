@@ -9,13 +9,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import { directorySource } from "../../src/definitions/index.ts";
+import { directorySource } from "../../src/extensions/definitions/index.ts";
 import {
   loadSkills,
   readSkillDocument,
   skillBinder,
   skillsExtension,
-} from "../../src/skills/index.ts";
+} from "../../src/extensions/skills/index.ts";
 
 it("snapshots text, binary assets and executable bits and retains assigned content after source removal", async () => {
   const root = await mkdtemp(join(tmpdir(), "kaeno-skill-source-"));
@@ -41,7 +41,10 @@ it("snapshots text, binary assets and executable bits and retains assigned conte
       bytes.toString("base64"),
     );
     expect(bound[0].assets?.["scripts/check.sh"].executable).toBe(true);
-    const binding = skillBinder(catalog).bind(["guide"]);
+    const binding = skillBinder(catalog)(["guide"]);
+    if (!binding) {
+      throw new Error("expected a skills binding");
+    }
     expect(() => skillsExtension().validateBinding?.(binding)).not.toThrow();
     await rm(pkg, { recursive: true });
     expect(

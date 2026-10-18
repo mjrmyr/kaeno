@@ -11,16 +11,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import {
-  agentParticipants,
   parseAgent,
   parseAgents,
   resolveAgentSetup,
-} from "../../src/agents/index.ts";
-import { openKaeno } from "../../src/application/index.ts";
+  resolveAgents,
+} from "../../src/extensions/agents/index.ts";
+import { openKaeno, type Binding } from "../../src/core/application/index.ts";
 import type {
   DefinitionOrigin,
   DefinitionPackage,
-} from "../../src/definitions/index.ts";
+} from "../../src/extensions/definitions/index.ts";
 import {
   loadSkills,
   readSkillDocument,
@@ -28,7 +28,7 @@ import {
   skillBinder,
   skillsExtension,
   type BoundSkill,
-} from "../../src/skills/index.ts";
+} from "../../src/extensions/skills/index.ts";
 
 const model = { provider: "faux", modelId: "faux-1" };
 const repositoryOrigin: DefinitionOrigin = {
@@ -55,6 +55,16 @@ const guide: BoundSkill = {
   documents: { "SKILL.md": "NATIVE GUIDANCE" },
   assets: { "asset.bin": { base64: binary, executable: true } },
 };
+function bind(
+  binder: (references: readonly string[]) => Binding | undefined,
+  references: readonly string[],
+): Binding {
+  const binding = binder(references);
+  if (!binding) {
+    throw new Error("expected a skills binding");
+  }
+  return binding;
+}
 const manifest = (name: string): string =>
   `---\nname: ${name}\ndescription: Guide\n---\nInstructions`;
 
@@ -139,28 +149,27 @@ it("resolves worker-specific native contributions without leaking skills between
       "AGENT.md",
     ),
   );
-  const participants = agentParticipants({
+  const [first, second] = resolveAgents({
     agents,
     defaults: { model, tools: ["list_skills", "read_skill"] },
     skills: (agent) =>
       skillBinder(new SkillCatalog([]), agent.name === "first" ? [guide] : []),
   });
-  const plan = participants.plan("local:first");
-  expect(plan.participants["local:first"].setup.tools).toEqual([]);
-  expect(plan.participants["local:first"].setup.bindings).toEqual([
-    skillBinder(new SkillCatalog([]), [guide]).bind([]),
+  expect(first.setup.tools).toEqual([]);
+  expect(first.setup.bindings).toEqual([
+    bind(skillBinder(new SkillCatalog([]), [guide]), []),
   ]);
-  expect(plan.participants["local:second"].setup.bindings).toEqual([]);
+  expect(second.setup.bindings).toEqual([]);
 });
 
 it("does not create an empty skills binding without native contributions", () => {
   const binder = skillBinder(new SkillCatalog([]));
-  expect(binder.alwaysBind).toBe(false);
+  expect(binder([])).toBeUndefined();
   const agent = parseAgent(manifest("assistant"), "local", "AGENT.md");
   expect(
     resolveAgentSetup(agent, { model, tools: [] }, binder).bindings,
   ).toEqual([]);
-  expect(skillBinder(new SkillCatalog([]), [guide]).alwaysBind).toBe(true);
+  expect(skillBinder(new SkillCatalog([]), [guide])([])).toBeDefined();
 });
 
 it("merges assigned and native snapshots in order, deduplicates identical content, and freezes inputs", () => {
@@ -168,11 +177,11 @@ it("merges assigned and native snapshots in order, deduplicates identical conten
   const contributions = [structuredClone(guide), structuredClone(local)];
   const binder = skillBinder(new SkillCatalog([guide]), contributions);
   contributions[1].documents["SKILL.md"] = "changed later";
-  const binding = binder.bind(["owner/repo:*"]);
+  const binding = bind(binder, ["owner/repo:*"]);
   expect(binding.value).toEqual({ skills: [guide, local] });
   expect(() => skillsExtension().validateBinding?.(binding)).not.toThrow();
-  expect(binder.bind(["guide"]).value).not.toBe(binding.value);
-  expect(binder.bind(["guide"]).value).toEqual({ skills: [guide, local] });
+  expect(bind(binder, ["guide"]).value).not.toBe(binding.value);
+  expect(bind(binder, ["guide"]).value).toEqual({ skills: [guide, local] });
 });
 
 it.each([
@@ -183,7 +192,7 @@ it.each([
   "rejects conflicting same-ID snapshots even with matching tree hashes",
   (conflict) => {
     expect(() =>
-      skillBinder(new SkillCatalog([guide]), [conflict]).bind(["guide"]),
+      bind(skillBinder(new SkillCatalog([guide]), [conflict]), ["guide"]),
     ).toThrow(/conflicting.*owner\/repo:guide/);
   },
 );
@@ -201,7 +210,7 @@ it("checks the combined binding budget, including native assets, rather than eac
     },
   };
   const binder = skillBinder(new SkillCatalog([assigned]), [native]);
-  expect(() => binder.bind(["guide"])).toThrow(/8 MiB/);
+  expect(() => bind(binder, ["guide"])).toThrow(/8 MiB/);
   expect(() =>
     skillBinder(new SkillCatalog([]), [
       {
@@ -230,7 +239,7 @@ it("expands sorted wildcards in selector order, deduplicates overlaps, and saves
     "owner/repo:alpha",
     "other:only",
   ]);
-  expect(skillBinder(catalog).bind(references).value).toEqual({
+  expect(bind(skillBinder(catalog), references).value).toEqual({
     skills: catalog.bind(["owner/repo:zulu", "owner/repo:alpha", "other:only"]),
   });
   expect(catalog.bind(["only"])[0].id).toBe("other:only");
@@ -278,7 +287,7 @@ it.each([repositoryOrigin, directoryOrigin])(
       const snapshots = loaded.catalog.bind(["source:*"]);
       expect(snapshots[0].origin).toEqual(origin);
       expect(snapshots[0].origin).not.toBe(origin);
-      const binding = skillBinder(loaded.catalog).bind(["guide"]);
+      const binding = bind(skillBinder(loaded.catalog), ["guide"]);
       expect(binding.value).toEqual({ skills: snapshots });
       expect(() => skillsExtension().validateBinding?.(binding)).not.toThrow();
       await rm(root, { recursive: true });
@@ -294,7 +303,7 @@ it.each([repositoryOrigin, directoryOrigin])(
       };
       expect(() =>
         skillsExtension().validateBinding?.(
-          skillBinder(new SkillCatalog([legacy])).bind(["guide"]),
+          bind(skillBinder(new SkillCatalog([legacy])), ["guide"]),
         ),
       ).not.toThrow();
       expect(() =>

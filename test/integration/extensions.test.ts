@@ -24,7 +24,7 @@ import {
   openKaeno,
   type Kaeno,
   type KaenoExtension,
-} from "../../src/application/index.ts";
+} from "../../src/core/application/index.ts";
 
 const assistant = {
   model: { provider: "faux", modelId: "faux-1" },
