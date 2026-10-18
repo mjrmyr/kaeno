@@ -139,3 +139,63 @@ it("does not mutate storage for an already cancelled operation", async () => {
   await expect(store.read("openai", options)).rejects.toThrow();
   expect(await readdir(join(path, ".."))).toEqual([]);
 });
+
+async function seedFile(
+  credentials: Record<string, unknown>,
+  deviceId = "4f0c1c41-2c8e-4c4b-9a3d-6b0a3d1f1a11",
+): Promise<string> {
+  const path = join(await mkdtemp(join(tmpdir(), "kaeno-seed-")), "seed.json");
+  directories.push(join(path, ".."));
+  await writeFile(path, JSON.stringify({ deviceId, credentials }));
+  return path;
+}
+const seeded = {
+  type: "oauth",
+  access: "seed-access",
+  refresh: "seed-refresh",
+  expires: 1,
+} as const;
+
+it("imports a seed once and keeps refreshed tokens on later starts with the same seed", async () => {
+  const path = await authPath();
+  const seed = await seedFile({ openai: seeded });
+  const store = new FileCredentialStore(path);
+  expect(await store.importSeed(seed)).toBe("imported");
+  expect(await store.read("openai")).toEqual(seeded);
+  expect(await store.getDeviceId()).toBe(
+    "4f0c1c41-2c8e-4c4b-9a3d-6b0a3d1f1a11",
+  );
+  expect((await stat(path)).mode & 0o777).toBe(0o600);
+  const refreshed = { ...seeded, access: "new-access", refresh: "rotated" };
+  await store.modify("openai", async () => refreshed);
+  const restarted = new FileCredentialStore(path);
+  expect(await restarted.importSeed(seed)).toBe("unchanged");
+  expect(await restarted.read("openai")).toEqual(refreshed);
+});
+
+it("replaces the live credentials when the seed changes, such as after a new login", async () => {
+  const path = await authPath();
+  const store = new FileCredentialStore(path);
+  await store.importSeed(await seedFile({ openai: seeded }));
+  await store.modify("openai", async () => ({ ...seeded, refresh: "rotated" }));
+  const relogin = { ...seeded, access: "relogin-access", refresh: "relogin" };
+  expect(await store.importSeed(await seedFile({ openai: relogin }))).toBe(
+    "imported",
+  );
+  expect(await store.read("openai")).toEqual(relogin);
+});
+
+it("rejects an invalid seed without leaking its content or touching live credentials", async () => {
+  const path = await authPath();
+  const store = new FileCredentialStore(path);
+  await store.modify("openai", async () => seeded);
+  const before = await readFile(path, "utf8");
+  const seed = await seedFile({ openai: { type: "oauth", access: "leaked" } });
+  const failure = await store.importSeed(seed).then(
+    () => undefined,
+    (error: unknown) => String(error),
+  );
+  expect(failure).toContain("Invalid credential seed file");
+  expect(failure).not.toContain("leaked");
+  expect(await readFile(path, "utf8")).toBe(before);
+});
