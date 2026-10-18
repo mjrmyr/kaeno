@@ -227,6 +227,8 @@ jobs:
               print("::notice::Homelab main already pins this image; no PR needed.")
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write(f"changed={str(bool(changed)).lower()}\n")
+              # Stage only files that exist and changed: kubernetes.json is absent before the backend is configured.
+              output.write(f"paths={','.join(changed)}\n")
           PY
 
       - name: Create or update review-only homelab PR
@@ -235,9 +237,7 @@ jobs:
         with:
           path: homelab
           token: ${{ secrets.HOMELAB_PR_TOKEN }}
-          add-paths: |
-            apps/kaeno/kustomization.yaml
-            apps/kaeno/kubernetes.json
+          add-paths: ${{ steps.image.outputs.paths }}
           base: main
           branch: chore/kaeno-image
           draft: false
