@@ -8,13 +8,18 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createWorkExtensions, openKaeno } from "../src/application/index.ts";
+import { openKaeno } from "../src/application/index.ts";
+import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { agentParticipants, parseAgent } from "../src/agents/index.ts";
 import { ApiServer } from "../src/api/index.ts";
 import { RemoteExecutionEnv } from "../src/execution/index.ts";
-import { DockerSandboxProvider } from "../src/sandbox/index.ts";
-import type { WorkConfig } from "../src/work/index.ts";
+import {
+  DockerSandboxProvider,
+  SandboxWorkEnvironment,
+} from "../src/sandbox/index.ts";
 
 const directory = await mkdtemp(join(tmpdir(), "kaeno-work-smoke-"));
 const faux = fauxProvider({ provider: "openai" });
@@ -70,37 +75,43 @@ faux.setResponses(
     return fauxAssistantMessage([fauxText("Unexpected model step")]);
   }),
 );
-const config: WorkConfig = {
-  maxDepth: 1,
-  templates: {
-    worker: {
-      name: "worker",
-      description: "Local sandbox worker",
-      model: { provider: "openai", modelId: "faux-1" },
-      instructions:
-        "Complete the requested task and report its verified result.",
-      delegates: [],
-      skills: [],
-    },
-  },
-};
+const participants = agentParticipants({
+  agents: [
+    parseAgent(
+      "---\nname: worker\ndescription: Local sandbox worker\nmodel: openai/faux-1\ntools: [bash]\n---\nComplete the task and verify it.",
+      "local",
+      "smoke",
+    ),
+  ],
+  defaults: { tools: [] },
+});
 const core = await openKaeno({
   storage: await openNodeSqliteStorage(join(directory, "core.sqlite")),
   models,
   assistant: {
     model: { provider: "openai", modelId: "faux-1" },
     instructions: "Be helpful.",
+    tools: ["start_work"],
   },
-  extensions: createWorkExtensions({
-    config,
-    sandbox: new DockerSandboxProvider({
-      createEnvironment: ({ url, token, id, cwd, fetch }) =>
-        new RemoteExecutionEnv(url, token, id, cwd, fetch),
-    }),
-    sandboxImage: "kaeno-sandbox:dev",
-    sandboxLimits: { cpus: 1, memoryBytes: 536870912 },
+  extensions: [{ durable: CodingTools }],
+  work: {
+    participants,
+    tools: ["bash"],
+    maxDepth: 1,
     maxConcurrent: 2,
-  }),
+    environment: new SandboxWorkEnvironment({
+      sandbox: new DockerSandboxProvider({
+        namespace: createHash("sha256")
+          .update(directory)
+          .digest("hex")
+          .slice(0, 16),
+        createEnvironment: ({ url, token, id, cwd, fetch }) =>
+          new RemoteExecutionEnv(url, token, id, cwd, fetch),
+      }),
+      image: process.env.KAENO_SANDBOX_IMAGE ?? "kaeno-sandbox:dev",
+      limits: { cpus: 1, memoryBytes: 536870912 },
+    }),
+  },
 });
 const server = new ApiServer(core).server;
 await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

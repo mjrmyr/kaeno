@@ -1,0 +1,645 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Kaeno architecture — implemented</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: #10151e;
+        color: #e8edf5;
+        font:
+          18px/1.5 system-ui,
+          sans-serif;
+      }
+      main {
+        max-width: 1200px;
+        margin: auto;
+        padding: 45px 36px 100px;
+      }
+      section {
+        padding: 20px 0 45px;
+        border-bottom: 1px solid #344158;
+      }
+      body.enhanced main {
+        height: 100vh;
+        padding-top: 30px;
+      }
+      body.enhanced section {
+        display: none;
+        max-height: calc(100vh - 125px);
+        overflow: auto;
+        padding-right: 10px;
+        border: 0;
+      }
+      body.enhanced section.active {
+        display: block;
+      }
+      h1 {
+        color: #8ccfff;
+        font-size: 36px;
+        line-height: 1.2;
+      }
+      h3 {
+        color: #b6dfca;
+      }
+      pre {
+        padding: 18px;
+        background: #080d15;
+        border: 1px solid #344158;
+        border-radius: 9px;
+        overflow: auto;
+        font:
+          14px/1.5 ui-monospace,
+          monospace;
+      }
+      code {
+        color: #b6dcff;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 16px;
+      }
+      td,
+      th {
+        padding: 10px;
+        text-align: left;
+        vertical-align: top;
+        border-bottom: 1px solid #344158;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+      }
+      article {
+        background: #192332;
+        padding: 18px;
+        border-radius: 10px;
+      }
+      .lead {
+        font-size: 24px;
+      }
+      .eyebrow,
+      .small {
+        color: #9fb1c9;
+      }
+      .callout {
+        border-left: 4px solid #9bd6b7;
+        padding-left: 14px;
+      }
+      nav {
+        display: none;
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        padding: 15px;
+        gap: 16px;
+        align-items: center;
+        justify-content: center;
+        background: #10151ef2;
+        border-top: 1px solid #344158;
+      }
+      body.enhanced nav {
+        display: flex;
+      }
+      button {
+        background: #1c2c41;
+        border: 1px solid #617c9e;
+        color: #fff;
+        border-radius: 7px;
+        padding: 9px 16px;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.4;
+      }
+      #dots {
+        display: flex;
+        gap: 5px;
+      }
+      #dots button {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        padding: 0;
+        background: #344158;
+        border: 0;
+      }
+      #dots button[aria-current="true"] {
+        background: #8ccfff;
+      }
+      @media (max-width: 700px) {
+        main {
+          padding: 20px 18px 100px;
+        }
+        .grid {
+          grid-template-columns: 1fr;
+        }
+        h1 {
+          font-size: 27px;
+        }
+        #dots {
+          display: none;
+        }
+        body {
+          font-size: 16px;
+        }
+      }
+      @media print {
+        body.enhanced section {
+          display: block;
+          max-height: none;
+          overflow: visible;
+          page-break-after: always;
+        }
+        nav {
+          display: none !important;
+        }
+        body.enhanced main {
+          height: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section aria-label="Slide 1">
+        <h1>Kaeno: durable work, optional definitions</h1>
+        <p class="eyebrow">
+          Implemented architecture · directory sources · all-to-all delegation
+        </p>
+        <p class="lead">
+          One native pi-durable runtime. Core owns reliable conversation and
+          work orchestration. Optional modules decide which participants exist,
+          what they know, and where they run.
+        </p>
+        <p>
+          Updated to the confirmed home/project directory scheme. This deck
+          describes current interfaces, not the earlier speculative package
+          registry.
+        </p>
+      </section>
+      <section aria-label="Slide 2">
+        <h1>Derive the design from first principles</h1>
+        <div class="grid">
+          <article>
+            <h3>Separate knowledge, execution and authority</h3>
+            <p>
+              Skills teach. Tool selections expose installed operations. An
+              effect still needs its own authorization and origin fence.
+            </p>
+          </article>
+          <article>
+            <h3>Persist effective state</h3>
+            <p>
+              Freeze the native setup, selected tools and skill bindings when
+              admitting work. A child never rereads a mutable catalog.
+            </p>
+          </article>
+          <article>
+            <h3>Data across the boundary</h3>
+            <p>
+              Core stores versioned extension-owned binding data, not callbacks
+              that write an extension’s private records during admission.
+            </p>
+          </article>
+          <article>
+            <h3>Optionality must compile</h3>
+            <p>
+              Consumer-owned participant/environment ports and dependency checks
+              keep agent, skill and Docker implementations out of the core
+              import graph.
+            </p>
+          </article>
+        </div>
+      </section>
+      <section aria-label="Slide 3">
+        <h1>Fit with the existing primitives</h1>
+        <table>
+          <tr>
+            <th>Existing</th>
+            <th>Decision</th>
+            <th>Reason</th>
+          </tr>
+          <tr>
+            <td>pi-durable configure / AgentDoc</td>
+            <td>Resolved ConversationSetup</td>
+            <td>
+              Use the native model, prompt and tool selection rather than
+              inventing another agent runtime.
+            </td>
+          </tr>
+          <tr>
+            <td>Tasks, Tx, ownership, receipts</td>
+            <td>Keep native WORK supervision and parent/child effects</td>
+            <td>
+              One admission transaction, existing replay/cancellation behavior.
+            </td>
+          </tr>
+          <tr>
+            <td>WorkBlueprint / Template</td>
+            <td>Replace with a source-independent WorkPlan</td>
+            <td>No agent, skill, image or JSON-template schema in core.</td>
+          </tr>
+          <tr>
+            <td>Native sections and tools</td>
+            <td>Skill section + read_skill</td>
+            <td>
+              No alternate tool registry. Binding owners are installed native
+              extensions.
+            </td>
+          </tr>
+          <tr>
+            <td>Architecture checker</td>
+            <td>Core cannot import/re-export optional modules</td>
+            <td>
+              The boundary fails the build instead of depending on contributor
+              memory.
+            </td>
+          </tr>
+        </table>
+      </section>
+      <section aria-label="Slide 4">
+        <h1>Where configuration lives</h1>
+        <pre><code>~/.kaeno/agent.md                         # Kaeno assistant
+~/.kaeno/skills/&lt;dir&gt;/SKILL.md            # Kaeno-only default knowledge
+~/.agents/agents/&lt;dir&gt;/agent.md          # reusable workers
+~/.agents/skills/&lt;dir&gt;/SKILL.md          # reusable worker skills
+
+&lt;startup-cwd&gt;/.kaeno/agent.md            # explicit project override
+&lt;startup-cwd&gt;/.kaeno/skills/&lt;dir&gt;/SKILL.md
+&lt;startup-cwd&gt;/.agents/agents/&lt;dir&gt;/agent.md
+&lt;startup-cwd&gt;/.agents/skills/&lt;dir&gt;/SKILL.md</code></pre>
+        <p>
+          Capture cwd once. Home is an external directory source, not a global
+          executable plugin scan. Catalog IDs retain aliases:
+          <code>home:coder</code>, <code>local:coder</code>,
+          <code>kaeno-home:guide</code>. Same-name catalog entries coexist;
+          ambiguous short names fail.
+        </p>
+      </section>
+      <section aria-label="Slide 5">
+        <h1>Agent files: metadata first</h1>
+        <pre><code>---
+name: reviewer
+description: Review changes and report actionable findings.
+model: openrouter/openai/gpt-6.1-sol
+skills: [home:verification]
+tools: [read, read_skill]
+---
+Review the supplied change carefully and explain concrete risks.</code></pre>
+        <p>
+          Only name and description are mandatory. Model may inherit a host
+          default. Omitted tools inherit approved defaults; an explicit empty
+          list remains empty. Unknown metadata is inert. No delegates field: a
+          worker with start_work may choose anyone in its frozen plan, bounded
+          by depth and capacity.
+        </p>
+      </section>
+      <section aria-label="Slide 6">
+        <h1>Admission and recovery</h1>
+        <ol>
+          <li>
+            Directory sources read bounded manifests at startup; parsers report
+            invalid packages.
+          </li>
+          <li>
+            Root start_work prepares and validates an in-memory plan outside Tx.
+          </li>
+          <li>
+            Inside Tx: recheck the request key, origin fence and capacity;
+            persist the task and plan. An already committed launch wins on
+            replay.
+          </li>
+          <li>
+            A child selects only from the saved participant map. All-to-all
+            means no hand-maintained edge lists.
+          </li>
+          <li>
+            Core configures native settings and bindings; the environment is
+            ensured idempotently outside admission.
+          </li>
+          <li>
+            Paused recovery checks saved native definitions, selected worker
+            tools, binding owners and binding versions before idle refresh or
+            scheduling.
+          </li>
+        </ol>
+        <p class="callout">
+          Shrinking the approved tool surface fails preflight. It never silently
+          filters a saved participant.
+        </p>
+      </section>
+      <section aria-label="Slide 7">
+        <h1>Interface: conversation setup</h1>
+        <pre><code>export interface Binding {
+  readonly owner: string;
+  readonly version: number;
+  readonly value: JsonValue;
+}
+
+/**
+ * Everything one conversation runs with, already resolved. The same shape serves the CHAT
+ * assistant and every WORK participant; where it came from (Markdown, code, …) is not core&#x27;s concern.
+ */
+export interface ConversationSetup {
+  readonly model: ModelRef;
+  readonly thinkingLevel?: ModelThinkingLevel;
+  readonly instructions: string;
+  /** Exact tool names this conversation may call; omitted means none. */
+  readonly tools?: readonly string[];
+  readonly bindings?: readonly Binding[];
+}</code></pre>
+        <p>
+          Tool owners and binding owners derive the selected native extensions.
+          Installed code does not implicitly expose its tools. The same binding
+          reader works for CHAT and WORK; no separate work-context lookup or
+          transaction callback is needed.
+        </p>
+      </section>
+      <section aria-label="Slide 8">
+        <h1>Interface: who may participate</h1>
+        <pre><code>export interface ParticipantPlan {
+  readonly id: string;
+  readonly description: string;
+  readonly setup: ConversationSetup;
+}
+
+/**
+ * Participants frozen when CHAT admits a root WORK. Every participant may delegate to every
+ * other one; children always start from this saved plan, never from a live catalog.
+ */
+export interface WorkPlan {
+  readonly root: string;
+  readonly participants: Readonly&lt;Record&lt;string, ParticipantPlan&gt;&gt;;
+}
+
+export interface ParticipantSummary {
+  readonly id: string;
+  readonly description: string;
+  /** False when the definition is discoverable but cannot run, for example without a model. */
+  readonly available: boolean;
+  readonly reason?: string;
+}
+
+/** Consumer-owned: who can participate. Pure over data loaded at startup; no I/O. */
+export interface Participants {
+  list(): readonly ParticipantSummary[];
+  /** Plan rooted at an available participant ID; throws an actionable error otherwise. */
+  plan(root: string): WorkPlan;
+}</code></pre>
+        <p>
+          Core validates the root and identity map; no YAML, skill IDs, sandbox
+          images or delegate graph appears here. The generic port can be
+          implemented by an in-memory fixture or any application source.
+        </p>
+      </section>
+      <section aria-label="Slide 9">
+        <h1>Interface: where work runs</h1>
+        <pre><code>export interface WorkInstance {
+  readonly workId: TaskId;
+  readonly conversationId: ConversationId;
+}
+export interface WorkEnvironmentRuntime extends Pick&lt;
+  Harness,
+  &quot;commit&quot; | &quot;snapshot&quot;
+&gt; {}
+
+/** Consumer-owned: where participants run. Every method is idempotent and safe after restart. */
+export interface WorkEnvironment {
+  /** Working directory given to participants inside the environment. */
+  readonly cwd: string;
+  ensure(
+    work: WorkInstance,
+    runtime: WorkEnvironmentRuntime,
+    context: Context,
+  ): Promise&lt;void&gt;;
+  release(work: WorkInstance, runtime: WorkEnvironmentRuntime): Promise&lt;void&gt;;
+  /** Remove resources no longer backing one of the given live works. */
+  reconcile(
+    live: readonly WorkInstance[],
+    runtime: WorkEnvironmentRuntime,
+  ): Promise&lt;void&gt;;
+  executionEnvironment(
+    target: EnvTarget,
+    context: Context,
+  ): Promise&lt;ExecutionEnv | undefined&gt;;
+}</code></pre>
+        <p>
+          The optional SandboxWorkEnvironment persists its own resource
+          identity. Native env routing uses that identity, never the current
+          catalog. Capacity remains a core admission count, not a racy Docker
+          availability reading.
+        </p>
+      </section>
+      <section aria-label="Slide 10">
+        <h1>Interface: agent and directory modules</h1>
+        <pre><code>directorySource(alias, root): DefinitionSource
+DefinitionSource.snapshot(manifestName): Promise&lt;{
+  packages: readonly DefinitionPackage[];
+  diagnostics: readonly Diagnostic[];
+}&gt;
+
+parseAgent(markdown, sourceAlias, location): AgentDefinition
+parseAgents(packages): { agents, diagnostics }
+resolveAgentSetup(agent, defaults, skills?): ConversationSetup
+agentParticipants({ agents, defaults, skills?, tools? }): Participants</code></pre>
+        <p>
+          These modules are optional and do not provision environments. A
+          definition may remain discoverable while unavailable for activation.
+          External filesystem roots and custom sources satisfy the same
+          interface; no Git source or installer is required.
+        </p>
+      </section>
+      <section aria-label="Slide 11">
+        <h1>Interface: skills remain independent</h1>
+        <pre><code>loadSkills(packages): Promise&lt;{ catalog: SkillCatalog; diagnostics }&gt;
+SkillCatalog.list(): SkillSummary[]
+SkillCatalog.bind(references): BoundSkill[]
+skillBinder(catalog): { tools: readonly string[]; bind(ids): Binding }
+skillsExtension(): KaenoExtension
+
+readBinding(read, conversationId, owner, context): Promise&lt;Binding | undefined&gt;</code></pre>
+        <p>
+          The native skill reader is catalog-free: saved bindings carry assigned
+          documents and assets inline in SQLite. It can replay a pending CHAT
+          without an agent factory, WORK or original skill source. Text
+          references use bounded relative paths; binary assets are retrievable
+          as base64. There is no implicit mount into a sandbox.
+        </p>
+      </section>
+      <section aria-label="Slide 12">
+        <h1>Tradeoffs and honest limits</h1>
+        <table>
+          <tr>
+            <th>Choice</th>
+            <th>Benefit</th>
+            <th>Accepted cost</th>
+          </tr>
+          <tr>
+            <td>All available participants frozen together</td>
+            <td>Recovered children retain original setup and assignments.</td>
+            <td>
+              Larger saved payload; new definitions apply only to new roots
+              after restart.
+            </td>
+          </tr>
+          <tr>
+            <td>Inline binding content</td>
+            <td>No external content store/GC/backup coordination.</td>
+            <td>
+              Skills increase SQLite size; package and bound-content limits
+              apply.
+            </td>
+          </tr>
+          <tr>
+            <td>Explicit selections</td>
+            <td>No ambient coding or protocol tools when tools is empty.</td>
+            <td>Explicit lists must include the tools a skill needs.</td>
+          </tr>
+          <tr>
+            <td>Directory-only first milestone</td>
+            <td>
+              Local and external sources without an installer or Git coupling.
+            </td>
+            <td>Git/HTTP source adapters remain future work.</td>
+          </tr>
+          <tr>
+            <td>Trusted native extensions</td>
+            <td>
+              Native sections/tasks/wrappers retain their full capability.
+            </td>
+            <td>
+              This is not malicious-plugin isolation; Docker still has network
+              egress.
+            </td>
+          </tr>
+        </table>
+      </section>
+      <section aria-label="Slide 13">
+        <h1>Encoded constraints and verification</h1>
+        <ul>
+          <li>
+            Mandatory metadata, known-field validation, inert unknown metadata;
+            duplicate identities are not silently chosen.
+          </li>
+          <li>
+            No symlink packages or manifest traversal. Source files and skill
+            trees have bounds.
+          </li>
+          <li>
+            Exact empty tool selection, including messaging and delegation
+            tools.
+          </li>
+          <li>
+            All-to-all delegation within the saved participant plan, original
+            depth bound and transactional host-wide capacity.
+          </li>
+          <li>
+            Selected tool removal and invalid saved binding versions fail before
+            resume.
+          </li>
+          <li>
+            Core-only parent/child integration test; catalog-free skill replay;
+            home/project file composition tests; actual CLI startup; real Docker
+            work smoke test.
+          </li>
+        </ul>
+        <p>
+          Use <code>npm run verify</code>. Existing databases need deliberate
+          draining/migration: WORK is version 3, not a silent reinterpretation
+          of old blueprints.
+        </p>
+      </section>
+      <section aria-label="Slide 14">
+        <h1>Rollout and next boundaries</h1>
+        <ol>
+          <li>
+            Put your assistant in ~/.kaeno/agent.md (or an explicit project
+            .kaeno override).
+          </li>
+          <li>
+            Add workers and skills in the confirmed home/project .agents
+            directories. Restart to reload.
+          </li>
+          <li>
+            Use a fresh database, or drain old work and back up before a
+            deliberate migration.
+          </li>
+          <li>
+            Choose which tools are actually exposed; no directory file installs
+            native code or credentials.
+          </li>
+        </ol>
+        <p>
+          Later work: project checkout, durable code output before sandbox
+          cleanup, and a constrained GitHub App publisher. Those must stay
+          separate from this definition/discovery base.
+        </p>
+        <p class="small">
+          Earlier arena reviews favored native conversation plans, separate
+          participant/environment ports, binding data rather than admission
+          callbacks, and explicit tool selection. The final user decision
+          removed delegate graphs and fixed the directory conventions shown
+          here.
+        </p>
+      </section>
+    </main>
+    <nav aria-label="Slide navigation">
+      <button id="prev">← Previous</button>
+      <div id="dots"></div>
+      <span id="count" aria-live="polite"></span
+      ><button id="next">Next →</button>
+    </nav>
+    <script>
+      const slides = [...document.querySelectorAll("section")],
+        dots = document.querySelector("#dots");
+      let page = 0;
+      document.body.classList.add("enhanced");
+      slides.forEach((slide, i) => {
+        const b = document.createElement("button");
+        b.setAttribute("aria-label", slide.querySelector("h1").textContent);
+        b.onclick = () => navigate(i);
+        dots.append(b);
+      });
+      function show() {
+        const n = Number(location.hash.slice(1));
+        page =
+          Number.isInteger(n) && n > 0 ? Math.min(slides.length - 1, n - 1) : 0;
+        slides.forEach((s, i) => s.classList.toggle("active", i === page));
+        [...dots.children].forEach((d, i) =>
+          d.setAttribute("aria-current", String(i === page)),
+        );
+        document.querySelector("#count").textContent =
+          `${page + 1} / ${slides.length}`;
+        document.querySelector("#prev").disabled = page === 0;
+        document.querySelector("#next").disabled = page === slides.length - 1;
+        slides[page].scrollTop = 0;
+      }
+      function navigate(n) {
+        location.hash = String(Math.max(0, Math.min(slides.length - 1, n)) + 1);
+      }
+      document.querySelector("#prev").onclick = () => navigate(page - 1);
+      document.querySelector("#next").onclick = () => navigate(page + 1);
+      addEventListener("hashchange", show);
+      addEventListener("keydown", (e) => {
+        if (["ArrowRight", "PageDown", " "].includes(e.key)) {
+          e.preventDefault();
+          navigate(page + 1);
+        }
+        if (["ArrowLeft", "PageUp"].includes(e.key)) {
+          e.preventDefault();
+          navigate(page - 1);
+        }
+      });
+      show();
+    </script>
+  </body>
+</html>

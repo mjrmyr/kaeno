@@ -1,10 +1,15 @@
 # Kaeno
 
-A small, self-hosted durable assistant core. Conversations survive restarts; tools, background tasks, channels and execution environments come from explicitly installed extensions.
+Kaeno is a small, self-hosted durable conversation and work host. Threads, turns, activity reports, cancellation fences and WORK orchestration use one pi-durable runtime. Agent and skill definitions are optional Markdown-based extensions; the durable core does not parse their files or own their catalogs.
 
-The CLI includes Docker-backed WORK orchestration. [Worker configuration](docs/work.md) defines the agents Kaeno can choose from; every configured worker is available directly.
+The CLI composes the built-in file environment:
 
-**Not included:** Telegram, Kubernetes, skill repository integration, or a plugin marketplace.
+- Kaeno's own assistant: `~/.kaeno/agent.md`, overridden by `.kaeno/agent.md` in the directory Kaeno starts from.
+- Kaeno-only skills: `~/.kaeno/skills/<directory>/SKILL.md` and `.kaeno/skills/<directory>/SKILL.md`.
+- Worker agents: `~/.agents/agents/<directory>/agent.md` and `.agents/agents/<directory>/agent.md`.
+- Skills assignable to workers: `~/.agents/skills/<directory>/SKILL.md` and `.agents/skills/<directory>/SKILL.md`.
+
+The startup directory is captured once. Home and project definitions have distinct source IDs; same-named entries remain distinct and are selected by their qualified IDs. The application configuration under `.kaeno` is separate from the reusable agent/skill catalogs under `.agents`. Kaeno automatically uses its dedicated `.kaeno/skills` entries when its `skills` field is omitted; an explicit list, including `[]`, overrides that default. Workers only receive the skills their definitions select.
 
 ## Run
 
@@ -12,85 +17,55 @@ Node.js 24 or newer:
 
 ```sh
 npm ci
-cat > config.json <<'JSON'
-{
-  "model": "openai/gpt-4.1",
-  "instructions": "You are my personal assistant. Answer clearly."
-}
-JSON
-export OPENAI_API_KEY=...
-export KAENO_CONFIG="$PWD/config.json"
+mkdir -p ~/.kaeno
+cat > ~/.kaeno/agent.md <<'MD'
+---
+name: kaeno
+description: My personal assistant.
+model: openrouter/openai/gpt-6.1-sol
+---
+You are my helpful assistant. Be clear, warm and concise.
+MD
+export OPENROUTER_API_KEY=...
 export KAENO_DB="$PWD/kaeno.sqlite"
-export KAENO_TOKEN="$(openssl rand -hex 32)"
 npm start
 ```
 
-The optional HTTP adapter listens on `PORT` (default `8080`) when `KAENO_TOKEN` is set. Without it, no HTTP listener starts. The CLI supports `openai`, `anthropic` and `openrouter`; embedding accepts a native model registry with any configured provider.
+To enable WORK, install at least one worker definition. For example:
 
 ```sh
-curl -N http://localhost:8080/v1/threads/personal/turn \
-  -H "Authorization: Bearer $KAENO_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"text":"Hello","requestId":"request-0001"}'
+mkdir -p ~/.agents/agents/coder
+cat > ~/.agents/agents/coder/agent.md <<'MD'
+---
+name: coder
+description: Implement and verify code changes.
+model: openrouter/openai/gpt-6.1-sol
+---
+Use the available tools to make the requested change, run relevant checks and report evidence.
+MD
 ```
 
-The API also provides thread listing, reply cursors, stop and reset. Disconnecting a client does not cancel an admitted turn. See `src/api/api.ts` for the intentionally small protocol.
+The CLI provisions Docker only when worker agents are discovered. An available worker can start any other available worker, subject to the configured `KAENO_WORK_MAX_DEPTH` and concurrent-work limit. WORK freezes the participant settings when the root work is admitted; later file changes affect only newly admitted work after restart.
 
-## Plug in capabilities
+Agent frontmatter `name` and `description` are required. Optional fields include `model`, `skills`, and `tools`. The Markdown body is the system prompt. An omitted worker model inherits Kaeno's model (or the explicit `KAENO_DEFAULT_MODEL` fallback); if there is no default, the agent remains discoverable but cannot be started. Omitted tools inherit the host's approved defaults. `tools: []` means no tools. Omitted skills means none. Unknown metadata is inert.
 
-The embedding entry point is `openKaeno` in `src/application/index.ts`. Extensions use pi-durable's native definitions; there is no loader or alternate task runtime.
+A skill has `name` and `description` frontmatter, an optional supported `disable-model-invocation` flag, a Markdown instruction body, and optional relative assets. Skills provide knowledge only; they do not grant tools or credentials. Worker tools use `read_skill` to load assigned text documents; binary assets are retained and returned as base64. Scripts and asset bytes are not implicitly mounted or executed in the sandbox. When an explicit tool list omits `read_skill`, visible assigned skill instructions are rendered inline instead of granting a hidden tool.
 
-```ts
-import { Type } from "@earendil-works/pi-ai";
-import { defineExtension, defineTool } from "@earendil-works/pi-durable";
-import { openKaeno } from "./src/application/index.ts";
+The CLI's HTTP adapter listens on `PORT` (default `8080`). It supports thread listing, replies, stop and reset. This adapter does not implement transport authentication: run it on a trusted network or behind authenticated ingress. Setting a token environment variable alone does not secure the listener. Disconnecting a client does not cancel an admitted turn.
 
-const echo = defineTool({
-  name: "echo",
-  description: "Echo supplied text without side effects",
-  parameters: Type.Object({ text: Type.String() }),
-  execute: async ({ text }) => ({ content: [{ type: "text", text }] }),
-});
+## Embed and extend
 
-const core = await openKaeno({
-  storage, // a native storage adapter, e.g. openNodeSqliteStorage(path)
-  models, // a configured native model registry
-  assistant: {
-    model: { provider: "openai", modelId: "gpt-4.1" },
-    instructions: "Use your tools when useful.",
-  },
-  extensions: [
-    {
-      durable: defineExtension({ name: "personal-echo", tools: [echo] }),
-      readOnlyTools: [echo.name],
-    },
-  ],
-});
+The embedding entry point is `openKaeno` in `src/application/index.ts`. Callers supply resolved native assistant settings and explicitly install pi-durable extensions. WORK participants and their execution environment are separate injected interfaces; either can be replaced without adding agent or skill parsing to core. `loadFileEnvironment` is the CLI's optional file-backed composition, not a required part of `openKaeno`.
 
-// Later, after stopping input and joining your own services:
-await core.close();
-```
+Native extensions are trusted process code, fixed before the harness opens. There is no hot loader or plugin marketplace. Agent/skill Markdown is data, not executable extension code. An agent may author a patch or a future native extension, but adopting that code into the running process remains an owner-controlled release decision.
 
-An extension can also supply:
+## Durability and scope
 
-- **Native tasks, sections, hooks and wrappers** through `durable`.
-- **`environment`**, a native execution-environment provider—enough to attach an execution backend later without adding Kubernetes policy to the core.
-- **`delivery: { channel, send, typing? }`**, for origin-bound durable replies.
-- **`start(core, signal)`**, for a channel listener or reconciler; return an async cleanup function. Abort signals stop ingress first; Harness then quiesces durable invocations, and reverse-order cleanup disposes extension resources. Cleanup must not access the closed harness.
+Definitions used by admitted work are frozen. On restart, missing saved native definitions or incompatible work plans fail closed rather than silently binding a new tool surface. Take a consistent SQLite backup before opening a changed release; opening the harness writes recovery reconciliation state. External side effects are not transactional with SQLite and may be uncertain after a crash.
 
-A channel uses `core.threads` and `core.turns`; it can advance its own cursor and admit a user turn inside the **same native transaction**. A task can report via `admitActivityResult`. Extensions own their resources and native abort handlers; stop suppresses results and requests background activity cancellation. `test/integration/extensions.test.ts` demonstrates tasks, documents, tools, delivery, execution, transactional ingress, cleanup and SQLite reopen together.
+This cut intentionally does not migrate the prior WORK/Telegram database or JSON configuration. Move the assistant to `.kaeno/agent.md` or `~/.kaeno/agent.md`, workers to per-directory `agent.md` files, and skills to per-directory `SKILL.md` files. The old `KAENO_CONFIG` and `KAENO_WORK_CONFIG` JSON paths are rejected. Use a fresh database for this release unless the previous workload has been deliberately drained/migrated and backed up.
 
-Native extensions are trusted process code. Every assistant tool defaults to mutating unless explicitly marked read-only. Result turns cannot invoke mutations; mutation implementations must additionally recheck the origin fence inside the transaction admitting their effect. This is not a sandbox for malicious code.
-
-## Reliability and scope
-
-The core keeps durable input receipts, provenance, stop/reset fences, causal results, reply replay, startup compatibility checks and managed shutdown. It intentionally does not implement every capability itself.
-
-Use a **fresh database** for this core-only version. It is a deliberate removal of the old product, not a migration of its WORK/Telegram state. Startup refuses missing saved definitions rather than silently deleting work. Preserve your old release and a consistent backup if you need to finish old workloads.
-
-Definitions stay fixed until restart. Take a consistent SQLite backup **before** opening a new release; opening the harness writes recovery reconciliation state. Restoring old code alone is not rollback. External side effects are not transactional with SQLite; deliveries can duplicate after a crash.
-
-[Architecture and extension contract](docs/architecture.md)
+See [architecture](docs/architecture.md), [WORK](docs/work.md) and [extension composition](test/integration/extensions.test.ts).
 
 ```sh
 npm run verify

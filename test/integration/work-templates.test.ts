@@ -12,27 +12,24 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import {
-  createWorkExtensions,
-  openKaeno,
-} from "../../src/application/index.ts";
+import { openKaeno } from "../../src/application/index.ts";
+import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { agentParticipants, parseAgent } from "../../src/agents/index.ts";
+import { SandboxWorkEnvironment } from "../../src/sandbox/index.ts";
 import type { SandboxProvider } from "../../src/sandbox/index.ts";
-import { parseWorkConfig } from "../../src/work/index.ts";
 
 it("offers and launches every configured worker even when none delegate to each other", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-templates-"));
   const names = ["easy", "medium", "high"];
-  const config = parseWorkConfig({
-    templates: Object.fromEntries(
-      names.map((name) => [
+  const participants = agentParticipants({
+    agents: names.map((name) =>
+      parseAgent(
+        `---\nname: ${name}\ndescription: ${name} independent worker\nmodel: openai/faux-1\n---\nComplete work as ${name}.`,
+        "local",
         name,
-        {
-          description: `${name} independent worker`,
-          model: "openai/faux-1",
-          instructions: `Complete work as ${name}.`,
-        },
-      ]),
+      ),
     ),
+    defaults: { tools: [] },
   });
   const faux = fauxProvider({ provider: "openai" });
   const models = createModels();
@@ -83,14 +80,19 @@ it("offers and launches every configured worker even when none delegate to each 
     assistant: {
       model: { provider: "openai", modelId: "faux-1" },
       instructions: "Delegate the requested task.",
+      tools: ["start_work"],
     },
-    extensions: createWorkExtensions({
-      config,
-      sandbox,
-      sandboxImage: "sandbox:test",
-      sandboxLimits: { cpus: 1, memoryBytes: 268435456 },
+    extensions: [{ durable: CodingTools }],
+    work: {
+      participants,
+      tools: [],
+      environment: new SandboxWorkEnvironment({
+        sandbox,
+        image: "sandbox:test",
+        limits: { cpus: 1, memoryBytes: 268435456 },
+      }),
       maxConcurrent: 3,
-    }),
+    },
   });
   try {
     for (const name of names) {
@@ -98,7 +100,7 @@ it("offers and launches every configured worker even when none delegate to each 
       const binding = await core.harness.snapshot(AgentDoc, id, context);
       for (const choice of names) {
         expect(binding?.instructions).toContain(
-          `- ${choice}: ${choice} independent worker`,
+          `- local:${choice}: ${choice} independent worker`,
         );
       }
       const task = await core.harness.commit(

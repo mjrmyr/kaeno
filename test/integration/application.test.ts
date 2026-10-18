@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -16,23 +16,23 @@ it("boots the actual core entrypoint and shuts down cleanly", async () => {
     throw new Error("Expected TCP address");
   }
   await new Promise<void>((done) => reservation.close(() => done()));
-  const config = join(root, "config.json");
+  await mkdir(join(root, ".kaeno"));
   await writeFile(
-    config,
-    JSON.stringify({
-      model: "openai/gpt-4.1",
-      instructions: "Answer clearly.",
-    }),
+    join(root, ".kaeno/agent.md"),
+    "---\nname: kaeno\ndescription: Test assistant\nmodel: openai/gpt-4.1\n---\nAnswer clearly.\n",
   );
   const token = "test-token-with-at-least-32-characters";
   const child = spawn(process.execPath, [resolve("src/main.ts")], {
     env: {
       ...process.env,
-      KAENO_CONFIG: config,
+      HOME: root,
+      KAENO_CONFIG: "",
+      KAENO_WORK_CONFIG: "",
       KAENO_DB: join(root, "kaeno.sqlite"),
       KAENO_TOKEN: token,
       PORT: String(address.port),
     },
+    cwd: root,
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";

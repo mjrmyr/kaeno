@@ -197,6 +197,7 @@ export class DockerSandboxProvider implements SandboxProvider {
   private readonly engine: DockerEngine;
   private readonly fetch: typeof globalThis.fetch;
   private readonly apiHost: string;
+  private readonly namespace: string;
   private readonly readyTimeoutMs: number;
   private readonly createEnvironment: (input: {
     url: string;
@@ -210,6 +211,8 @@ export class DockerSandboxProvider implements SandboxProvider {
     engine?: DockerEngine;
     fetch?: typeof globalThis.fetch;
     apiHost?: string;
+    /** Stable owner namespace; separate applications sharing Docker must use distinct values. */
+    namespace?: string;
     readyTimeoutMs?: number;
     createEnvironment(input: {
       url: string;
@@ -223,6 +226,10 @@ export class DockerSandboxProvider implements SandboxProvider {
     this.fetch = options.fetch ?? fetch;
     this.createEnvironment = options.createEnvironment;
     this.apiHost = options.apiHost ?? "127.0.0.1";
+    this.namespace = z
+      .string()
+      .regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$/)
+      .parse(options.namespace ?? "default");
     this.readyTimeoutMs = options.readyTimeoutMs ?? 60_000;
   }
 
@@ -232,6 +239,7 @@ export class DockerSandboxProvider implements SandboxProvider {
     signal?: AbortSignal,
   ): Promise<void> {
     signal?.throwIfAborted();
+    sandbox = this.scoped(sandbox);
     const name = containerName(sandbox.id);
     validateRequest(sandbox, options);
     let container = await this.engine.inspect(name);
@@ -266,6 +274,7 @@ export class DockerSandboxProvider implements SandboxProvider {
     sandbox: SandboxIdentity,
     cwd: string,
   ): Promise<ExecutionEnv> {
+    sandbox = this.scoped(sandbox);
     return this.createEnvironment({
       url: `http://${this.apiHost}:${await this.portFor(sandbox.id)}`,
       token: sandbox.token,
@@ -276,13 +285,20 @@ export class DockerSandboxProvider implements SandboxProvider {
   }
 
   async remove(sandbox: SandboxIdentity): Promise<void> {
+    sandbox = this.scoped(sandbox);
     await this.engine.remove(containerName(sandbox.id), volumeName(sandbox.id));
   }
 
   async reconcile(active: readonly SandboxIdentity[]): Promise<void> {
-    const keep = new Set(active.map((sandbox) => sandbox.id));
+    const keep = new Set(active.map((sandbox) => this.scoped(sandbox).id));
     for (const container of await this.engine.managed()) {
       const id = container.labels[ID_LABEL];
+      const owned =
+        id?.startsWith(`${this.namespace}-`) ||
+        (!id && container.name.startsWith(`kaeno-work-${this.namespace}-`));
+      if (!owned) {
+        continue;
+      }
       if (!id || !keep.has(id)) {
         const nameId = container.name.startsWith("kaeno-work-")
           ? container.name.slice("kaeno-work-".length)
@@ -296,6 +312,10 @@ export class DockerSandboxProvider implements SandboxProvider {
         await this.engine.remove(container.name, volumeName(removableId));
       }
     }
+  }
+
+  private scoped(sandbox: SandboxIdentity): SandboxIdentity {
+    return { ...sandbox, id: `${this.namespace}-${sandbox.id}` };
   }
 
   private async portFor(id: string): Promise<number> {

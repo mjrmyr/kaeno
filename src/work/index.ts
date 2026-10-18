@@ -1,33 +1,28 @@
-export { parseWorkConfig, loadWorkConfig } from "./config.ts";
-export type { WorkConfig, Template } from "./config.ts";
 export { workTurns } from "./turns.ts";
 export {
-  immutableCopy,
-  sealBlueprint,
-  readBlueprint,
-  storageCopy,
-  frozenEntry,
-} from "./work-blueprint.ts";
+  assertPlanFits,
+  describeParticipants,
+  readPlan,
+  resolveParticipantId,
+  storedPlan,
+} from "./plan.ts";
 export type {
-  DeepReadonly,
-  Stored,
-  BoundAgent,
-  WorkBlueprint,
-} from "./work-blueprint.ts";
+  ParticipantPlan,
+  ParticipantSummary,
+  Participants,
+  WorkEnvironment,
+  WorkEnvironmentRuntime,
+  WorkInstance,
+  WorkPlan,
+} from "./plan.ts";
 export { WorkIndex, WorkScope, Work } from "./work.ts";
 export type {
   WorkParent,
   WorkRuntime,
   WorkResult,
   WorkView,
-  WorkArtifactsSummary,
   WorkDetails,
-  ArtifactsListing,
-  ArtifactFile,
-  WorkSetup,
-  WorkAgents,
-  WorkTemplateChoice,
-  WorkTemplateSource,
   WorkReport,
+  WorkSettings,
   WorkTurns,
 } from "./work.ts";

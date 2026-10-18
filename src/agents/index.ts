@@ -1,3 +1,9 @@
-export { LocalWorkAgents } from "./local-work.ts";
-export { AgentFactory } from "./agent-factory.ts";
-export type { AgentSkills, WorkToolSurface } from "./agent-factory.ts";
+export {
+  AGENT_MANIFEST,
+  agentParticipants,
+  parseAgent,
+  parseAgents,
+  parseModelRef,
+  resolveAgentSetup,
+} from "./agents.ts";
+export type { AgentDefaults, AgentDefinition, SkillBinder } from "./agents.ts";

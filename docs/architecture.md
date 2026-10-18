@@ -1,45 +1,68 @@
-# Core only
+# Architecture
 
-Kaeno is a small durable conversation host. It does not ship WORK, Telegram, Kubernetes, artifacts, skill repositories, remote execution, or deployment automation.
+Kaeno is a small durable host built on pi-durable. The core mechanisms are the application host, threads, turns, WORK and the optional HTTP adapter. Agent and skill catalogs and execution environments are composed around those mechanisms; their file formats and implementations are not core dependencies.
 
-## The boundary
+## Primitives and ownership
 
-- **pi-durable:** tasks, documents, transactions, scheduling, tools, execution environments and storage.
-- **Threads:** external thread keys map to persistent conversations.
-- **Turns:** idempotent input admission, provenance, stop/reset fences, generic activity results, reply cursors and delivery claims.
-- **Authority:** assistant tools default to mutating; result turns may invoke only explicitly declared read tools. Mutation handlers must recheck the origin fence inside their actual admission transaction.
-- **Application:** explicitly install extensions, open storage, inspect recovery requirements, configure idle conversations, start services and resume.
+- **pi-durable:** native harness, registry, conversation setup, tool execution, documents, tasks, transactions, scheduling and environment interface.
+- **Threads:** maps external thread keys to durable conversations and uses the host-supplied resolved setup for new or idle conversations.
+- **Turns:** idempotent user-turn admission, provenance, result turns, stop/reset fences, reply cursors and delivery claims.
+- **WORK:** durable task orchestration, parent/child messages, frozen participant plan, request idempotency, nesting/concurrency limits and recovery.
+- **Conversation setup:** resolved model, instructions, exact tool selection and versioned extension-owned bindings. Core validates tool/extension owners, stores bindings atomically with setup, and does not interpret binding payloads.
+- **Participants:** a consumer-owned in-memory catalog/plan interface. The core cares about participant IDs, descriptions, resolved native setups and the closed root plan, not Markdown or other source formats.
+- **Work environment:** a separate consumer-owned provider for idempotent resource ensure/release/reconciliation and the pi-durable execution environment.
+- **Agent definition module:** optional Markdown parser/resolver for `agent.md`; no durable definitions and no environment dependency.
+- **Skill module:** optional Markdown skill source, binding adapter, assigned-only `read_skill` tool and prompt section.
+- **Directory source:** optional filesystem discovery utility shared by agents and skills. Other external-source adapters can satisfy the same source interface.
 
-There is one runtime, no hot loader, no service locator, and no plugin marketplace. Native extensions are trusted process code.
+Standalone `openKaeno` needs only storage, models and a resolved assistant setup. It starts no Docker worker environment and offers no WORK tools unless a WORK participant source is explicitly supplied.
 
-## Extension mechanism
+## File composition
 
-`openKaeno` accepts native pi-durable definitions plus a small set of host integration points:
+The CLI captures its startup cwd and composes these sources:
 
-- `durable`: tools, tasks, documents referenced by tasks, sections, hooks and wrappers using pi-durable directly.
-- `readOnlyTools`: assistant tools allowed on result turns. All other tools default to mutating.
-- `environment`: a native execution-environment provider. A later Kubernetes extension can supply this together with its own tasks and resource management. Only one provider is selected.
-- `delivery`: a named channel adapter for durable replies and optional typing indicators.
-- `start(core, signal)`: start a channel listener or reconciliation service and return an asynchronous cleanup function. Signals stop ingress first, then Harness closes to quiesce durable invocations while extension clients remain available. Resource cleanup runs in reverse order afterwards and must not access the closed harness.
+| Purpose           | Home environment                  | Application context (captured cwd)   |
+| ----------------- | --------------------------------- | ------------------------------------ |
+| Kaeno assistant   | `~/.kaeno/agent.md`               | `.kaeno/agent.md` (takes precedence) |
+| Kaeno-only skills | `~/.kaeno/skills/<dir>/SKILL.md`  | `.kaeno/skills/<dir>/SKILL.md`       |
+| Worker agents     | `~/.agents/agents/<dir>/agent.md` | `.agents/agents/<dir>/agent.md`      |
+| Worker skills     | `~/.agents/skills/<dir>/SKILL.md` | `.agents/skills/<dir>/SKILL.md`      |
 
-Extensions receive the native harness, thread directory and turn coordinator. A channel can commit its external cursor together with `turns.admitUserTurn(tx, ...)`; no transaction facade or second database is necessary. An extension owns any resource documents, provisioning, retries and cleanup its tasks need. The core does not contain Kubernetes policy.
+Home and local source aliases are distinct. Same names coexist and need qualified IDs; no catalog is silently overridden. No parent-directory or home scan is implicit beyond these declared roots.
 
-A service's `start` must return after startup, not wait for its long-running loop. It should retain that loop and return a cleanup that joins it after the abort signal. Observe shutdown promptly; cleanup runs after the harness closes, so do not require durable task completion or new database operations to stop the service. If `start` throws before returning cleanup, it must release its own partially acquired resources. Do not enable native task scheduling or accept input before startup compatibility inspection.
+An agent's required frontmatter is `name` and `description`. Optional `model`, `skills`, and `tools` resolve against environment defaults. The Markdown body is the system prompt. Omitted tools inherit an approved default list; `tools: []` is empty. Unknown keys are retained inertly. An agent with no effective model remains discoverable but cannot be activated.
 
-## Durability, not compatibility scaffolding
+Skills use required `name`/`description` frontmatter, a Markdown instruction body and package-relative files. They teach; they do not authorize. The skill extension reads only skills bound to that conversation. Current bindings preserve text documents in the durable conversation state. Tool selection is separate and explicit.
 
-Definitions are fixed until restart. Persisted kinds and versions are contracts; retain compatible handlers, drain, or migrate deliberately. Startup refuses missing/incompatible task definitions or missing saved tool/extension references before normal scheduling. `Harness.open` itself reconciles recovery state and is not read-only.
+## Admission and recovery flow
 
-The core-only cut intentionally removes the previous product and its configuration. **It is not an automatic migration of an old WORK/Telegram database.** Core turn/control definitions are now version 2 without an implicit migration from the removed product payloads. Missing or incompatible old definitions must remain an actionable startup failure, not be silently discarded. Keep the previous release and its data backup for old workloads; use a fresh database for this minimal runtime.
+1. Sources are read at startup. Each extension parses its own manifests. Catalogs are immutable for the process lifetime.
+2. The application installs fixed native definitions and supplies `ConversationSetup` for CHAT.
+3. On a new root WORK request, core prepares a plan in memory from the participant source, outside a durable transaction.
+4. The admission transaction rechecks the idempotency key and origin fence, counts host-wide active WORK, checks depth, then persists the durable task and its full reachable plan.
+5. Every child resolves only from the parent tree's saved plan. Every participant may delegate to everyone; max depth bounds the tree.
+6. A consumer-owned environment is ensured outside the transaction, then the participant conversation is configured from saved native settings.
+7. On restart, native task/tool/extension recovery compatibility and saved conversation bindings are checked while scheduling is paused. WORK plans are revalidated against the installed and approved worker surface. Removing a selected tool causes startup failure; no plan is silently filtered or refreshed.
+8. Only after preflight does Kaeno refresh eligible idle threads, reconcile optional resources, start extension services and resume scheduling.
 
-Stop/reset fence old input before it can mutate state. A stop durably requests cancellation of background activities; their native abort handlers own cleanup. Reset preserves independently running activities but does not inject old results into fresh context. Suppression precedes cancellation. Results are data authority, not user authority.
+Definitions are restart-to-reload for new root requests; they never alter already admitted work. A source outage prevents new activation from that source but does not implicitly substitute another source's same-named definition. Native definitions have to remain installed for saved work that uses them.
 
-Task admission and effect authorization belong in one native commit. External effects do not: use provider idempotency when available and expose uncertain outcomes rather than blindly retrying unsafe actions. A claimed reply may complete after reset and may duplicate on recovery. Closing Kaeno does not mean cancelling durable background tasks.
+## Extension and authority boundary
 
-Before upgrading, stop ingress, join services, close storage and take a consistent SQLite backup plus referenced extension files. Do not blindly copy a live SQLite file; WAL and active writers matter. Restoring old code alone is not rollback after incompatible state changes, and restoring a backup cannot undo external effects.
+Kaeno uses pi-durable's native extension format. All native definitions are installed before `Harness.open` and remain fixed until restart. Agent/skill Markdown configures data and conversation settings; it never imports code into the process or defines new native registrations.
 
-## Adding capabilities later
+The composition supplies one worker-approved tool surface. A participant can select only installed tools on that surface, and each conversation receives exactly its explicit tool selection. Core protocol tools such as `start_work` and `message_parent` are not silently injected when omitted. A selected tool or binding owner selects the native extension that implements it, but installation alone does not offer its tools.
 
-Write one ordinary native extension, supply its tools/tasks and optional environment/delivery/service hooks, and pass it to `openKaeno`. Keep extension-owned state and cleanup with that extension. No core edit is needed to register these capabilities. Integration tests exercise this public mechanism without implementing a real cluster or chat service.
+CHAT tool policy wraps selected native tools; every tool is mutating unless explicitly classified read-only. Result turns are read-only. Mutating tools still recheck trusted origin/fences in the transaction admitting their effect. A skill, prompt or tool-name selection is not a credential or authorization grant.
 
-Kaeno can author extensions in a branch. Accepting native code into the running process is an owner-controlled release decision, whether manual or automated. Generated code and passing tests do not create isolation. A separately restricted executor may be added if a real use case requires running code the owner explicitly distrusts.
+Extensions are trusted process code. Kaeno is not a sandbox for malicious native plugins. The Docker work environment isolates writable workspaces but currently permits network egress; it must not receive host API keys or Github tokens. A passing test suite does not prove process isolation or prevent source exfiltration.
+
+## Encapsulated dependency direction
+
+`src/work/` imports resolved conversation settings and consumer-owned participant/environment ports, but no `src/agents`, `src/skills`, Docker, or definition-source implementation. Agents and skills can be absent or replaced. `src/main.ts` and `src/composition/` are the explicit composition boundary. Feature imports cross only public `index.ts` files, and construction belongs at the application boundary; `scripts/check-architecture.ts` enforces these constraints.
+
+The agents extension owns frontmatter/default resolution. The skills extension owns SKILL parsing, binding format and `read_skill`. The content representation is stored under an owner/version envelope so core can persist/fence it without becoming an agent or skill catalog. These envelopes are ordinary JSON conversation data, not extension installation or authority.
+
+## Deliberate migration
+
+This release removes the previous JSON agent/work config paths, the template/blueprint type in WORK, the hardcoded agent factory and the GitHub-only skill repository loader. `KAENO_CONFIG` and `KAENO_WORK_CONFIG` are rejected with a migration message. This does not silently migrate old work databases or widen their authority. Drain/cancel old work or provide a tested native migration; back up SQLite before opening an incompatible release.

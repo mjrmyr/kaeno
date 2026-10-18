@@ -1,33 +1,21 @@
-export { prepareSkills } from "./skill-repositories.ts";
-export type { SkillPreparation } from "./skill-repositories.ts";
 export {
-  SKILL_ROOT,
-  INSTALLER,
-  parseSkillRepositories,
-  splitSkillId,
-  splitSkillSelector,
-  expandSkillSelection,
-  parseSkillSelection,
-  skillRelativeRoot,
-  skillMetadata,
-  skillFiles,
   inspectSkill,
-  copySkillTree,
-  ResolvedSkillCatalog,
-  openSkillCatalog,
-  skillPrompt,
+  loadSkills,
   readSkillDocument,
-  parseSandboxImages,
-  materializeSkillSelection,
+  SkillCatalog,
+  skillFiles,
+  skillMetadata,
+  skillPrompt,
 } from "./skills.ts";
 export type {
-  RepositorySpec,
   BoundSkill,
-  SkillBinding,
-  SandboxImages,
-  SkillCopySelection,
-  SkillManifest,
-  SkillCatalog,
-  SkillMetadata,
   InspectedSkill,
+  SkillMetadata,
+  SkillSummary,
 } from "./skills.ts";
+export {
+  READ_SKILL,
+  SKILLS_EXTENSION,
+  skillBinder,
+  skillsExtension,
+} from "./extension.ts";

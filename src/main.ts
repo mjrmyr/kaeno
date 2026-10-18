@@ -4,37 +4,49 @@ import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { z } from "zod";
-import { createWorkExtensions, openKaeno } from "./application/index.ts";
+import { createHash } from "node:crypto";
+import { resolve } from "node:path";
+import { openKaeno } from "./application/index.ts";
+import { loadFileEnvironment } from "./composition/index.ts";
+import { parseModelRef } from "./agents/index.ts";
 import { ApiServer } from "./api/index.ts";
-import { loadConfig } from "./config/index.ts";
 import { RemoteExecutionEnv } from "./execution/index.ts";
-import { DockerSandboxProvider } from "./sandbox/index.ts";
-import { loadWorkConfig } from "./work/index.ts";
+import {
+  DockerSandboxProvider,
+  SandboxWorkEnvironment,
+} from "./sandbox/index.ts";
 
-const config = await loadConfig(
-  process.env.KAENO_CONFIG ?? "/etc/kaeno/config.json",
-);
+if (process.env.KAENO_CONFIG || process.env.KAENO_WORK_CONFIG) {
+  throw new Error(
+    "JSON agent configuration is no longer supported. Move the assistant to ~/.kaeno/agent.md (or .kaeno/agent.md) and workers to ~/.agents/agents/<directory>/agent.md (or .agents/agents/<directory>/agent.md).",
+  );
+}
+const configuration = await loadFileEnvironment({
+  defaultModel: process.env.KAENO_DEFAULT_MODEL
+    ? parseModelRef(process.env.KAENO_DEFAULT_MODEL)
+    : undefined,
+  maxDepth: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(8)
+    .parse(process.env.KAENO_WORK_MAX_DEPTH ?? 2),
+  maxConcurrent: z.coerce
+    .number()
+    .int()
+    .positive()
+    .parse(process.env.KAENO_WORK_MAX_CONCURRENT ?? 4),
+});
+for (const diagnostic of configuration.diagnostics) {
+  console.error(`configuration: ${diagnostic.location}: ${diagnostic.message}`);
+}
 const port = z.coerce
   .number()
   .int()
   .min(1)
   .max(65535)
   .parse(process.env.PORT ?? 8080);
-const workConfig = process.env.KAENO_WORK_CONFIG
-  ? await loadWorkConfig(process.env.KAENO_WORK_CONFIG)
-  : {
-      maxDepth: 1,
-      templates: {
-        worker: {
-          name: "worker",
-          description: "General-purpose local coding and research worker",
-          model: config.model,
-          instructions: config.instructions,
-          delegates: [],
-          skills: [],
-        },
-      },
-    };
+
 const limits = {
   cpus: z.coerce
     .number()
@@ -46,21 +58,23 @@ const limits = {
     .positive()
     .parse(process.env.KAENO_WORK_MEMORY_BYTES ?? 1_073_741_824),
 };
-const extensions = createWorkExtensions({
-  config: workConfig,
-  sandbox: new DockerSandboxProvider({
-    apiHost: process.env.KAENO_SANDBOX_API_HOST ?? "127.0.0.1",
-    createEnvironment: ({ url, token, id, cwd, fetch }) =>
-      new RemoteExecutionEnv(url, token, id, cwd, fetch),
-  }),
-  sandboxImage: process.env.KAENO_SANDBOX_IMAGE ?? "kaeno:local",
-  sandboxLimits: limits,
-  maxConcurrent: z.coerce
-    .number()
-    .int()
-    .positive()
-    .parse(process.env.KAENO_WORK_MAX_CONCURRENT ?? 4),
-});
+if (configuration.work) {
+  configuration.work.environment = new SandboxWorkEnvironment({
+    sandbox: new DockerSandboxProvider({
+      namespace:
+        process.env.KAENO_SANDBOX_NAMESPACE ??
+        createHash("sha256")
+          .update(resolve(process.env.KAENO_DB ?? "/data/kaeno.sqlite"))
+          .digest("hex")
+          .slice(0, 16),
+      apiHost: process.env.KAENO_SANDBOX_API_HOST ?? "127.0.0.1",
+      createEnvironment: ({ url, token, id, cwd, fetch }) =>
+        new RemoteExecutionEnv(url, token, id, cwd, fetch),
+    }),
+    image: process.env.KAENO_SANDBOX_IMAGE ?? "kaeno:local",
+    limits,
+  });
+}
 const models = createModels();
 models.setProvider(anthropicProvider());
 models.setProvider(openaiProvider());
@@ -70,8 +84,9 @@ const core = await openKaeno({
     process.env.KAENO_DB ?? "/data/kaeno.sqlite",
   ),
   models,
-  assistant: config,
-  extensions,
+  assistant: configuration.assistant,
+  extensions: configuration.extensions,
+  work: configuration.work,
   onReport: (error) => console.error("harness:", error),
 });
 let server: ApiServer["server"] | undefined;

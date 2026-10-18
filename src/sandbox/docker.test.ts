@@ -14,7 +14,7 @@ const options: SandboxOptions = {
 };
 const labels = {
   "kaeno.io/managed-work": "true",
-  "kaeno.io/work-id": sandbox.id,
+  "kaeno.io/work-id": `default-${sandbox.id}`,
   "kaeno.io/work-image": sandbox.image,
   "kaeno.io/token-sha256":
     "97daac0ee9998dfcad6c9c0970da5ca411c86233a944c25b47566f6a7bc1ddd5",
@@ -46,7 +46,7 @@ function engineStub(): DockerEngine & {
     }),
     create: vi.fn<DockerEngine["create"]>(async (name, identity) => {
       containers.set(name, { running: false, labels });
-      expect(identity).toEqual(sandbox);
+      expect(identity).toEqual({ ...sandbox, id: `default-${sandbox.id}` });
     }),
     start: vi.fn<DockerEngine["start"]>(async (name) => {
       const container = containers.get(name);
@@ -95,7 +95,7 @@ it("creates and starts a managed sandbox idempotently", async () => {
 
 it("refuses to adopt a container whose persisted identity does not match", async () => {
   const engine = engineStub();
-  engine.containers.set("kaeno-work-work-42", {
+  engine.containers.set("kaeno-work-default-work-42", {
     running: true,
     labels: { ...labels, "kaeno.io/token-sha256": "wrong" },
   });
@@ -111,10 +111,17 @@ it("refuses to adopt a container whose persisted identity does not match", async
 
 it("removes stale managed containers but preserves active work", async () => {
   const engine = engineStub();
-  engine.containers.set("kaeno-work-work-42", { running: true, labels });
-  engine.containers.set("kaeno-work-work-43", {
+  engine.containers.set("kaeno-work-default-work-42", {
     running: true,
-    labels: { ...labels, "kaeno.io/work-id": "work-43" },
+    labels,
+  });
+  engine.containers.set("kaeno-work-default-work-43", {
+    running: true,
+    labels: { ...labels, "kaeno.io/work-id": "default-work-43" },
+  });
+  engine.containers.set("kaeno-work-other-work-43", {
+    running: true,
+    labels: { ...labels, "kaeno.io/work-id": "other-work-43" },
   });
   const provider = new DockerSandboxProvider({
     engine,
@@ -125,7 +132,7 @@ it("removes stale managed containers but preserves active work", async () => {
 
   expect(engine.remove).toHaveBeenCalledTimes(1);
   expect(engine.remove).toHaveBeenCalledWith(
-    "kaeno-work-work-43",
-    "kaeno-workspace-work-43",
+    "kaeno-work-default-work-43",
+    "kaeno-workspace-default-work-43",
   );
 });

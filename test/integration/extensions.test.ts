@@ -144,7 +144,7 @@ it("composes native tools/tasks/docs, transactional channel ingress and delivery
     core = await openKaeno({
       storage: await openNodeSqliteStorage(path),
       models,
-      assistant,
+      assistant: { ...assistant, tools: [tool.name] },
       extensions: [extension, service("second")],
     });
     const opened = core;
@@ -201,21 +201,22 @@ it("composes native tools/tasks/docs, transactional channel ingress and delivery
       lifecycle.indexOf("close:second"),
     );
 
-    const startsBeforePreflight = lifecycle.length;
+    // A selected tool's owning extension is a saved conversation dependency. Removing it fails before resume.
     await expect(
       openKaeno({
         storage: await openNodeSqliteStorage(path),
         models,
-        assistant,
-        extensions: [extension],
+        assistant: { ...assistant, tools: [tool.name] },
+        extensions: [service("second")],
       }),
-    ).rejects.toThrow('missing extension "second"');
-    expect(lifecycle).toHaveLength(startsBeforePreflight);
+    ).rejects.toThrow(
+      'Assistant: tool "extension_execute" is not available here',
+    );
 
     core = await openKaeno({
       storage: await openNodeSqliteStorage(path),
       models,
-      assistant,
+      assistant: { ...assistant, tools: [tool.name] },
       extensions: [extension, service("second")],
     });
     expect(await core.threads.getOrCreateConversation("channel:room")).toBe(id);

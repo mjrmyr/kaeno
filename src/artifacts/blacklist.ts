@@ -1,4 +1,5 @@
-import { SKILL_ROOT } from "../skills/index.ts";
+/** Projected skill trees are read-only inputs, never workspace output. */
+const SKILL_ROOT = "/workspace/.agents/skills";
 
 /** Sandbox directories captured per run, keyed by their sandbox-absolute mount points. */
 export const WORKSPACE_ROOT = "/workspace";
