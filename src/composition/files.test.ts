@@ -85,8 +85,65 @@ it("uses ~/.kaeno when there is no project override and still works without work
     modelId: "home",
   });
   expect(config.work?.participants.list()).toEqual([]);
-  expect(config.assistant.tools).toEqual([]);
+  expect(config.assistant.tools).toEqual([
+    "start_work",
+    "list_work",
+    "inspect_work",
+    "message_work",
+    "cancel_work",
+  ]);
 });
+it("keeps delegation independent of skills and unavailable worker definitions", async () => {
+  const project = await root();
+  const home = await root();
+  await put(
+    join(home, ".kaeno/AGENT.md"),
+    agent("kaeno", "Assistant", "openai/home"),
+  );
+  await put(join(home, ".kaeno/skills/guide/SKILL.md"), skill("guide"));
+  await put(
+    join(home, ".agents/agents/broken/AGENT.md"),
+    agent("broken", "Unavailable worker").replace(
+      "---\nPrompt",
+      "tools: [missing_tool]\n---\nPrompt",
+    ),
+  );
+  const config = await loadFileEnvironment({ root: project, home });
+  expect(config.assistant.tools).toEqual([
+    "start_work",
+    "list_work",
+    "inspect_work",
+    "message_work",
+    "cancel_work",
+    "read_skill",
+  ]);
+  expect(config.work?.participants.list()).toMatchObject([
+    {
+      id: "global:broken",
+      available: false,
+      reason: expect.stringContaining("missing_tool"),
+    },
+  ]);
+  expect(config.assistant.bindings?.[0]).toMatchObject({
+    owner: "kaeno-skills",
+  });
+});
+it.each(["[]", "[list_work]"])(
+  "respects an explicit assistant tool selection %s with no agents",
+  async (tools) => {
+    const project = await root();
+    const home = await root();
+    await put(
+      join(home, ".kaeno/AGENT.md"),
+      agent("kaeno", "Assistant", "openai/home").replace(
+        "---\nPrompt",
+        `tools: ${tools}\n---\nPrompt`,
+      ),
+    );
+    const config = await loadFileEnvironment({ root: project, home });
+    expect(config.assistant.tools).toEqual(tools === "[]" ? [] : ["list_work"]);
+  },
+);
 it("keeps same-name agents distinct across home and project sources", async () => {
   const project = await root();
   const home = await root();

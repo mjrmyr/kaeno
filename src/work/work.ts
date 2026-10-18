@@ -823,22 +823,37 @@ export class Work {
   }
   /** Model-facing guidance for CHAT, listing every participant it may start. */
   describeForChat(): string {
-    const available = this.settings.participants
-      .list()
-      .filter((participant) => participant.available);
+    const participants = this.settings.participants.list();
+    const available = participants.filter(
+      (participant) => participant.available,
+    );
+    const unavailable = participants.filter(
+      (participant) => !participant.available,
+    );
     return [
-      "Delegate substantial or parallelizable work with start_work rather than attempting it yourself.",
+      "You support delegation with start_work. Delegate substantial or parallelizable work when an agent is available.",
       "Use a complete, self-contained brief. Work runs asynchronously; continue responding instead of waiting for it.",
       "Use list_work and inspect_work for progress, message_work for clarification, and cancel_work to stop work.",
       "Available agents (use the ID with start_work):",
-      describeParticipants(available) || "- none",
+      describeParticipants(available) ||
+        (participants.length === 0
+          ? "No worker agents are configured. You cannot start new work until an agent is configured; this does not remove your delegation capability or prevent managing existing work."
+          : "No configured worker agents are currently available. You cannot start new work until an agent's configuration is fixed."),
+      ...unavailable.map(
+        (participant) =>
+          `Unavailable agent ${participant.id}: ${participant.reason ?? "unavailable"}`,
+      ),
     ].join("\n");
   }
   /** Pure: resolve and validate a root plan from the participants loaded at startup. */
   private prepareRootPlan(requested: string): WorkPlan {
-    const ids = this.settings.participants
-      .list()
-      .map((participant) => participant.id);
+    const participants = this.settings.participants.list();
+    if (participants.length === 0) {
+      throw new Error(
+        "No worker agents are configured. Configure at least one available agent before starting work. You can still list, inspect, message or cancel existing work.",
+      );
+    }
+    const ids = participants.map((participant) => participant.id);
     const plan = readPlan(
       this.settings.participants.plan(resolveParticipantId(requested, ids)),
     );

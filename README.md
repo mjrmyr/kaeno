@@ -31,7 +31,9 @@ export KAENO_DB="$PWD/kaeno.sqlite"
 npm start
 ```
 
-To enable WORK, install at least one worker definition. For example:
+Kaeno has WORK orchestration tools by default, independently of its assigned skills or configured workers. With no workers configured, it can explain why it cannot delegate and still manage existing work. Explicit `tools` lists remain authoritative.
+
+To give Kaeno an agent it can delegate to, install a worker definition. For example:
 
 ```sh
 mkdir -p ~/.agents/agents/coder

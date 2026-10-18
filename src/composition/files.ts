@@ -161,9 +161,7 @@ export async function loadFileEnvironment(
     definition,
     {
       model: defaultModel,
-      tools: participants.list().some((participant) => participant.available)
-        ? ORCHESTRATION
-        : [],
+      tools: ORCHESTRATION,
     },
     skillBinder(assistantSkills),
   );
@@ -179,7 +177,8 @@ export async function loadFileEnvironment(
     assistant,
     extensions: [{ durable: CodingTools }, skillsExtension()],
     // Keep fixed WORK definitions installed even when a source disappears. The empty catalog
-    // prevents new launches, while saved trees remain recoverable. No tools are implicitly offered.
+    // prevents new launches, while saved trees remain recoverable. Assistant orchestration tools
+    // stay available independently of the catalog; explicit tool selections remain authoritative.
     work: {
       participants,
       environment: options.environment,

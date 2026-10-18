@@ -161,6 +161,115 @@ it("runs all-to-all delegation through core-only participant plans, keeps frozen
   }
 });
 
+it.each([false, true])(
+  "keeps orchestration usable and explains failed delegation with unavailable definitions (%s)",
+  async (configured) => {
+    const faux = fauxProvider();
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const model = { provider: "faux", modelId: "faux-1" };
+    const failure = configured
+      ? "Agent broken is unavailable: tools are not installed/approved: missing_tool"
+      : "No worker agents are configured";
+    const plan = vi.fn<Participants["plan"]>(() => {
+      throw new Error(failure);
+    });
+    const tools = [
+      "start_work",
+      "list_work",
+      "inspect_work",
+      "message_work",
+      "cancel_work",
+    ];
+    let observedFailure = false;
+    faux.setResponses([
+      async (request) => {
+        const prompt = getCurrentSystemPrompt(request.messages);
+        expect(prompt).toContain("You support delegation with start_work");
+        expect(prompt).toContain(
+          configured
+            ? "Unavailable agent broken: tools are not installed/approved: missing_tool"
+            : "No worker agents are configured",
+        );
+        return fauxAssistantMessage(
+          [
+            fauxToolCall("start_work", {
+              agent: "broken",
+              title: "Attempt",
+              brief: "Delegate",
+            }),
+            fauxToolCall("list_work", {}),
+          ],
+          { stopReason: "toolUse" },
+        );
+      },
+      async (request) => {
+        const results = request.messages.filter(
+          (message) => message.role === "toolResult",
+        );
+        expect(results).toHaveLength(2);
+        expect(JSON.stringify(results)).toContain(failure);
+        expect(JSON.stringify(results)).toContain('"text":"[]"');
+        observedFailure = true;
+        return fauxAssistantMessage(
+          "I support delegation, but no worker can run yet.",
+        );
+      },
+    ]);
+    const core = await openKaeno({
+      storage: new MemoryStorage(),
+      models,
+      assistant: { model, instructions: "CHAT", tools },
+      work: {
+        participants: {
+          list: () =>
+            configured
+              ? [
+                  {
+                    id: "broken",
+                    description: "Broken worker",
+                    available: false,
+                    reason: "tools are not installed/approved: missing_tool",
+                  },
+                ]
+              : [],
+          plan,
+        },
+        tools: [],
+      },
+    });
+    try {
+      const id = await core.threads.getOrCreateConversation(
+        "no-available-workers",
+      );
+      expect(
+        (await core.harness.snapshot(AgentDoc, id, context))?.tools,
+      ).toEqual(tools);
+      const task = await core.harness.commit(
+        (tx) => core.turns.admitUserTurn(tx, id, "Delegate this", "delegate"),
+        context,
+      );
+      await core.harness.waitForTask(task, context);
+      expect(observedFailure).toBe(true);
+      expect(plan).toHaveBeenCalledTimes(configured ? 1 : 0);
+      expect(
+        (await core.turns.readReplies(id, 0)).replies.map(
+          (reply) => reply.text,
+        ),
+      ).toContain("I support delegation, but no worker can run yet.");
+      const tasks = await core.harness.commit(
+        (tx) => tx.scanTasks({}, 100),
+        context,
+      );
+      expect(tasks.items.filter((task) => task.kind === "kaeno.work")).toEqual(
+        [],
+      );
+    } finally {
+      await core.close();
+    }
+  },
+);
+
 it("fails paused preflight when an approved tool disappears from a saved unfinished tree", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-plan-recovery-"));
   const path = join(directory, "db.sqlite");
