@@ -110,7 +110,7 @@ it("rejects core and extension imports that cross layer boundaries", async () =>
     );
     await writeFile(
       join(directory, "src/core/work/index.ts"),
-      'import type { Definition } from "../../extensions/agents/index.ts"; export interface Work { definition: Definition }',
+      'import { readFile } from "node:fs/promises"; import type { Definition } from "../../extensions/agents/index.ts"; export interface Work { definition: Definition } export const read = readFile; export const load = () => import("yaml");',
     );
     await writeFile(
       join(directory, "src/core/application/index.ts"),
@@ -151,6 +151,9 @@ it("rejects core and extension imports that cross layer boundaries", async () =>
       'Use the WORK name constants from core instead of the literal "start_work".',
     );
     expect(result).not.toContain("src/core/work/tools.ts:1");
+    expect(
+      result.match(/Core cannot read files or definition formats/g),
+    ).toHaveLength(2);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

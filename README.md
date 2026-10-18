@@ -7,7 +7,7 @@
 > -> should explain the principles, and primitives used
 > how to get kaeno up and running?
 
-Kaeno is a small, self-hosted durable conversation and work host. Threads, turns, activity reports, cancellation fences and WORK orchestration use one pi-durable runtime. Agent and skill definitions are optional Markdown-based extensions; the durable core does not parse their files or own their catalogs.
+Kaeno is a small, self-hosted durable conversation and work host. Threads, turns, activity reports, cancellation fences and WORK orchestration use one pi-durable runtime. Agents are a core concept: WORK stores the agent each work runs as and the plan frozen at root admission, and resolves agent names. Where agents and skills come from is not: Markdown and repository definitions, catalogs and skills are extensions, and the durable core never reads their files.
 
 The CLI loads one owner configuration using `KAENO_CONFIG` (default `.kaeno/config.json`). It names public GitHub repositories and explicitly selects Kaeno, its skills, and available workers. Repository fetching and the immutable cache are host-side. Local source definitions use the same catalog and loader; the only deployment difference is the persistent storage directory (ordinary disk locally, PVC on Kubernetes).
 

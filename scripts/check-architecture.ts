@@ -93,6 +93,23 @@ for (const statement of program.getSourceFile(workToolsFile)?.statements ??
   }
 }
 const workDirectory = resolve(root, "src/core/work") + sep;
+// Core never reads files or definition formats: recovery must work with every source deleted.
+const coreForbiddenModules = new Set([
+  "fs",
+  "fs/promises",
+  "node:fs",
+  "node:fs/promises",
+  "yaml",
+]);
+function isForbiddenDynamicImport(node: ts.Node): boolean {
+  return (
+    ts.isCallExpression(node) &&
+    node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+    node.arguments[0] !== undefined &&
+    ts.isStringLiteral(node.arguments[0]) &&
+    coreForbiddenModules.has(node.arguments[0].text)
+  );
+}
 const paths = [
   ...(await filesIn(resolve(root, "src"))),
   ...(await filesIn(resolve(root, "scripts"))),
@@ -290,6 +307,20 @@ for (const path of paths) {
         file,
         node,
         "Public class methods require an explicit return type.",
+      );
+    }
+    if (
+      layer === "core" &&
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)
+        ? node.moduleSpecifier !== undefined &&
+          ts.isStringLiteral(node.moduleSpecifier) &&
+          coreForbiddenModules.has(node.moduleSpecifier.text)
+        : isForbiddenDynamicImport(node))
+    ) {
+      report(
+        file,
+        node,
+        "Core cannot read files or definition formats; load them in an extension or the host.",
       );
     }
     if (
