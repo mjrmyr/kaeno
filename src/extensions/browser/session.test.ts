@@ -46,9 +46,9 @@ it("reuses one sanitized isolated stdio session and removes its temporary direct
   expect(mocks.connect).toHaveBeenCalledTimes(1);
   const transport = mocks.transports[0];
   expect(transport.args).toEqual(
-    expect.arrayContaining(["--sandbox", "--isolated"]),
+    expect.arrayContaining(["--no-sandbox", "--isolated"]),
   );
-  expect(transport.args).not.toContain("--no-sandbox");
+  expect(transport.args).not.toContain("--sandbox");
   expect(transport.args).not.toContain("--proxy-server");
   expect(transport.args).not.toContain("--proxy-bypass");
   const environment = transport.env;

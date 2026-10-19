@@ -1,6 +1,6 @@
 # Browser in Kubernetes: deployment decision
 
-## Recommendation and approval gate
+## Selected design and approved security tradeoff
 
 Keep the existing official MCP **stdio process in each WORK container**. No proxy, browser
 service, sidecar, extra mandatory environment variable or custom node security machinery.
@@ -9,15 +9,13 @@ have been removed. The direct local `browser_close` teardown fix and regression 
 
 The pragmatic way to make Chromium run under the observed namespace-denying WORK policy is
 **explicitly disable the Chromium sandbox inside the existing restricted WORK container**.
-This is a recommendation awaiting owner approval, **not implemented or enabled here**.
-Current code still passes `--sandbox` and fails closed. Simply deleting that flag would also
-change the security posture with this pinned Chromium configuration; that is not a safe fix.
+The owner explicitly approved this tradeoff: “yeah we will start with this tradeoff”.
+The MCP invocation now passes explicit `--no-sandbox`, not an implicit default or a fallback.
+No other pod/node/network/privilege settings change. This approval is not deployment approval.
 
-**Decision requested:** may WORK Chromium use explicit `--no-sandbox`, accepting that a
-compromised renderer can access the WORK process identity, files and network (including
-loopback), rather than being contained by Chromium's renderer sandbox? If approved, the
-minimal follow-up is a single explicit MCP argument replacement plus its test/documentation;
-no node changes or new configuration system are needed. Approval is not deployment approval.
+A compromised renderer can access the WORK process identity, files and network (including
+loopback), rather than being contained by Chromium's renderer sandbox. This is a deliberate
+reduction in defense in depth, not a claim that pod isolation provides equivalent security.
 
 The agent already has bash as the same non-root identity in an ephemeral, read-only-root,
 capability-dropped, no-privilege-escalation WORK pod with no service-account token. That makes
@@ -30,11 +28,11 @@ credentials. Envd bearer authentication, WORK-only exposure and cleanup must rem
 
 ## Three practical choices
 
-| Choice                                                         | Benefit                                                                                                     | Cost / security limit                                                                                                                                                                                                                                                                                                                      |
-| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Official MCP/browser image, same container or sidecar          | Maintained browser dependencies and headless stdio/HTTP entrypoint                                          | Does not override node seccomp/AppArmor/userns denial. The official MCP image explicitly uses `--no-sandbox`. A sidecar shares pod networking; separate container files/process visibility depend on pod settings. Kaeno currently assumes exactly one WORK execution container for identity/quota; adding a sidecar is not a drop-in fix. |
-| **Existing WORK + explicit `--no-sandbox` (approval pending)** | Smallest operational change; retains existing authenticated envd transport, per-WORK state and pod teardown | Removes Chromium renderer sandbox, retains only outer WORK containment. Not appropriate if hostile pages must be isolated from WORK files/processes. No silent fallback.                                                                                                                                                                   |
-| Dedicated remote browser pod/service                           | Can put browser compromise outside the credential-bearing WORK filesystem/process boundary                  | Needs endpoint, lifecycle, authentication/network restriction and per-WORK browser/context isolation. Remote host still needs sandbox-compatible policy or knowingly relies on its own container/VM boundary. More infrastructure; reserve for a requirement to isolate web content from WORK itself.                                      |
+| Choice                                                               | Benefit                                                                                                     | Cost / security limit                                                                                                                                                                                                                                                                                                                      |
+| -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Official MCP/browser image, same container or sidecar                | Maintained browser dependencies and headless stdio/HTTP entrypoint                                          | Does not override node seccomp/AppArmor/userns denial. The official MCP image explicitly uses `--no-sandbox`. A sidecar shares pod networking; separate container files/process visibility depend on pod settings. Kaeno currently assumes exactly one WORK execution container for identity/quota; adding a sidecar is not a drop-in fix. |
+| **Existing WORK + explicit `--no-sandbox` (chosen; owner approved)** | Smallest operational change; retains existing authenticated envd transport, per-WORK state and pod teardown | Removes Chromium renderer sandbox, retains only outer WORK containment. Not appropriate if hostile pages must be isolated from WORK files/processes. No silent fallback.                                                                                                                                                                   |
+| Dedicated remote browser pod/service                                 | Can put browser compromise outside the credential-bearing WORK filesystem/process boundary                  | Needs endpoint, lifecycle, authentication/network restriction and per-WORK browser/context isolation. Remote host still needs sandbox-compatible policy or knowingly relies on its own container/VM boundary. More infrastructure; reserve for a requirement to isolate web content from WORK itself.                                      |
 
 A sandbox-preserving same-pod solution still needs a compatible host/runtime policy. An
 image swap alone cannot supply it. We do not know the denying node rule and therefore do
@@ -79,7 +77,7 @@ Inspection of installed `playwright-core/lib/coreBundle.js` confirms:
 
 - CLI sandbox maps to `launchOptions.chromiumSandbox`. On Linux, unspecified sandbox defaults
   depend on channel; `chromium` and `chrome-for-testing` default false. Our explicit
-  `--browser chromium --sandbox` opts in. Do not generalize the default to all MCP browsers.
+  `--browser chromium --no-sandbox` disables it. Do not generalize the default to all MCP browsers.
 - `--endpoint` maps to `browser.remoteEndpoint` (Playwright connection); `--cdp-endpoint`
   uses `chromium.connectOverCDP`. CDP is Chromium-specific and is not the MCP HTTP endpoint.
   Remote launch policy belongs to the remote browser, not a client-side sandbox flag.
@@ -93,19 +91,25 @@ seccomp/AppArmor/sysctl rule denied it. No node audit logs or host policy were i
 
 `npm run browser:smoke` runs a small controlled loopback fixture through the actual
 BrowserSession: JavaScript, cross-navigation persistence, screenshot, direct close and
-finally cleanup. It never disables sandboxing, downloads a browser or changes pod policy.
+finally cleanup. It uses the explicitly approved `--no-sandbox` policy, never downloads a browser or changes
+pod policy.
 A failure before navigation is a failed release gate, not a network or JavaScript verdict.
 Unit tests cover repeated/unused/failed-launch close without forwarding upstream close,
 reconnect on the next action, cancellation, sanitized environment and directory removal.
 
-Fresh checks for this revision: `npm run verify` passed **37 files / 350 tests**, including
-TypeScript, lint, architecture and formatting checks. `npm run browser:smoke` reached the
-installed revision 1247 but failed before navigation with **No usable sandbox / SIGABRT**.
-Its temporary directory was removed; a subsequent `/proc/*/exe` inspection found no visible
-`/ms-playwright/` executables. No screenshot or successful JavaScript execution is claimed.
+Before approval, the sandboxed smoke reached installed revision 1247 but failed before
+navigation with **No usable sandbox / SIGABRT**. Its temporary directory was removed;
+`/proc/*/exe` inspection found no visible `/ms-playwright/` executables afterward.
 
-Before releasing either chosen runtime policy, validate real browser launch, screenshots,
-sibling-session isolation, cancellation/process cleanup and actual CNI egress/private-network
-restrictions in the candidate WORK pod. No live Kubernetes deployment or node changes are
-part of this revision. Until security approval and a passing runtime gate, close is fixed
-but browser navigation remains unavailable on the observed restricted runtime.
+With the approved explicit `--no-sandbox` argument, **`npm run browser:smoke` passed** in
+this WORK runtime using the real pinned MCP and installed Chromium revision 1247. It
+verified controlled JavaScript text, two navigations with persistent `window.name`, an actual
+PNG image block from the screenshot tool, direct close and repeated close in finally.
+Afterward, `/tmp/kaeno-browser-*` was empty and `/proc/*/exe` inspection found zero visible
+`/ms-playwright/` executables. `npm run verify` passed **37 test files / 350 tests**, including
+typecheck, lint, architecture and formatting; `git diff --check` passed.
+
+Live-cluster CNI restrictions, sibling WORK isolation, envd-auth/network boundaries, pod
+deletion and full real-browser cancellation lifecycle remain release gates, not properties
+proven by this loopback smoke. No live Kubernetes deployment, image build or node changes
+are part of this revision.

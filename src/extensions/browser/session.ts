@@ -91,7 +91,8 @@ export class BrowserSession {
             "--browser",
             "chromium",
             "--isolated",
-            "--sandbox",
+            // Owner-approved: restricted WORK pod is the outer boundary, not renderer isolation.
+            "--no-sandbox",
             "--no-webmcp",
             "--block-service-workers",
             "--codegen",

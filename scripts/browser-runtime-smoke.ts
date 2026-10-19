@@ -40,7 +40,7 @@ try {
   }
   await call("browser_close");
   console.log(
-    "PASS: sandboxed Chromium, controlled JavaScript, navigation persistence, screenshot, close",
+    "PASS: Chromium (renderer sandbox disabled; WORK outer boundary), controlled JavaScript, navigation persistence, screenshot, close",
   );
 } finally {
   try {
