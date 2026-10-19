@@ -80,6 +80,8 @@ export interface LoadEnvironmentOptions {
   defaultModel?: ModelRef;
   extensions?: readonly KaenoExtension[];
   tools?: readonly string[];
+  /** Sandbox-only tools, never offered to the assistant by default. */
+  workerTools?: readonly string[];
   /** Extension data every selected agent carries (e.g. a GitHub installation). */
   bindings?: readonly Binding[];
   skillsFor?: (
@@ -172,14 +174,24 @@ export async function loadEnvironment(
         bindings,
       );
       const workerTools = [
-        ...new Set([...WORKER_TOOLS, ...SKILL_TOOLS, ...(options.tools ?? [])]),
+        ...new Set([
+          ...WORKER_TOOLS,
+          ...SKILL_TOOLS,
+          ...(options.tools ?? []),
+          ...(options.workerTools ?? []),
+        ]),
       ];
       // Selected workers must resolve; tool and binding fit is checked by core when Kaeno opens.
       const agents = resolveAgents({
         agents: workerDefinitions,
         defaults: {
           ...defaults,
-          tools: [...WORKER_TOOLS, ...(options.tools ?? []), ...SKILL_TOOLS],
+          tools: [
+            ...WORKER_TOOLS,
+            ...(options.tools ?? []),
+            ...(options.workerTools ?? []),
+            ...SKILL_TOOLS,
+          ],
         },
         skills: (agent) => binderFor(agent, "worker"),
         bindings,

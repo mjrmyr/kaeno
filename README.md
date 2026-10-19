@@ -65,3 +65,13 @@ See the [core entry point](src/core/application/index.ts), [WORK implementation]
 ```sh
 npm run verify
 ```
+
+### WORK browser tools
+
+The official Playwright MCP integration exposes browser tools directly to worker models,
+with one isolated stdio session inside each WORK sandbox. Browser tools are included in WORK
+defaults; explicit agent tool lists remain authoritative, and host execution is forbidden.
+No browser proxy service or opt-in environment variable is required. See
+[browser MCP prerequisites and lifecycle](docs/browser-mcp.md) for the existing WORK network
+boundary, its limitations, and sandboxed Chromium runtime requirements. No deployment security
+settings are relaxed automatically.

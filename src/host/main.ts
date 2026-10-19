@@ -21,11 +21,19 @@ import {
   SandboxWorkEnvironment,
 } from "../extensions/docker/index.ts";
 
-const github = process.env.KAENO_GITHUB_CONFIG
-  ? await loadGitHubConfiguration(process.env.KAENO_GITHUB_CONFIG)
-  : {};
+import { browserExtension } from "../extensions/browser/index.ts";
+
+const browser = await browserExtension();
+const browserTools = browser.durable.tools?.map((tool) => tool.name) ?? [];
+const github: Partial<Awaited<ReturnType<typeof loadGitHubConfiguration>>> =
+  process.env.KAENO_GITHUB_CONFIG
+    ? await loadGitHubConfiguration(process.env.KAENO_GITHUB_CONFIG)
+    : {};
 const configuration = await loadEnvironment({
   ...github,
+  extensions: [...(github.extensions ?? []), browser],
+  tools: github.tools,
+  workerTools: browserTools,
   configFile: process.env.KAENO_CONFIG ?? ".kaeno/config.json",
   sourceMode: z
     .enum(["refresh", "offline"])
