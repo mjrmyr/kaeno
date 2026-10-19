@@ -112,11 +112,70 @@ it("resets when popups exceed the tab budget", async () => {
   await expect(session.call(input)).rejects.toThrow("8 tabs");
   expect(mocks.close).toHaveBeenCalledOnce();
 });
-it("does not reopen the browser to count tabs after close", async () => {
+it("does not initialize a session for repeated close calls", async () => {
   mocks.call.mockResolvedValue({ content: [] });
   const session = new BrowserSession();
-  await session.call({ ...input, name: "browser_close" });
-  expect(mocks.call).toHaveBeenCalledOnce();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await expect(
+      session.call({ ...input, name: "browser_close" }),
+    ).resolves.toEqual({ content: [] });
+  }
+  expect(mocks.transports).toHaveLength(0);
+  expect(mocks.connect).not.toHaveBeenCalled();
+  expect(mocks.call).not.toHaveBeenCalled();
+  expect(mocks.close).not.toHaveBeenCalled();
+});
+it.each(["connect", "call"] as const)(
+  "does not relaunch a session after %s fails",
+  async (operation) => {
+    mocks.call.mockResolvedValue({ content: [] });
+    mocks[operation].mockRejectedValueOnce(new Error("failed"));
+    const session = new BrowserSession();
+    await expect(session.call(input)).rejects.toThrow("failed");
+    expect(mocks.close).toHaveBeenCalledOnce();
+    const directory = String(mocks.transports[0].cwd);
+    expect(existsSync(directory)).toBe(false);
+    await expect(
+      session.call({ ...input, name: "browser_close" }),
+    ).resolves.toEqual({ content: [] });
+    expect(mocks.transports).toHaveLength(1);
+    expect(mocks.connect).toHaveBeenCalledOnce();
+    expect(mocks.call).toHaveBeenCalledTimes(operation === "call" ? 1 : 0);
+    expect(mocks.close).toHaveBeenCalledOnce();
+    expect(existsSync(directory)).toBe(false);
+  },
+);
+it("does not relaunch an explicitly disposed session for close", async () => {
+  mocks.call.mockResolvedValue({ content: [] });
+  const session = new BrowserSession();
+  await session.call(input);
+  await session.close();
+  mocks.call.mockClear();
+  await expect(
+    session.call({ ...input, name: "browser_close" }),
+  ).resolves.toEqual({ content: [] });
+  expect(mocks.transports).toHaveLength(1);
+  expect(mocks.connect).toHaveBeenCalledOnce();
+  expect(mocks.call).not.toHaveBeenCalled();
+  expect(mocks.close).toHaveBeenCalledOnce();
+});
+it("forwards close to an active session without reopening it to count tabs", async () => {
+  mocks.call.mockResolvedValue({ content: [] });
+  const session = new BrowserSession();
+  await session.call(input);
+  mocks.call.mockClear();
+  const result = { content: [{ type: "text", text: "Browser closed" }] };
+  mocks.call.mockResolvedValueOnce(result);
+  await expect(
+    session.call({ ...input, name: "browser_close" }),
+  ).resolves.toEqual(result);
+  expect(mocks.connect).toHaveBeenCalledOnce();
+  expect(mocks.call).toHaveBeenCalledExactlyOnceWith(
+    { name: "browser_close", arguments: {} },
+    undefined,
+    expect.objectContaining({ signal: expect.any(AbortSignal) }),
+  );
+  expect(mocks.close).not.toHaveBeenCalled();
   await session.close();
 });
 

@@ -69,6 +69,10 @@ export class BrowserSession {
       : deadline;
     try {
       cancellation.throwIfAborted();
+      // Closing an absent session must not start (or restart) Playwright MCP.
+      if (input.name === "browser_close" && !this.client) {
+        return { content: [] };
+      }
       if (!this.client) {
         this.directory = await mkdtemp(join(tmpdir(), "kaeno-browser-"));
         const transport = new StdioClientTransport({
