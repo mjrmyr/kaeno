@@ -1,5 +1,7 @@
 # Repository-backed agent and skill definitions
 
+**Agent layout follow-up (proposed):** [Flat agent records](flat-agent-records.md) proposes replacing agent directory packages with validated flat Markdown records. It does not change the runtime yet; skill packages and the source/authority/frozen-work contracts below remain unchanged.
+
 **Status: implemented in the current working tree and homelab PR #11.** This replaces the init-container-centric approach. Local Kaeno, Docker hosts, and Kubernetes use the same loader. The source runtime remains local/unpublished; the homelab PR stays suspended and pinned to the legacy image until a compatible image is deliberately published.
 
 ## Problem
