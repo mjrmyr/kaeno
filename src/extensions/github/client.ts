@@ -1,5 +1,20 @@
 import { createPrivateKey, sign, type KeyObject } from "node:crypto";
 import { z } from "zod";
+import {
+  annotationSchema,
+  boundedLog,
+  checkSchema,
+  jobSchema,
+  logLocation,
+  pageQuery,
+  pageResult,
+  pullDetailsSchema,
+  runSchema,
+  statusSchema,
+  type GitHubPage,
+  type GitHubPageResult,
+  type GitHubLog,
+} from "./diagnostics.ts";
 
 const repositorySchema = z.object({
   id: z.number().int().positive(),
@@ -70,6 +85,10 @@ export class GitHubClient {
       signal: signal
         ? AbortSignal.any([signal, AbortSignal.timeout(60_000)])
         : AbortSignal.timeout(60_000),
+    }).catch(() => {
+      throw new Error(
+        "GitHub: request failed or timed out; retry or check installation access",
+      );
     });
     if (!response.ok) {
       await response.body?.cancel();
@@ -77,7 +96,9 @@ export class GitHubClient {
         `GitHub API HTTP ${response.status}; check installation access and repository permissions`,
       );
     }
-    return response.json();
+    return response.json().catch(() => {
+      throw new Error("GitHub: invalid API response");
+    });
   }
 
   async token(
@@ -128,6 +149,185 @@ export class GitHubClient {
       throw new Error("GitHub returned a different repository");
     }
     return repository;
+  }
+
+  async pull(
+    token: string,
+    repository: GitHubRepository,
+    number: number,
+    signal?: AbortSignal,
+  ): Promise<z.infer<typeof pullDetailsSchema>> {
+    return pullDetailsSchema.parse(
+      await this.request(
+        `/repos/${repository.full_name}/pulls/${number}`,
+        token,
+        signal,
+      ),
+    );
+  }
+
+  async checks(
+    token: string,
+    repository: GitHubRepository,
+    sha: string,
+    page: GitHubPage,
+    signal?: AbortSignal,
+  ): Promise<GitHubPageResult<z.infer<typeof checkSchema>>> {
+    const result = z
+      .object({
+        total_count: z.number(),
+        check_runs: z.array(checkSchema).max(page.perPage),
+      })
+      .parse(
+        await this.request(
+          `/repos/${repository.full_name}/commits/${sha}/check-runs?${pageQuery(page)}`,
+          token,
+          signal,
+        ),
+      );
+    return pageResult(result.check_runs, page, result.total_count);
+  }
+
+  async annotations(
+    token: string,
+    repository: GitHubRepository,
+    check: number,
+    page: GitHubPage,
+    signal?: AbortSignal,
+  ): Promise<GitHubPageResult<z.infer<typeof annotationSchema>>> {
+    const items = z
+      .array(annotationSchema)
+      .max(page.perPage)
+      .parse(
+        await this.request(
+          `/repos/${repository.full_name}/check-runs/${check}/annotations?${pageQuery(page)}`,
+          token,
+          signal,
+        ),
+      );
+    return pageResult(items, page);
+  }
+
+  async statuses(
+    token: string,
+    repository: GitHubRepository,
+    sha: string,
+    page: GitHubPage,
+    signal?: AbortSignal,
+  ): Promise<GitHubPageResult<z.infer<typeof statusSchema>>> {
+    const items = z
+      .array(statusSchema)
+      .max(page.perPage)
+      .parse(
+        await this.request(
+          `/repos/${repository.full_name}/commits/${sha}/statuses?${pageQuery(page)}`,
+          token,
+          signal,
+        ),
+      );
+    return pageResult(items, page);
+  }
+
+  async runs(
+    token: string,
+    repository: GitHubRepository,
+    sha: string | undefined,
+    page: GitHubPage,
+    signal?: AbortSignal,
+  ): Promise<GitHubPageResult<z.infer<typeof runSchema>>> {
+    const query = pageQuery(page);
+    if (sha) {
+      query.set("head_sha", sha);
+    }
+    const result = z
+      .object({
+        total_count: z.number(),
+        workflow_runs: z.array(runSchema).max(page.perPage),
+      })
+      .parse(
+        await this.request(
+          `/repos/${repository.full_name}/actions/runs?${query}`,
+          token,
+          signal,
+        ),
+      );
+    return pageResult(result.workflow_runs, page, result.total_count);
+  }
+
+  async jobs(
+    token: string,
+    repository: GitHubRepository,
+    run: number,
+    page: GitHubPage,
+    signal?: AbortSignal,
+  ): Promise<GitHubPageResult<z.infer<typeof jobSchema>>> {
+    const result = z
+      .object({
+        total_count: z.number(),
+        jobs: z.array(jobSchema).max(page.perPage),
+      })
+      .parse(
+        await this.request(
+          `/repos/${repository.full_name}/actions/runs/${run}/jobs?${pageQuery(page)}`,
+          token,
+          signal,
+        ),
+      );
+    return pageResult(result.jobs, page, result.total_count);
+  }
+
+  async logs(
+    token: string,
+    repository: GitHubRepository,
+    job: number,
+    maxBytes: number,
+    signal?: AbortSignal,
+  ): Promise<GitHubLog & { untrusted: boolean }> {
+    const timeout = signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(60_000)])
+      : AbortSignal.timeout(60_000);
+    try {
+      const response = await this.fetch(
+        `https://api.github.com/repos/${repository.full_name}/actions/jobs/${job}/logs`,
+        {
+          redirect: "manual",
+          headers: {
+            authorization: `Bearer ${token}`,
+            accept: "application/vnd.github+json",
+            "x-github-api-version": "2022-11-28",
+            "user-agent": "kaeno-github",
+          },
+          signal: timeout,
+        },
+      );
+      if (response.status !== 302) {
+        await response.body?.cancel();
+        throw new Error(`GitHub logs HTTP ${response.status}`);
+      }
+      const location = response.headers.get("location");
+      await response.body?.cancel();
+      const url = logLocation(location);
+      // Signed storage URL only. Never forward installation credentials or follow another redirect.
+      const download = await this.fetch(url, {
+        redirect: "error",
+        signal: timeout,
+      });
+      if (!download.ok) {
+        await download.body?.cancel();
+        throw new Error(`GitHub logs HTTP ${download.status}`);
+      }
+      const result = await boundedLog(download, maxBytes);
+      return {
+        ...result,
+        text: result.text.split(token).join("[REDACTED]"),
+        untrusted: true,
+      };
+    } catch {
+      // Fetch errors can include signed URLs. Do not surface them, response bodies, or credentials.
+      throw new Error(
+        "GitHub: unable to retrieve job logs; check installation Actions read permission, job ID, and log retention (or retry if unavailable)",
+      );
+    }
   }
 
   async findDraftPull(
