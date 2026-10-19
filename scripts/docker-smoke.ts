@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
+import { readyDockerHostUrl } from "./infrastructure-smoke-transport.ts";
 import { DockerSandboxProvider } from "../src/extensions/docker/index.ts";
 import { RemoteExecutionEnv } from "../src/extensions/execution/index.ts";
 
@@ -188,19 +189,12 @@ try {
     await docker("inspect", "--format", "{{.Image}}", host),
     imageId,
   );
-  const published = await docker("port", host, "8080/tcp");
-  const url = `http://${published.split("\n")[0]}`;
-  await poll(async () => {
-    assert.equal(
-      await docker("inspect", "--format", "{{.State.Running}}", host),
-      "true",
-      "normal image entrypoint exited",
-    );
-    return fetch(`${url}/healthz`, { signal: AbortSignal.timeout(2_000) }).then(
-      (response) => response.ok,
-      () => false,
-    );
-  }, "normal host API readiness");
+  let url: string | undefined;
+  async function hostReady(): Promise<boolean> {
+    url = await readyDockerHostUrl(docker, host);
+    return url !== undefined;
+  }
+  await poll(hostReady, "normal host API readiness");
   assert.equal(
     (await fetch(`${url}/v1/threads`, { signal: AbortSignal.timeout(5_000) }))
       .status,
@@ -216,14 +210,7 @@ try {
   ).text();
   await docker("exec", host, "test", "-s", "/data/kaeno.sqlite");
   await docker("restart", "--time", "10", host);
-  await poll(
-    async () =>
-      fetch(`${url}/healthz`, { signal: AbortSignal.timeout(2_000) }).then(
-        (response) => response.ok,
-        () => false,
-      ),
-    "restarted host API",
-  );
+  await poll(hostReady, "restarted host API");
   assert.equal(
     await (
       await fetch(`${url}/v1/threads`, { signal: AbortSignal.timeout(5_000) })
