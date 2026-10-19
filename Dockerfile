@@ -12,6 +12,7 @@ RUN npm ci --omit=dev --ignore-scripts \
  && mkdir -p /data /workspace /home/agent \
  && chown -R node:node /data /workspace /home/agent
 COPY src ./src
+COPY scripts/browser-runtime-smoke.ts ./scripts/browser-runtime-smoke.ts
 USER node
 ENV KAENO_DB=/data/kaeno.sqlite
 ENV KAENO_AUTH_FILE=/data/auth.json

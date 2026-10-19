@@ -15,7 +15,9 @@ variable, deployment change, or privilege relaxation is introduced.
    filesystem and credential boundary. Rejected.
 
 Laziness protocol: reuse tool registration, remote execution, cancellation and WORK sandbox
-removal; no browser runner scripts, vendored seccomp policy or general MCP framework.
+removal; no vendored seccomp policy or general MCP framework.
+The restricted-runtime diagnostic/smoke command is documented in
+[browser-runtime-gate.md](browser-runtime-gate.md).
 Boundary discipline: validate the envd request and MCP result at their entry points.
 
 The host always registers the extension; schema discovery does not launch Chromium.
@@ -59,7 +61,9 @@ are unchanged. Linux must permit unprivileged user namespaces and the necessary 
 syscalls under its seccomp/AppArmor policy. Some RuntimeDefault profiles prohibit them;
 those deployments will fail browser launch. An operator-reviewed, narrowly scoped Localhost
 seccomp/AppArmor policy may be necessary; no blanket privileged/unconfined fallback is supplied.
-This PR deliberately does not claim current production Kubernetes compatibility.
+Current production compatibility is not claimed. See the
+[restricted-runtime investigation and opt-in policy gate](browser-runtime-gate.md) for
+observed namespace denials, validated Localhost configuration support, and node prerequisites.
 
 The image installs Chromium and OS dependencies at build time using the **lockfile-pinned**
 Playwright CLI. `@playwright/mcp` is 0.0.83; its matching Playwright is
@@ -80,7 +84,8 @@ other processes under the same WORK identity.
 The envd singleton matters: remote environment objects are recreated per tool call. Keying
 sessions by transient RPC client ID would silently lose state. WORKs have separate envd
 pods/containers, so siblings cannot share the browser. State persists across calls, not WORK
-completion, server restart or idle expiry. Closing the browser preserves the MCP process.
+completion, server restart or idle expiry. Closing the browser tears down the MCP process locally; it never calls upstream close,
+which can initialize/relaunch Chromium even after a failed launch. Repeated close is a no-op.
 Cancellation/transport failure tears down the MCP process and temporary directory; the next
 call starts fresh. `/cleanup`, envd SIGTERM, and sandbox destruction also clean up. Stdio SDK
 shutdown escalates from close to TERM/KILL; pod deletion is the final process boundary.

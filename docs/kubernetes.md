@@ -113,3 +113,11 @@ The sandbox lifecycle, quota sizing, admission deadlock prevention, retry bounds
 Do not switch execution backends with unfinished work. Drain/cancel work and back up SQLite first. A database that has recorded Kubernetes state rejects changes to its cluster, namespace, owner, resource sizing, quota, Service, or sandbox service account rather than silently adopting different resources; use the original configuration or a deliberately fresh database. Live edits to the quota itself remain supported.
 
 Integration tests use a simulated Kubernetes API, real SQLite reopen, a real local HTTP API transport, and the real remote execution server. Live-cluster scheduling, TLS, image pulling, DNS and CNI enforcement still require deployment verification against your cluster.
+
+### Optional reviewed WORK seccomp policy
+
+Defaults remain RuntimeDefault. `sandboxPolicy` can opt only WORK pods into a relative
+`seccompLocalhostProfile` on explicitly selected, operator-provisioned nodes (`nodeSelector`
+is required). No policy is installed automatically and no privilege/capability or AppArmor
+relaxation is provided. Read the [runtime evidence and release gate](browser-runtime-gate.md)
+before configuring it; changing this policy requires draining existing saved WORK targets.

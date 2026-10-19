@@ -851,3 +851,84 @@ it("runs WORK through a pod execution environment and rejects child admission wh
     rig.server.requests.filter((request) => request.method === "POST"),
   ).toHaveLength(1);
 });
+
+it("opts only WORK pods into a provisioned Localhost profile and pins recovery to that policy", async () => {
+  const sandboxPolicy = {
+    seccompLocalhostProfile: "kaeno/chromium-reviewed.json",
+    nodeSelector: { "kaeno.io/browser-sandbox": "reviewed-v1" },
+  };
+  const rig = await fixture({ sandboxPolicy });
+  const work = await rig.work();
+  await rig.environment.ensure(work, rig.harness, context);
+  const pod = rig.server.pods.get(`owner-work-${work.workId}`);
+  expect(pod?.spec).toMatchObject({
+    nodeSelector: sandboxPolicy.nodeSelector,
+    automountServiceAccountToken: false,
+    securityContext: {
+      runAsUser: 1000,
+      runAsGroup: 1000,
+      seccompProfile: {
+        type: "Localhost",
+        localhostProfile: sandboxPolicy.seccompLocalhostProfile,
+      },
+    },
+    containers: [
+      {
+        securityContext: {
+          allowPrivilegeEscalation: false,
+          readOnlyRootFilesystem: true,
+          capabilities: { drop: ["ALL"] },
+        },
+      },
+    ],
+  });
+  const changed = kubernetesExtension({
+    ...rig.options,
+    sandboxPolicy: {
+      ...sandboxPolicy,
+      seccompLocalhostProfile: "kaeno/other.json",
+    },
+  });
+  await expect(
+    changed.environment.ensure(work, rig.harness, context),
+  ).rejects.toThrow("saved cluster or sandbox configuration differs");
+  const removed = kubernetesExtension({
+    ...rig.options,
+    sandboxPolicy: undefined,
+  });
+  await expect(
+    removed.environment.ensure(work, rig.harness, context),
+  ).rejects.toThrow("saved cluster or sandbox configuration differs");
+});
+
+it.each([
+  "/etc/profile.json",
+  "../profile.json",
+  "kaeno/../profile.json",
+  "kaeno//profile.json",
+  "kaeno\\profile.json",
+  "",
+])(
+  "rejects unsafe Localhost profile path %j before contacting Kubernetes",
+  async (seccompLocalhostProfile) => {
+    await expect(
+      fixture({
+        sandboxPolicy: {
+          seccompLocalhostProfile,
+          nodeSelector: { "kaeno.io/browser-sandbox": "reviewed-v1" },
+        },
+      }),
+    ).rejects.toThrow();
+  },
+);
+
+it("requires a nonempty provisioned-node selector for a custom policy", async () => {
+  await expect(
+    fixture({
+      sandboxPolicy: {
+        seccompLocalhostProfile: "kaeno/chromium.json",
+        nodeSelector: {},
+      },
+    }),
+  ).rejects.toThrow("Select provisioned nodes");
+});
