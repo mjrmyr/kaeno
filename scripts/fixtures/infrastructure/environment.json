@@ -1,0 +1,8 @@
+{
+  "sourceDirectory": "/data/definitions",
+  "localDefinitions": {
+    "agents": [{ "alias": "smoke", "directory": "./agents" }]
+  },
+  "kaeno": "smoke:host",
+  "defaultModel": "openai/gpt-4o-mini"
+}

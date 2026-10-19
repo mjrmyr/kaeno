@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -19,7 +19,61 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 24.14.0
           cache: npm
       - run: npm ci
       - run: npm run verify
+  docker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.14.0
+          cache: npm
+      - run: npm ci
+      - run: npm run test:docker
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: docker-failure-diagnostics
+          path: artifacts/**
+          retention-days: 7
+          if-no-files-found: warn
+  kubernetes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.14.0
+          cache: npm
+      - name: Install pinned kind and kubectl
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/kaeno-bin"
+          cd "$RUNNER_TEMP/kaeno-bin"
+          curl --fail --location --retry 3 -o kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          curl --fail --location --retry 3 -o kind.sha256sum https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64.sha256sum
+          echo "$(cut -d ' ' -f 1 kind.sha256sum)  kind" | sha256sum --check
+          curl --fail --location --retry 3 -o kubectl https://dl.k8s.io/release/v1.32.2/bin/linux/amd64/kubectl
+          curl --fail --location --retry 3 -o kubectl.sha256 https://dl.k8s.io/release/v1.32.2/bin/linux/amd64/kubectl.sha256
+          echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
+          chmod +x kind kubectl
+          echo "$RUNNER_TEMP/kaeno-bin" >> "$GITHUB_PATH"
+      - run: npm ci
+      - run: npm run test:kubernetes
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: kubernetes-failure-diagnostics
+          path: artifacts/**
+          retention-days: 7
+          if-no-files-found: warn

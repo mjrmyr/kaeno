@@ -1,6 +1,14 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { inspect } from "node:util";
 import { expect, it, vi } from "vitest";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { DockerSandboxProvider, type DockerEngine } from "./index.ts";
+import {
+  DockerCli,
+  DockerSandboxProvider,
+  type DockerEngine,
+} from "./index.ts";
 import type { SandboxIdentity, SandboxOptions } from "./provider.ts";
 
 const sandbox: SandboxIdentity = {
@@ -135,4 +143,31 @@ it("removes stale managed containers but preserves active work", async () => {
     "kaeno-work-default-work-43",
     "kaeno-workspace-default-work-43",
   );
+});
+
+it("redacts sandbox bearer tokens from CLI errors, including rendered causes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "kaeno-docker-cli-error-"));
+  try {
+    const executable = join(directory, "docker-failure");
+    await writeFile(
+      executable,
+      `#!${process.execPath}
+console.error(process.argv.join(" ")); process.exit(1);
+`,
+      { mode: 0o700 },
+    );
+    const cli = new DockerCli(executable);
+    let rendered = "";
+    try {
+      await cli.create("test", sandbox, options);
+      throw new Error("Expected fake Docker to fail");
+    } catch (error) {
+      rendered = inspect(error, { depth: 10 });
+    }
+    expect(rendered).toContain("docker create failed");
+    expect(rendered).toContain("KAENO_ENV_TOKEN=[REDACTED]");
+    expect(rendered).not.toContain(sandbox.token);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

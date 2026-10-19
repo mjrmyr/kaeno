@@ -7,3 +7,6 @@ test
 .env
 *auth.json
 *auth.json.*
+
+# Disposable infrastructure diagnostics can contain test-only SQLite state.
+artifacts

@@ -65,3 +65,5 @@ See the [core entry point](src/core/application/index.ts), [WORK implementation]
 ```sh
 npm run verify
 ```
+
+Real, credential-free backend checks are opt-in: `npm run test:docker`, `npm run test:kubernetes`, or `npm run verify:all`. See [disposable infrastructure tests](docs/infrastructure-tests.md) for prerequisites, diagnostics, isolation and explicitly deferred coverage.

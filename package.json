@@ -15,7 +15,10 @@
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
-    "verify": "npm run check && npm test"
+    "verify": "npm run check && npm test",
+    "test:docker": "node scripts/docker-smoke.ts",
+    "test:kubernetes": "node scripts/kubernetes-smoke.ts",
+    "verify:all": "npm run verify && npm run test:docker && npm run test:kubernetes"
   },
   "devDependencies": {
     "@types/node": "24.19.1",

@@ -72,8 +72,12 @@ export class DockerCli implements DockerEngine {
       });
       return stdout.trim();
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      throw new Error(`docker ${args[0]} failed: ${detail}`, { cause: error });
+      // execFile embeds argv in its error message; create's argv includes the envd bearer token.
+      // Do not retain the original error as cause: standard error logging also renders causes.
+      const detail = (
+        error instanceof Error ? error.message : String(error)
+      ).replace(/KAENO_ENV_TOKEN=\S+/g, "KAENO_ENV_TOKEN=[REDACTED]");
+      throw new Error(`docker ${args[0]} failed: ${detail}`);
     }
   }
 
