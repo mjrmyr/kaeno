@@ -11,6 +11,9 @@ import {
 import {
   defineExtension,
   defineTool,
+  hook,
+  ToolTask,
+  wrapTool,
   MemoryStorage,
   type TaskId,
   type JsonObject,
@@ -25,6 +28,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { WorkScope } from "../../src/core/work/index.ts";
 
 const model = { provider: "faux", modelId: "faux-1" };
 let nextRequest = 0;
@@ -49,11 +53,16 @@ async function fixture(options: {
   environment?: WorkEnvironment;
   storage?: Storage;
   mutateOnResult?: boolean;
+  pauseQuestionReply?: boolean;
 }) {
   const faux = fauxProvider();
   const models = createModels();
   models.setProvider(faux.provider);
   const busy = latch();
+  const questionEntered = latch();
+  const questionFinish = latch();
+  const dispatchEntered = latch();
+  const dispatch = latch();
   const entered = vi.fn<() => void>();
   let workId: TaskId | undefined;
   const resultInputs: string[] = [];
@@ -123,11 +132,81 @@ async function fixture(options: {
       return answer("RESULT OBSERVED");
     }),
   );
+  // Match the registered tool by name to pause only its dispatch, after the
+  // real message_work admission commit; this exercises the crash-window state.
+  const steering = defineTool({
+    name: "message_work",
+    description: "Steering surface",
+    parameters: Type.Object({ id: Type.Integer(), text: Type.String() }),
+    execute: async () => {
+      throw new Error("Only the installed tool should execute");
+    },
+  });
+  const holdExtension = defineExtension({
+    name: "hold",
+    tools: [hold],
+    hooks: [
+      hook(ToolTask, {
+        afterTool: async (call, result) => {
+          if (options.pauseQuestionReply && call.name === "message_parent") {
+            questionEntered.release();
+            await questionFinish.promise;
+          }
+          return result;
+        },
+      }),
+    ],
+    wraps: [
+      wrapTool(steering, (tool) => ({
+        ...tool,
+        execute: async (args, api, ctx) => {
+          if (!options.pauseQuestionReply) {
+            return tool.execute(args, api, ctx);
+          }
+          const delayed = new Proxy(api, {
+            get(target, key, receiver) {
+              if (key === "conversation") {
+                return async (
+                  ...args: Parameters<typeof target.conversation>
+                ) => {
+                  const conversation = await target.conversation(...args);
+                  return (
+                    conversation &&
+                    new Proxy(conversation, {
+                      get(handle, key, receiver) {
+                        if (key === "submit") {
+                          return async (
+                            ...args: Parameters<typeof handle.submit>
+                          ) => {
+                            dispatchEntered.release();
+                            await dispatch.promise;
+                            return handle.submit(...args);
+                          };
+                        }
+                        return Reflect.get(handle, key, receiver);
+                      },
+                    })
+                  );
+                };
+              }
+              return Reflect.get(target, key, receiver);
+            },
+          });
+          return tool.execute(args, delayed, ctx);
+        },
+      })),
+    ],
+  });
   const core = await openKaeno({
     storage: options.storage ?? new MemoryStorage(),
     models,
-    assistant: { model, instructions: "CHAT", tools: orchestration },
-    extensions: [{ durable: defineExtension({ name: "hold", tools: [hold] }) }],
+    assistant: {
+      model,
+      instructions: "CHAT",
+      tools: orchestration,
+      bindings: [{ owner: "hold", version: 1, value: null }],
+    },
+    extensions: [{ durable: holdExtension }],
     work: {
       agents: [
         {
@@ -201,6 +280,10 @@ async function fixture(options: {
     busy,
     entered,
     resultInputs,
+    questionEntered,
+    questionFinish,
+    dispatchEntered,
+    dispatch,
   };
 }
 function environment(
@@ -384,6 +467,8 @@ it("keeps a genuinely blocked environment and cleans it on cancellation", async 
     );
     expect(release).toHaveBeenCalledOnce();
     expect(release.mock.calls[0][0].workId).toBe(id);
+    expect(await lifecycle.inspect()).not.toHaveProperty("pendingQuestion");
+    expect(await lifecycle.inspect()).not.toHaveProperty("message");
   } finally {
     await lifecycle.core.close();
   }
@@ -682,3 +767,61 @@ it.each([false, true])(
     }
   },
 );
+
+it("preserves the question boundary when reply admission precedes supervisor consumption and dispatch", async () => {
+  let turn = 0;
+  const release = vi.fn<WorkEnvironment["release"]>();
+  const lifecycle = await fixture({
+    pauseQuestionReply: true,
+    environment: environment({ release }),
+    worker: async () => {
+      return ++turn === 1
+        ? call("message_parent", {
+            kind: "question",
+            text: "Choose publication target",
+          })
+        : answer("Verified published result");
+    },
+  });
+  try {
+    const id = await lifecycle.launch();
+    await lifecycle.questionEntered.promise;
+    const replying = lifecycle.user("reply-now");
+    await lifecycle.dispatchEntered.promise;
+    const conversation = await lifecycle.core.harness.commit(
+      (tx) => tx.scanConversations({ ownerTaskId: id }, 1),
+      context,
+    );
+    const scope = await lifecycle.core.harness.snapshot(
+      WorkScope,
+      conversation.items[0].id,
+      context,
+    );
+    expect(scope).toMatchObject({
+      message: "Choose publication target",
+      question: { answered: true },
+    });
+    lifecycle.questionFinish.release();
+    await vi.waitFor(async () =>
+      expect((await lifecycle.record())?.state).toMatchObject({
+        checkpoint: { phase: "supervise", seen: expect.any(Number) },
+      }),
+    );
+    expect(release).not.toHaveBeenCalled();
+    expect(turn).toBe(1);
+    expect(lifecycle.resultInputs).toHaveLength(0); // Answered question is not notified as still pending.
+    lifecycle.dispatch.release();
+    await replying;
+    await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
+    expect((await lifecycle.record())?.state).toMatchObject({
+      status: "terminal",
+      outcome: {
+        result: { status: "completed", text: "Verified published result" },
+      },
+    });
+  } finally {
+    lifecycle.questionFinish.release();
+    lifecycle.dispatch.release();
+    await lifecycle.core.close();
+  }
+});

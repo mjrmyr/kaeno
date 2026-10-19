@@ -773,7 +773,9 @@ export class Work {
             if (scope.question) {
               scope.question.answered = true;
             }
-            scope.message = null;
+            // The supervisor must still consume an unobserved question tool round.
+            // Clearing its buffer here would misclassify that round as a failed report
+            // if steering dispatch is delayed or interrupted after this admission.
             messages[String(api.taskId)] = parseTaskId(id);
           }
           const keys = Object.keys(messages);
@@ -982,7 +984,10 @@ export class Work {
           this.harness(),
         );
         await runtime.commit(async (tx) => {
-          (await tx.doc(WorkScope, conversationId)).cleanupError = null;
+          const scope = await tx.doc(WorkScope, conversationId);
+          scope.cleanupError = null;
+          scope.question = null;
+          scope.message = null;
           return undefined;
         }, context);
         return;
@@ -1461,19 +1466,19 @@ export class Work {
       answered: NextTaskState<WorkState, Stored<WorkResult>>;
     },
   ): Promise<void> {
-    const isAnswered = async (tx: Tx) => {
+    const isObsoleteQuestion = async (tx: Tx) => {
       if (!question) {
         return false;
       }
       const scope = await tx.doc(WorkScope, question.conversation);
       return (
-        scope.question?.id === question.questionId && scope.question.answered
+        scope.question?.id !== question.questionId || scope.question.answered
       );
     };
     if (parent.kind === "work") {
       let skip = false;
       await runtime.commit(async (tx) => {
-        if (await isAnswered(tx)) {
+        if (await isObsoleteQuestion(tx)) {
           skip = true;
           return question?.answered;
         }
@@ -1497,7 +1502,7 @@ export class Work {
       );
     }
     await runtime.commit(async (tx) => {
-      if (await isAnswered(tx)) {
+      if (await isObsoleteQuestion(tx)) {
         return question?.answered;
       }
       if (parent.kind === "chat") {

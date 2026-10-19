@@ -174,3 +174,63 @@ it("suppresses reports in a transaction before requesting an abort", async () =>
   ]);
   expect(operations).toEqual(["suppress", "abort"]);
 });
+
+it.each([
+  { id: 91, answered: true },
+  { id: 92, answered: false },
+])(
+  "suppresses an answered or superseded question delivery checkpoint (%j)",
+  async (question) => {
+    const { work, turns } = setup();
+    const handler = work.extension.tasks?.[0]?.definition.phases.message;
+    if (typeof handler !== "function") {
+      throw new Error("Missing registered message phase");
+    }
+    const transitions: unknown[] = [];
+    const runtime = {
+      taskId: taskId(24),
+      commit: async (change: unknown) => {
+        if (typeof change !== "function") {
+          throw new Error("Expected phase commit");
+        }
+        transitions.push(await change({ doc: async () => ({ question }) }));
+      },
+    };
+    await handler(
+      {
+        id: taskId(24),
+        input: {
+          title: "Question",
+          parent: {
+            kind: "chat",
+            origin: {
+              conversationId: 12,
+              requestId: "user",
+              epoch: 0,
+              notify: {},
+            },
+          },
+        },
+        state: {
+          checkpoint: {
+            phase: "message",
+            conversation: 30,
+            sent: 1,
+            seen: 80,
+            message: "Old question",
+            questionId: 91,
+          },
+        },
+      },
+      runtime,
+      {},
+    );
+    expect(turns.admitWorkReport).not.toHaveBeenCalled();
+    expect(transitions).toEqual([
+      {
+        status: "running",
+        checkpoint: { phase: "supervise", conversation: 30, sent: 1, seen: 80 },
+      },
+    ]);
+  },
+);
