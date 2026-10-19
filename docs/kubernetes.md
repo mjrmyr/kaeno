@@ -1,6 +1,6 @@
 # Kubernetes worker extension
 
-The optional Kubernetes extension replaces Docker as the worker execution backend. It is not a `kubectl` tool and grants agents no Kubernetes API access. It composes through `KaenoExtension` and `WorkEnvironment`; all Kubernetes implementation details live in `src/extensions/kubernetes/`.
+The optional Kubernetes extension is an alternative to Docker containers and microsandbox microVMs for worker execution. It is not a `kubectl` tool and grants agents no Kubernetes API access. It composes through `KaenoExtension` and `WorkEnvironment`; all Kubernetes implementation details live in `src/extensions/kubernetes/`.
 
 ## Configure
 
@@ -18,12 +18,18 @@ Run the Kaeno host inside the cluster, where it can reach sandbox pod DNS. Build
 }
 ```
 
-```sh
-export KAENO_KUBERNETES_CONFIG=/etc/kaeno/kubernetes.json
-npm start
+Select it in the owner configuration (`KAENO_CONFIG`):
+
+```json
+{
+  "execution": {
+    "provider": "kubernetes",
+    "configFile": "./kubernetes.json"
+  }
+}
 ```
 
-The CLI selects Kubernetes when this variable is set; otherwise it keeps the existing Docker backend. No cluster credentials are needed when Kubernetes is disabled. Agent and skill selection come from the same `KAENO_CONFIG` in both cases; only the source cache path/storage differs. Mount its `sourceDirectory` on the host (for example, a PVC at `/sources`), never into worker pods. The independent GitHub App reader/tools work with either backend.
+This is a fragment alongside the existing agent/source configuration. `configFile` resolves relative to that owner file. Start with `npm start`. The CLI selects Kubernetes explicitly through this field; omitted `execution` defaults to Docker. See [execution configuration and switching](execution.md). No cluster credentials are needed when Kubernetes is disabled. Agent and skill selection come from the same `KAENO_CONFIG` in both cases; only the source cache path/storage differs. Mount its `sourceDirectory` on the host (for example, a PVC at `/sources`), never into worker pods. The independent GitHub App reader/tools work with either backend.
 
 `owner` must be a stable, unique DNS label (maximum 32 characters) for this application/database. Never share it between independent databases, including database clones. Pod names are `<owner>-work-<workId>`.
 
@@ -95,11 +101,11 @@ await openKaeno({
 });
 ```
 
-Import `kubernetesExtension` or `loadKubernetesConfiguration` from `src/extensions/kubernetes/index.ts`. The API client, pod schemas/specs, quantity parser, and reservation documents are not exported. Execution transport is injected by composition rather than constructed across feature boundaries.
+Install `kubernetesExecutionProvider` for generic host selection, or import `kubernetesExtension` or `loadKubernetesConfiguration` directly from `src/extensions/kubernetes/index.ts`. For file-backed loading, call `loadKubernetesConfiguration(path, { defaultNamespace, createEnvironment, createSandboxEnvironment })`; it implements the shared `ExecutionConfigurationLoader` contract and returns `{ environment, extensions }`. The Kubernetes file owns its explicit `owner`, so it does not use the fallback namespace or the shared `createSandboxEnvironment` factory. Embedders still supply both as part of the common loader context. Its schema, credential paths, defaults and construction remain inside the extension. The API client, pod schemas/specs, quantity parser, and reservation documents are not exported. Execution transport is injected by composition rather than constructed across feature boundaries.
 
 ## Boundary choice
 
-Two designs were compared: implement the generic `SandboxProvider`, or implement `WorkEnvironment` directly. The latter keeps durable quota reservations beside the Kubernetes lifecycle without threading the work runtime through the provider interface. The public factory returns only a native extension and a work environment. The sole generic interface addition is optional `capacity(context)`, which lets any environment supply a live admission limit; WORK retains its existing transactional admission/counting responsibility. No Kubernetes types or imports enter core.
+Two designs were compared: implement the generic `SandboxProvider`, or implement `WorkEnvironment` directly. The latter keeps durable quota reservations beside the Kubernetes lifecycle without threading the work runtime through the provider interface. The public factory returns only a native extension and a work environment. Optional `capacity(context)` lets any environment supply a live admission limit; WORK retains its existing transactional admission/counting responsibility. The required stable `identity` also lets WORK reject a changed execution backend/target before recovery resumes. No Kubernetes types or imports enter core.
 
 ## Differences from the old `main` implementation
 

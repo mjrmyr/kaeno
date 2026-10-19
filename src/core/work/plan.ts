@@ -46,6 +46,8 @@ export interface WorkEnvironmentRuntime extends Pick<
 
 /** Consumer-owned: where participants run. Every method is idempotent and safe after restart. */
 export interface WorkEnvironment {
+  /** Stable, non-secret backend/target identity. Saved at admission; changes cannot resume unfinished work. */
+  readonly identity: string;
   /** Working directory given to participants inside the environment. */
   readonly cwd: string;
   /** Optional live limit on unfinished works, checked at admission to avoid parent/child deadlocks. */

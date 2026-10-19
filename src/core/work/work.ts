@@ -91,6 +91,7 @@ interface WorkInput extends JsonObject {
   maxDepth: number;
   parent: JsonValue;
   plan: JsonValue;
+  environment: string | null;
 }
 export interface WorkResult {
   status: "completed" | "failed";
@@ -616,6 +617,7 @@ export class Work {
                 copyJson(parent, { omitUndefinedProperties: true }),
               ),
               plan: storedPlan(plan),
+              environment: this.settings.environment?.identity ?? null,
             },
             {
               ownership: { kind: "conversation" },
@@ -890,8 +892,8 @@ export class Work {
     });
   }
   /**
-   * Paused-startup check: every unfinished WORK's saved plan must still fit the installed worker
-   * surface. A removed tool or binding owner fails startup instead of silently changing saved work.
+   * Paused-startup check: every unfinished WORK must retain its execution backend/target and its
+   * saved plan must fit the installed worker surface. Reject changes before any resource reconciliation.
    */
   async assertSavedWorkFits(context: Context): Promise<void> {
     const problems: string[] = [];
@@ -900,10 +902,25 @@ export class Work {
         continue;
       }
       try {
-        assertPlanFits(
-          readPlan(z.object({ plan: z.unknown() }).parse(record.input).plan),
-          this.settings.surface(),
-        );
+        const saved = z
+          .object({
+            plan: z.unknown(),
+            environment: z.string().nullable().optional(),
+          })
+          .parse(record.input);
+        if (saved.environment === undefined) {
+          throw new Error(
+            "Saved WORK has no execution environment identity; drain it with the previous release before upgrading",
+          );
+        }
+        if (
+          saved.environment !== (this.settings.environment?.identity ?? null)
+        ) {
+          throw new Error(
+            "Execution environment changed; restore the previous backend/target and finish or cancel this work before switching",
+          );
+        }
+        assertPlanFits(readPlan(saved.plan), this.settings.surface());
       } catch (error) {
         problems.push(
           `Work #${record.id}: ${error instanceof Error ? error.message : String(error)}`,
@@ -913,9 +930,9 @@ export class Work {
     if (problems.length > 0) {
       throw new Error(
         [
-          "Saved WORK no longer fits the installed worker surface:",
+          "Saved WORK no longer fits the installed worker surface or execution environment:",
           ...problems.map((problem) => `- ${problem}`),
-          "Restore the removed tools/extensions or cancel the affected work before restarting.",
+          "Restore the previous environment and tools/extensions; finish or cancel the affected work before changing configuration.",
         ].join("\n"),
       );
     }

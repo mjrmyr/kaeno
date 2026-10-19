@@ -8,7 +8,7 @@ import type {
   SandboxIdentity,
   SandboxOptions,
   SandboxProvider,
-} from "./provider.ts";
+} from "../execution/index.ts";
 
 const execFile = promisify(execFileCallback);
 const MANAGED_LABEL = "kaeno.io/managed-work";
@@ -194,6 +194,7 @@ export class DockerCli implements DockerEngine {
 
 /** Local Docker implementation of the provider contract used by work orchestration. */
 export class DockerSandboxProvider implements SandboxProvider {
+  readonly identity: string;
   private readonly engine: DockerEngine;
   private readonly fetch: typeof globalThis.fetch;
   private readonly apiHost: string;
@@ -230,6 +231,11 @@ export class DockerSandboxProvider implements SandboxProvider {
       .string()
       .regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$/)
       .parse(options.namespace ?? "default");
+    this.identity = JSON.stringify({
+      provider: "docker",
+      namespace: this.namespace,
+      apiHost: this.apiHost,
+    });
     this.readyTimeoutMs = options.readyTimeoutMs ?? 60_000;
   }
 

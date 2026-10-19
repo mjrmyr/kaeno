@@ -32,6 +32,7 @@ it("boots the actual core entrypoint and shuts down cleanly", async () => {
       workers: [],
     }),
   );
+  await writeFile(join(root, "docker.json"), "{}");
   const token = "test-token-with-at-least-32-characters";
   const child = spawn(process.execPath, [resolve("src/host/main.ts")], {
     env: {

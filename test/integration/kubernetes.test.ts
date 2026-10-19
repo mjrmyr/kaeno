@@ -671,10 +671,19 @@ it("loads explicit configuration with relative token paths and uses the real HTT
   );
   const loaded = await loadKubernetesConfiguration(
     join(directory, "config.json"),
-    () => {
-      throw new Error("unused");
+    {
+      defaultNamespace: "unused",
+      createSandboxEnvironment: () => {
+        throw new Error("Kubernetes must not construct a sandbox adapter");
+      },
+      createEnvironment: () => {
+        throw new Error("unused");
+      },
     },
   );
+  expect(loaded.extensions.map((extension) => extension.durable.name)).toEqual([
+    "kaeno-kubernetes",
+  ]);
   const rig = await fixture();
   await loaded.environment.reconcile([], rig.harness);
 });

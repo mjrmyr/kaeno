@@ -20,11 +20,13 @@ export interface SandboxOptions {
 }
 
 /**
- * Work depends on this lifecycle, not on Docker/Kubernetes concepts. Implementations
+ * Work depends on this lifecycle, not on Docker, microVM or Kubernetes concepts. Implementations
  * must make ensure idempotent and remove safe to repeat; reconcile removes resources
  * that no longer correspond to active work.
  */
 export interface SandboxProvider {
+  /** Stable, non-secret identity of the backend and resource namespace. */
+  readonly identity: string;
   ensure(
     sandbox: SandboxIdentity,
     options: SandboxOptions,

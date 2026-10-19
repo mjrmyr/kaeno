@@ -46,6 +46,66 @@ afterEach(async () => {
   }
 });
 
+it("parses explicit execution providers, defaults Docker and resolves backend files relative to the owner config", () => {
+  const base = { sourceDirectory: "./sources", kaeno: "local:coordinator" };
+  expect(
+    parseEnvironmentConfiguration(base, "/owner/config.json").execution,
+  ).toEqual({
+    provider: "docker",
+    configFile: "/owner/docker.json",
+  });
+  expect(
+    parseEnvironmentConfiguration(
+      {
+        ...base,
+        execution: { provider: "kubernetes", configFile: "./cluster.json" },
+      },
+      "/owner/config.json",
+    ).execution,
+  ).toEqual({
+    provider: "kubernetes",
+    configFile: "/owner/cluster.json",
+  });
+  expect(
+    parseEnvironmentConfiguration(
+      {
+        ...base,
+        execution: { provider: "docker", configFile: "./backends/docker.json" },
+      },
+      "/owner/config.json",
+    ).execution,
+  ).toMatchObject({
+    provider: "docker",
+    configFile: "/owner/backends/docker.json",
+  });
+  expect(
+    parseEnvironmentConfiguration(
+      {
+        ...base,
+        execution: { provider: "custom-remote", configFile: "remote.json" },
+      },
+      "/owner/config.json",
+    ).execution,
+  ).toEqual({ provider: "custom-remote", configFile: "/owner/remote.json" });
+  for (const execution of [
+    { provider: "", configFile: "empty.json" },
+    { provider: "unknown" },
+    { provider: "kubernetes" },
+    { provider: "kubernetes", configFile: "" },
+    { provider: "docker" },
+    { provider: "docker", configFile: "" },
+    { provider: "docker", configFile: "docker.json", cpus: 1 },
+    { provider: "kubernetes", configFile: "cluster.json", image: "worker:v2" },
+  ]) {
+    expect(() =>
+      parseEnvironmentConfiguration(
+        { ...base, execution },
+        "/owner/config.json",
+      ),
+    ).toThrow("execution");
+  }
+});
+
 it("selects assistant and workers from the same catalog, captures origins and keeps fixed native definitions", async () => {
   const { configFile } = await fixture();
   const config = await loadEnvironment({ configFile });

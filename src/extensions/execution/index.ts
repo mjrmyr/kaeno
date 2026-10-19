@@ -1,3 +1,16 @@
+export type {
+  ConfiguredExecution,
+  ExecutionConfigurationContext,
+  ExecutionConfigurationLoader,
+  ExecutionProvider,
+} from "./configuration.ts";
+export { SandboxWorkEnvironment } from "./sandbox-work-environment.ts";
+export type {
+  SandboxIdentity,
+  SandboxLimits,
+  SandboxOptions,
+  SandboxProvider,
+} from "./sandbox-provider.ts";
 export { encode, decode } from "./codec.ts";
 export type { WireCallback, Handle, DecodeHooks } from "./codec.ts";
 export { invokeEnvironment, invokeHandle } from "./dispatch.ts";

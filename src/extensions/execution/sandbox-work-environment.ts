@@ -17,7 +17,7 @@ import type {
   SandboxIdentity,
   SandboxLimits,
   SandboxProvider,
-} from "./provider.ts";
+} from "./sandbox-provider.ts";
 
 interface SandboxIdentityData extends JsonObject {
   id: string;
@@ -39,6 +39,7 @@ const WorkSandbox = defineDoc<SandboxState>({
 /** Optional sandbox adapter. Participant discovery/configuration never depends on this class. */
 export class SandboxWorkEnvironment implements WorkEnvironment {
   readonly cwd = "/workspace";
+  readonly identity: string;
   private readonly options: {
     sandbox: SandboxProvider;
     image: string;
@@ -50,6 +51,7 @@ export class SandboxWorkEnvironment implements WorkEnvironment {
     limits: SandboxLimits;
   }) {
     this.options = options;
+    this.identity = options.sandbox.identity;
   }
 
   async ensure(
@@ -106,7 +108,7 @@ export class SandboxWorkEnvironment implements WorkEnvironment {
       }
     }
     if (identities.length === 0) {
-      // A fresh standalone installation must not need Docker merely to boot. Only contact the
+      // A fresh standalone installation must not need a sandbox runtime merely to boot. Only contact the
       // backend if this database has actually owned an environment (including terminal orphans).
       let cursor: Cursor | undefined;
       let owned = false;

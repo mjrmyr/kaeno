@@ -64,7 +64,7 @@ KAENO_CONFIG=./.kaeno/config.json npm start
 
 Locally, set `sourceDirectory` to a persistent directory, such as `./sources` relative to the configuration file. In Kubernetes, mount a writable host-only PVC at `/var/lib/kaeno/sources`. The loader is identical; it does not know what a PVC is.
 
-Keep `KAENO_KUBERNETES_CONFIG` for execution-backend configuration and `KAENO_GITHUB_CONFIG` for the existing optional GitHub App integration. Sources and role selection belong together, but they do not need to absorb unrelated backend and credential schemas.
+Execution selection now belongs to the owner config's `execution` field, with Kubernetes-specific settings in a separate referenced file (see [execution configuration](../execution.md)); `KAENO_GITHUB_CONFIG` remains the existing optional GitHub App integration. Sources and role selection belong together, but they do not need to absorb unrelated backend and credential schemas.
 
 ### Explicit selection rules
 
@@ -235,10 +235,14 @@ const core = await openKaeno({ ...configuration, storage, models });
 
 ```ts
 // Kubernetes remains an independently selected execution backend.
-const backend = await loadKubernetesConfiguration(backendFile, createEnv);
+const backend = await loadKubernetesConfiguration(backendFile, {
+  defaultNamespace: "application",
+  createEnvironment: createEnv,
+  createSandboxEnvironment: (options) => new SandboxWorkEnvironment(options),
+});
 const configuration = await loadEnvironment({
   configFile: "/etc/kaeno/config.json",
-  extensions: [backend.extension],
+  extensions: backend.extensions,
   environment: backend.environment,
 });
 const core = await openKaeno({ ...configuration, storage, models });

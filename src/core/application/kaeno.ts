@@ -187,6 +187,7 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
     z.object({
       maxDepth: z.number().int().min(1).max(8).optional(),
       maxConcurrent: z.number().int().min(1).optional(),
+      environment: z.object({ identity: z.string().min(1) }).optional(),
     }).parse(workOptions);
   }
   let workerSurface: SetupSurface | undefined;

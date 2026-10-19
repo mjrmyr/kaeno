@@ -6,22 +6,17 @@ import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { watchEvents, type ConversationId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { z } from "zod";
-import { createHash } from "node:crypto";
-import { resolve } from "node:path";
 import { openKaeno } from "../core/application/index.ts";
 import { DEFAULT_AUTH_FILE, FileCredentialStore } from "./auth/index.ts";
-import { loadEnvironment } from "./composition/index.ts";
+import { loadEnvironment, loadExecution } from "./composition/index.ts";
 import { loadGitHubConfiguration } from "../extensions/github/index.ts";
 import { parseModelRef } from "../extensions/agents/index.ts";
 import { ApiServer } from "../extensions/api/index.ts";
-import { RemoteExecutionEnv } from "../extensions/execution/index.ts";
-import { loadKubernetesConfiguration } from "../extensions/kubernetes/index.ts";
-import {
-  DockerSandboxProvider,
-  SandboxWorkEnvironment,
-} from "../extensions/docker/index.ts";
 
 import { browserExtension } from "../extensions/browser/index.ts";
+import { dockerExecutionProvider } from "../extensions/docker/index.ts";
+import { kubernetesExecutionProvider } from "../extensions/kubernetes/index.ts";
+import { microsandboxExecutionProvider } from "../extensions/microsandbox/index.ts";
 
 const browser = await browserExtension();
 const browserTools = browser.durable.tools?.map((tool) => tool.name) ?? [];
@@ -63,43 +58,12 @@ const port = z.coerce
   .max(65535)
   .parse(process.env.PORT ?? 8080);
 
-if (configuration.work) {
-  if (process.env.KAENO_KUBERNETES_CONFIG) {
-    const kubernetes = await loadKubernetesConfiguration(
-      process.env.KAENO_KUBERNETES_CONFIG,
-      ({ url, token, id, cwd }) =>
-        new RemoteExecutionEnv(url, token, id, cwd, fetch),
-    );
-    configuration.extensions.push(kubernetes.extension);
-    configuration.work.environment = kubernetes.environment;
-  } else {
-    configuration.work.environment = new SandboxWorkEnvironment({
-      sandbox: new DockerSandboxProvider({
-        namespace:
-          process.env.KAENO_SANDBOX_NAMESPACE ??
-          createHash("sha256")
-            .update(resolve(process.env.KAENO_DB ?? "/data/kaeno.sqlite"))
-            .digest("hex")
-            .slice(0, 16),
-        apiHost: process.env.KAENO_SANDBOX_API_HOST ?? "127.0.0.1",
-        createEnvironment: ({ url, token, id, cwd, fetch }) =>
-          new RemoteExecutionEnv(url, token, id, cwd, fetch),
-      }),
-      image: process.env.KAENO_SANDBOX_IMAGE ?? "kaeno:local",
-      limits: {
-        cpus: z.coerce
-          .number()
-          .positive()
-          .parse(process.env.KAENO_WORK_CPUS ?? 1),
-        memoryBytes: z.coerce
-          .number()
-          .int()
-          .positive()
-          .parse(process.env.KAENO_WORK_MEMORY_BYTES ?? 1_073_741_824),
-      },
-    });
-  }
-}
+const databaseFile = process.env.KAENO_DB ?? "/data/kaeno.sqlite";
+const execution = await loadExecution(configuration.execution, databaseFile, [
+  dockerExecutionProvider,
+  kubernetesExecutionProvider,
+  microsandboxExecutionProvider,
+]);
 const credentials = new FileCredentialStore(
   process.env.KAENO_AUTH_FILE ?? DEFAULT_AUTH_FILE,
 );
@@ -113,13 +77,11 @@ models.setProvider(anthropicProvider());
 models.setProvider(openaiProvider());
 models.setProvider(openrouterProvider());
 const core = await openKaeno({
-  storage: await openNodeSqliteStorage(
-    process.env.KAENO_DB ?? "/data/kaeno.sqlite",
-  ),
+  storage: await openNodeSqliteStorage(databaseFile),
   models,
   assistant: configuration.assistant,
-  extensions: configuration.extensions,
-  work: configuration.work,
+  extensions: [...configuration.extensions, ...execution.extensions],
+  work: { ...configuration.work, environment: execution.environment },
   onReport: (error) => console.error("harness:", error),
 });
 let server: ApiServer["server"] | undefined;

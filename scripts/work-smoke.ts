@@ -8,9 +8,8 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { openKaeno } from "../src/core/application/index.ts";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { resolveAgents, parseAgent } from "../src/extensions/agents/index.ts";
@@ -21,13 +20,35 @@ import {
   SKILL_TOOLS,
 } from "../src/extensions/skills/index.ts";
 import { ApiServer } from "../src/extensions/api/index.ts";
-import { RemoteExecutionEnv } from "../src/extensions/execution/index.ts";
 import {
-  DockerSandboxProvider,
-  SandboxWorkEnvironment,
-} from "../src/extensions/docker/index.ts";
+  loadExecution,
+  parseEnvironmentConfiguration,
+} from "../src/host/composition/index.ts";
 
+import { dockerExecutionProvider } from "../src/extensions/docker/index.ts";
+import { kubernetesExecutionProvider } from "../src/extensions/kubernetes/index.ts";
+import { microsandboxExecutionProvider } from "../src/extensions/microsandbox/index.ts";
+
+// Usage: node scripts/work-smoke.ts [docker|microsandbox|kubernetes] [backend-config-file]
+// Use a dedicated backend file; never reuse an active application's explicit namespace/owner.
 const directory = await mkdtemp(join(tmpdir(), "kaeno-work-smoke-"));
+const provider = process.argv[2] ?? "docker";
+const selection = parseEnvironmentConfiguration(
+  {
+    sourceDirectory: directory,
+    kaeno: "local:smoke",
+    execution: {
+      provider,
+      configFile: resolve(process.argv[3] ?? `${provider}.config.example.json`),
+    },
+  },
+  join(directory, "config.json"),
+).execution;
+const backend = await loadExecution(selection, join(directory, "core.sqlite"), [
+  dockerExecutionProvider,
+  kubernetesExecutionProvider,
+  microsandboxExecutionProvider,
+]);
 const faux = fauxProvider({ provider: "openai" });
 const models = createModels();
 models.setProvider(faux.provider);
@@ -57,15 +78,19 @@ faux.setResponses(
         !last.isError &&
         last.content.some((item) => item.type === "text" && item.text === "[]");
       return fauxAssistantMessage(
-        [fauxToolCall("bash", { command: "echo WORK_CONTAINER_OK" })],
+        [
+          fauxToolCall("bash", {
+            command: "echo WORK_SANDBOX_OK; uname -s; id -u; pwd",
+          }),
+        ],
         { stopReason: "toolUse" },
       );
     }
     if (isWork && last?.role === "toolResult" && last.toolName === "bash") {
-      workerRanShell = true;
+      workerRanShell = !last.isError;
       workerShellResult = JSON.stringify(last);
       return fauxAssistantMessage([
-        fauxText("Verified command ran in the Docker sandbox."),
+        fauxText(`Verified command ran in the ${provider} sandbox.`),
       ]);
     }
     if (last?.role === "user" && String(last.content).includes("Work #")) {
@@ -84,8 +109,8 @@ faux.setResponses(
         [
           fauxToolCall("start_work", {
             agent: "worker",
-            title: "Docker smoke test",
-            brief: "Run echo WORK_CONTAINER_OK and report the exact output.",
+            title: `${provider} smoke test`,
+            brief: "Run the verification command and report the exact output.",
           }),
         ],
         { stopReason: "toolUse" },
@@ -114,24 +139,17 @@ const core = await openKaeno({
     instructions: "Be helpful.",
     tools: ["start_work"],
   },
-  extensions: [{ durable: CodingTools }, skillsExtension()],
+  extensions: [
+    { durable: CodingTools },
+    skillsExtension(),
+    ...backend.extensions,
+  ],
   work: {
     agents,
     tools: ["bash", ...SKILL_TOOLS],
     maxDepth: 1,
     maxConcurrent: 2,
-    environment: new SandboxWorkEnvironment({
-      sandbox: new DockerSandboxProvider({
-        namespace: createHash("sha256")
-          .update(directory)
-          .digest("hex")
-          .slice(0, 16),
-        createEnvironment: ({ url, token, id, cwd, fetch }) =>
-          new RemoteExecutionEnv(url, token, id, cwd, fetch),
-      }),
-      image: process.env.KAENO_SANDBOX_IMAGE ?? "kaeno-sandbox:dev",
-      limits: { cpus: 1, memoryBytes: 536870912 },
-    }),
+    environment: backend.environment,
   },
 });
 const server = new ApiServer(core).server;
@@ -165,13 +183,33 @@ try {
       "The worker did not successfully discover its empty skill list",
     );
   }
-  if (!workerRanShell || !workerShellResult.includes("WORK_CONTAINER_OK")) {
+  console.log(workerShellResult);
+  if (
+    !workerRanShell ||
+    !["WORK_SANDBOX_OK", "Linux", "1000", "/workspace"].every((expected) =>
+      workerShellResult.includes(expected),
+    )
+  ) {
     throw new Error(
-      "The worker did not successfully run the command in Docker",
+      `The worker did not successfully run the verification command in ${provider}`,
     );
   }
 } finally {
   await new Promise<void>((resolve) => server.close(() => resolve()));
-  await core.close();
-  await rm(directory, { recursive: true, force: true });
+  try {
+    for (const { record } of (await core.harness.inspect(BACKGROUND_CONTEXT))
+      .tasks) {
+      if (
+        record.kind === "kaeno.work" &&
+        ["pending", "running"].includes(record.state.status)
+      ) {
+        await core.harness.abortTask(record.id, BACKGROUND_CONTEXT);
+        await core.harness.waitForTask(record.id, BACKGROUND_CONTEXT);
+      }
+    }
+    await backend.environment.reconcile([], core.harness);
+  } finally {
+    await core.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 }

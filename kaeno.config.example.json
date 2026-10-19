@@ -7,5 +7,9 @@
     "mjrmyr/myriad:5ca19933726862aa706199159b1fe1a02fccf56f"
   ],
   "kaeno": "mjrmyr/myriad:kaeno",
-  "workers": ["mjrmyr/myriad:swe"]
+  "workers": ["mjrmyr/myriad:swe"],
+  "execution": {
+    "provider": "docker",
+    "configFile": "./docker.json"
+  }
 }
