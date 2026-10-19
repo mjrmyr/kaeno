@@ -80,6 +80,15 @@ const directoryDeclaration = z
     directory: z.string().min(1),
   })
   .strict();
+// The host selects installed code and a file; each extension owns the contents of that file.
+const executionSchema = z
+  .object({
+    provider: z.enum(["docker", "kubernetes"]),
+    configFile: z.string().min(1),
+  })
+  .strict();
+export type ExecutionConfiguration = z.output<typeof executionSchema>;
+
 const qualified = z.string().regex(/^[^:\s]+:[^:\s*]+$/);
 const schema = z
   .object({
@@ -97,6 +106,10 @@ const schema = z
     kaeno: qualified,
     workers: z.array(qualified).default([]),
     defaultModel: z.string().min(1).optional(),
+    execution: executionSchema.prefault({
+      provider: "docker",
+      configFile: "./docker.json",
+    }),
   })
   .strict();
 export interface EnvironmentConfiguration {
@@ -106,6 +119,7 @@ export interface EnvironmentConfiguration {
   kaeno: string;
   workers: string[];
   defaultModel?: string;
+  execution: ExecutionConfiguration;
 }
 
 export function parseEnvironmentConfiguration(
@@ -165,5 +179,9 @@ export function parseEnvironmentConfiguration(
     kaeno: config.kaeno,
     workers: config.workers,
     defaultModel: config.defaultModel,
+    execution: {
+      ...config.execution,
+      configFile: resolve(dirname(configFile), config.execution.configFile),
+    },
   };
 }

@@ -105,6 +105,7 @@ export function kubernetesExtension(options: KubernetesExtensionOptions): {
 
 class KubernetesWorkEnvironment implements WorkEnvironment {
   readonly cwd = "/workspace";
+  readonly identity: string;
   private readonly target: string;
   private readonly config: z.output<typeof configurationSchema>;
   private readonly client: KubernetesClient;
@@ -126,6 +127,7 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
       service: config.service,
       serviceAccount: config.serviceAccount,
     });
+    this.identity = `kubernetes:${this.target}`;
   }
 
   private assertTarget(target: string): void {

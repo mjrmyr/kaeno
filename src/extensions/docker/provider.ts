@@ -25,6 +25,8 @@ export interface SandboxOptions {
  * that no longer correspond to active work.
  */
 export interface SandboxProvider {
+  /** Stable, non-secret identity of the backend and resource namespace. */
+  readonly identity: string;
   ensure(
     sandbox: SandboxIdentity,
     options: SandboxOptions,

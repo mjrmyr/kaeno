@@ -39,6 +39,7 @@ const WorkSandbox = defineDoc<SandboxState>({
 /** Optional sandbox adapter. Participant discovery/configuration never depends on this class. */
 export class SandboxWorkEnvironment implements WorkEnvironment {
   readonly cwd = "/workspace";
+  readonly identity: string;
   private readonly options: {
     sandbox: SandboxProvider;
     image: string;
@@ -50,6 +51,7 @@ export class SandboxWorkEnvironment implements WorkEnvironment {
     limits: SandboxLimits;
   }) {
     this.options = options;
+    this.identity = options.sandbox.identity;
   }
 
   async ensure(

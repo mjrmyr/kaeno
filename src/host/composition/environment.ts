@@ -35,7 +35,10 @@ import {
   SkillCatalog,
   type BoundSkill,
 } from "../../extensions/skills/index.ts";
-import { parseEnvironmentConfiguration } from "./configuration.ts";
+import {
+  parseEnvironmentConfiguration,
+  type ExecutionConfiguration,
+} from "./configuration.ts";
 
 const ORCHESTRATION = WORK_TOOLS.orchestration;
 const CODING = (CodingTools.tools ?? []).map((tool) => tool.name);
@@ -91,6 +94,7 @@ export interface LoadEnvironmentOptions {
   signal?: AbortSignal;
 }
 export interface LoadedEnvironment {
+  execution: ExecutionConfiguration;
   assistant: ConversationSetup;
   extensions: KaenoExtension[];
   work: WorkOptions;
@@ -197,6 +201,7 @@ export async function loadEnvironment(
         bindings,
       });
       return {
+        execution: config.execution,
         assistant,
         extensions: [
           { durable: CodingTools },

@@ -1,3 +1,8 @@
+export type {
+  ConfiguredExecution,
+  ExecutionConfigurationContext,
+  ExecutionConfigurationLoader,
+} from "./configuration.ts";
 export { encode, decode } from "./codec.ts";
 export type { WireCallback, Handle, DecodeHooks } from "./codec.ts";
 export { invokeEnvironment, invokeHandle } from "./dispatch.ts";

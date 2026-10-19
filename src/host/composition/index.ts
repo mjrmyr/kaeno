@@ -1,4 +1,6 @@
 export { loadEnvironment } from "./environment.ts";
+export { loadExecution } from "./execution.ts";
+export type { ExecutionConfiguration } from "./configuration.ts";
 export type {
   LoadEnvironmentOptions,
   LoadedEnvironment,

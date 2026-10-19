@@ -21,6 +21,7 @@ Node.js 24 or newer:
 npm ci
 mkdir -p .kaeno
 cp kaeno.config.example.json .kaeno/config.json
+cp docker.config.example.json .kaeno/docker.json
 export OPENAI_API_KEY=...
 export KAENO_DB="$PWD/kaeno.sqlite"
 npm start
@@ -30,7 +31,7 @@ Kaeno has WORK orchestration tools by default, independently of its assigned ski
 
 Edit `kaeno.config.example.json` to choose repositories, a Kaeno profile and worker profiles. The example pins a Myriad profile commit; update the pin intentionally when selecting a newer revision. Copy the configuration locally and use a persistent source cache. Private repositories may use the host-only GitHub App reader configured by `KAENO_GITHUB_CONFIG`; public repositories require no App key.
 
-The CLI uses Docker for worker environments by default; the optional [Kubernetes extension](docs/kubernetes.md) selects cluster-backed workers via `KAENO_KUBERNETES_CONFIG`. An available worker can start any other available worker, subject to the configured `KAENO_WORK_MAX_DEPTH` and concurrent-work limit. WORK freezes the agent settings when the root work is admitted; later file changes affect only newly admitted work after restart.
+The CLI uses Docker for worker environments by default. Select Docker or the optional [Kubernetes extension](docs/kubernetes.md) through `execution.provider` and `execution.configFile` in `KAENO_CONFIG`; see [execution backend configuration and safe switching](docs/execution.md). An available worker can start any other available worker, subject to the configured `KAENO_WORK_MAX_DEPTH` and concurrent-work limit. WORK freezes the agent settings when the root work is admitted; later file changes affect only newly admitted work after restart.
 
 Agent frontmatter `name` and `description` are required. Optional fields include `model`, `skills`, and `tools`. The Markdown body is the system prompt. A worker uses its profile model, or the explicit owner `defaultModel` / `KAENO_DEFAULT_MODEL`; it does not inherit Kaeno's model. Omitted tools inherit host-approved defaults. `tools: []` means no tools. Omitted skills means no source-assigned skills. Unknown metadata is inert. A `source:*` skill selector expands deterministically and saves concrete skill snapshots.
 
@@ -56,7 +57,7 @@ The optional [GitHub App extension](docs/github.md) gives all agents installatio
 
 ## Durability and scope
 
-Definitions used by admitted work are frozen. On restart, missing saved native definitions or incompatible work plans fail closed rather than silently binding a new tool surface. Take a consistent SQLite backup before opening a changed release; opening the harness writes recovery reconciliation state. External side effects are not transactional with SQLite and may be uncertain after a crash.
+Definitions used by admitted work are frozen. On restart, missing saved native definitions, incompatible work plans, or a changed execution environment identity fail closed rather than silently changing running work. Finish or cancel work with its original backend before switching. Older unfinished work without an environment identity must be drained with the previous release before upgrading. Take a consistent SQLite backup before opening a changed release; opening the harness writes recovery reconciliation state. External side effects are not transactional with SQLite and may be uncertain after a crash.
 
 This cut intentionally does not migrate the prior WORK/Telegram database or legacy JSON configuration. Define/select a catalog agent in `KAENO_CONFIG`; do not rely on `.kaeno/AGENT.md` as an assistant override. Use a fresh database for this release unless the previous workload has been deliberately drained/migrated and backed up.
 

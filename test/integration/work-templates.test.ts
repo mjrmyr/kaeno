@@ -70,6 +70,7 @@ it("offers and launches every configured worker even when none delegate to each 
   );
   const provisioned: string[] = [];
   const sandbox: SandboxProvider = {
+    identity: "test:sandbox",
     ensure: async (identity) => {
       provisioned.push(identity.id);
     },

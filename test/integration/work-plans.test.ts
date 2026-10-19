@@ -363,6 +363,7 @@ it("fails paused preflight when an approved tool disappears from a saved unfinis
   ];
   let ensuring = false;
   const environment = {
+    identity: "test:pending",
     cwd: "/workspace",
     ensure: async (_work: unknown, _runtime: unknown, ctx: typeof context) => {
       ensuring = true;
