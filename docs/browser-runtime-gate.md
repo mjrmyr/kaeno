@@ -1,144 +1,111 @@
-# Sandboxed Chromium: restricted WORK release gate
+# Browser in Kubernetes: deployment decision
 
-This is a **diagnostic/configuration proposal, not a verified production remediation**.
-Do not enable the example policy until the node gates below pass. No live settings are changed.
+## Recommendation and approval gate
 
-## Observed failure and limits of the evidence
+Keep the existing official MCP **stdio process in each WORK container**. No proxy, browser
+service, sidecar, extra mandatory environment variable or custom node security machinery.
+PR34's speculative `sandboxPolicy`/Localhost profile configuration and namespace diagnostics
+have been removed. The direct local `browser_close` teardown fix and regression tests stay.
 
-On the restricted WORK used for this investigation, the real `BrowserSession` running the
-pinned official MCP server failed against a **local controlled fixture**, before navigation:
-Chromium revision 1247, `zygote_host_impl_linux.cc:130 No usable sandbox`, then SIGABRT.
-This reproduces worker4731's public-navigation failure without involving DNS/public egress.
-The executable was `/ms-playwright/chromium-1247/chrome-linux64/chrome`.
+The pragmatic way to make Chromium run under the observed namespace-denying WORK policy is
+**explicitly disable the Chromium sandbox inside the existing restricted WORK container**.
+This is a recommendation awaiting owner approval, **not implemented or enabled here**.
+Current code still passes `--sandbox` and fails closed. Simply deleting that flag would also
+change the security posture with this pinned Chromium configuration; that is not a safe fix.
 
-Read-only metadata and disposable child probes reported:
+**Decision requested:** may WORK Chromium use explicit `--no-sandbox`, accepting that a
+compromised renderer can access the WORK process identity, files and network (including
+loopback), rather than being contained by Chromium's renderer sandbox? If approved, the
+minimal follow-up is a single explicit MCP argument replacement plus its test/documentation;
+no node changes or new configuration system are needed. Approval is not deployment approval.
 
-| Evidence                                       | Value                                 |
-| ---------------------------------------------- | ------------------------------------- |
-| UID/GID                                        | 1000/1000                             |
-| Effective/permitted/bounding capabilities      | all zero                              |
-| NoNewPrivs                                     | 1                                     |
-| Seccomp / filters                              | 2 (filter) / 1                        |
-| AppArmor current label                         | `cri-containerd.apparmor.d (enforce)` |
-| `kernel.unprivileged_userns_clone`             | 1                                     |
-| `user.max_user_namespaces`                     | 125019                                |
-| `kernel.apparmor_restrict_unprivileged_userns` | unavailable in this pod               |
-| `unshare(CLONE_NEWUSER)`                       | EPERM                                 |
-| `unshare(CLONE_NEWUSER \| CLONE_NEWNS)`        | EPERM                                 |
-| `unshare(CLONE_NEWUSER \| CLONE_NEWNET)`       | EPERM                                 |
-| Kernel                                         | `6.12.107+deb13-amd64`                |
+The agent already has bash as the same non-root identity in an ephemeral, read-only-root,
+capability-dropped, no-privilege-escalation WORK pod with no service-account token. That makes
+WORK a plausible pragmatic outer boundary for an owner who accepts this risk. It does **not**
+make untrusted website JavaScript equivalent to intentionally granted agent bash access.
+The browser sandbox is defense in depth between hostile renderers and WORK resources.
+Container/pod isolation is not an equivalent replacement. Environment sanitization is not OS
+process isolation; a compromised browser may access same-identity processes/files and envd
+credentials. Envd bearer authentication, WORK-only exposure and cleanup must remain.
 
-**Confirmed:** namespace creation is denied, and sandboxed Chromium cannot start under the
-current combined policy. **Not confirmed:** which filter/LSM/kernel rule denied each syscall;
-whether Chromium's `clone`, `clone3`, `setns` or `chroot` are denied; whether allowing `unshare`
-alone would fix Chromium. EPERM does not distinguish seccomp from AppArmor or another
-namespace prerequisite. Chromium's generic Ubuntu/AppArmor suggestion is not a diagnosis.
-The SUID sandbox is not an alternative with `allowPrivilegeEscalation:false`.
+## Three practical choices
 
-Inspected sources: kaeno main `9dd30a82a1b92da8d42252166a0a7af7b5c81f48` generates
-RuntimeDefault pods, cap-drop ALL, non-root, read-only root, no service-account token.
-Homelab main `fb50032f68a46fdeb48ff188d61394163efca150` pins host/WORK image
-`sha256:7f319fd2681c085f776104230cc5df74e9d24b12de5d6fd20260a917b6893fbc`
-and has no WORK policy override or node OS/profile provisioning. Its registry configuration
-and this pod's mount metadata identify k3s/containerd, not the active runtime's full policy.
-No Kubernetes API, node audit logs, or host administration was accessed.
-PR26 is merged, but was based on another work branch; the current main tree no longer has
-its Docker CI profile/smoke. PR30 is merged through the MCP integration; this is the
-proxy-free code. A historical Docker green is not evidence for today's Kubernetes runtime.
+| Choice                                                         | Benefit                                                                                                     | Cost / security limit                                                                                                                                                                                                                                                                                                                      |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Official MCP/browser image, same container or sidecar          | Maintained browser dependencies and headless stdio/HTTP entrypoint                                          | Does not override node seccomp/AppArmor/userns denial. The official MCP image explicitly uses `--no-sandbox`. A sidecar shares pod networking; separate container files/process visibility depend on pod settings. Kaeno currently assumes exactly one WORK execution container for identity/quota; adding a sidecar is not a drop-in fix. |
+| **Existing WORK + explicit `--no-sandbox` (approval pending)** | Smallest operational change; retains existing authenticated envd transport, per-WORK state and pod teardown | Removes Chromium renderer sandbox, retains only outer WORK containment. Not appropriate if hostile pages must be isolated from WORK files/processes. No silent fallback.                                                                                                                                                                   |
+| Dedicated remote browser pod/service                           | Can put browser compromise outside the credential-bearing WORK filesystem/process boundary                  | Needs endpoint, lifecycle, authentication/network restriction and per-WORK browser/context isolation. Remote host still needs sandbox-compatible policy or knowingly relies on its own container/VM boundary. More infrastructure; reserve for a requirement to isolate web content from WORK itself.                                      |
 
-## Close lifecycle fix
+A sandbox-preserving same-pod solution still needs a compatible host/runtime policy. An
+image swap alone cannot supply it. We do not know the denying node rule and therefore do
+not ship speculative seccomp profiles, sysctl/bootstrap changes, privileged containers,
+SYS_ADMIN, unconfined settings or a SUID escalation workaround.
 
-`browser_close` now tears down the owned MCP client and temporary directory directly,
-without forwarding an upstream tool call. This handles both unused sessions and failed
-launches returned as MCP `isError` (where a connected client still exists), and preserves
-cleanup of active sessions. It is idempotent; only the next non-close action reconnects.
-This supersedes PR32's no-client-only guard, which does not cover that actual failure path.
-No unrelated WORK lifecycle/refactor changes are included.
+## Retrieved official sources and pinned behavior
 
-## Implemented opt-in (default unchanged)
+Sources below were actually retrieved via HTTPS/curl during this revision; no successful
+native-browser web session is claimed. Documentation examples are not live-cluster tests.
 
-`KAENO_KUBERNETES_CONFIG` now accepts **only a Localhost seccomp path** plus a required
-nonempty selector for operator-provisioned nodes:
+- [Official MCP Docker instructions](https://github.com/microsoft/playwright-mcp/blob/main/README.md#docker):
+  `mcr.microsoft.com/playwright/mcp`, headless Chromium only; stdio `docker run -i --rm
+--init`, or long-lived HTTP on port 8931. HTTP adds a reachable service, not an automatic
+  authentication/isolation boundary. The README says MCP is **not a security boundary**.
+- [Pinned v0.0.83 Dockerfile](https://github.com/microsoft/playwright-mcp/blob/v0.0.83/Dockerfile):
+  installs dependencies with `playwright-core install-deps chromium`, browser with
+  `install --no-shell chromium`, runs as `node` with tini; entrypoint explicitly includes
+  `--headless --browser chromium --no-sandbox`. It is not evidence that sandboxed Chromium
+  works under RuntimeDefault. Pin an image version/digest rather than following `latest`.
+- [Playwright Docker guide](https://playwright.dev/docs/docker): the image contains browser
+  binaries/dependencies, not your Playwright package. For untrusted crawling it recommends a
+  separate non-root user **and a seccomp profile permitting user namespace creation**.
+  Its root/trusted-test shortcut disables Chromium sandboxing; it is not our security model.
+  There is no Kubernetes magic in the image: equivalent pod/host prerequisites still apply.
+- [Official remote-server recipe](https://playwright.dev/docs/docker#remote-connection):
+  versioned `mcr.microsoft.com/playwright:v1.64.0-noble`, non-root `pwuser`,
+  `playwright@1.64.0 run-server --port 3000 --host 0.0.0.0`. Client and server versions must
+  match. The documented stable image is **not** a matching substitute for our pinned alpha.
+- [Chromium Linux sandbox](https://chromium.googlesource.com/chromium/src/+/main/sandbox/linux/README.md)
+  describes namespace, setuid and seccomp layers; [sandbox design](https://chromium.googlesource.com/chromium/src/+/main/docs/design/sandbox.md)
+  explains restricting compromised code through OS mechanisms. These differ from the outer
+  Kubernetes container boundary.
 
-```json
-{
-  "sandboxPolicy": {
-    "seccompLocalhostProfile": "kaeno/chromium-reviewed-v1.json",
-    "nodeSelector": { "kaeno.io/browser-sandbox": "reviewed-v1" }
-  }
-}
-```
+`npm view @playwright/mcp version` returned **0.0.83**, matching the lockfile. Installed
+Playwright is **1.64.0-alpha-1790635538000**, browser revision **1247**, installed at image
+build by the lockfile CLI. No package/image upgrade is needed to fix close or choose policy.
 
-This is a fragment to add to an otherwise valid config, **not a deployable profile**.
-The path is relative to the kubelet seccomp root; absolute paths, traversal, empty segments
-and backslashes are rejected. Kubernetes still validates label syntax/admission rules.
-No Unconfined, capability, AppArmor-disable or privilege-escalation option is added.
-Only generated WORK pods change; the host stays RuntimeDefault. All other hardening remains.
-An absent profile fails pod creation; an absent node label leaves the pod unscheduled. There
-is no fallback. Policy/path/selector changes invalidate saved WORK target configuration;
-drain/finish existing work before changing it. The default saved target format is unchanged.
+The actual pinned `node node_modules/@playwright/mcp/cli.js --help` confirms `--sandbox`,
+`--no-sandbox`, `--endpoint`, `--cdp-endpoint`, `--cdp-header`, `--cdp-timeout` and `--port`.
+Inspection of installed `playwright-core/lib/coreBundle.js` confirms:
 
-A custom seccomp profile **replaces**, not augments, RuntimeDefault. Supplying a default-allow
-profile would silently remove protections: do not do that. Unprivileged namespace syscalls
-increase kernel attack surface even with no capabilities in the parent namespace. This is
-an operator-reviewed, per-WORK policy delta, not a claim of equivalent security.
+- CLI sandbox maps to `launchOptions.chromiumSandbox`. On Linux, unspecified sandbox defaults
+  depend on channel; `chromium` and `chrome-for-testing` default false. Our explicit
+  `--browser chromium --sandbox` opts in. Do not generalize the default to all MCP browsers.
+- `--endpoint` maps to `browser.remoteEndpoint` (Playwright connection); `--cdp-endpoint`
+  uses `chromium.connectOverCDP`. CDP is Chromium-specific and is not the MCP HTTP endpoint.
+  Remote launch policy belongs to the remote browser, not a client-side sandbox flag.
 
-## Node evidence and provisioning gate (operator; not executed here)
+## Evidence and verification gate
 
-1. Identify the node, runtime/containerd version and configured runtime handler serving the
-   failed WORK. Obtain its actual effective seccomp baseline and AppArmor definition using
-   the node's supported runtime tooling. Record hashes/versions; do not assume Docker's
-   profile matches containerd's. Check node-side userns limits/sysctls and applicable LSMs.
-2. Correlate node audit/kernel logs with the failed launch's PID/time. Look for
-   `apparmor="DENIED"` userns records and seccomp syscall/arch records. Absence of logs is
-   not proof of allowance: ERRNO seccomp actions may not emit audit records. If needed,
-   collect syscall results using an operator-approved tracing setup on an isolated canary
-   with the same runtime settings. Do not grant tracing privileges to normal WORK pods.
-3. Review only evidenced changes against a pinned copy of the **actual runtime baseline**.
-   The historical Docker candidate (`clone`, `setns`, `unshare`, `chroot`) is a hypothesis,
-   not a provisionable containerd profile. Keep other deny rules/architectures intact;
-   constrain namespace/clone flags where supported and verified with this Chromium version.
-   No profile is checked in here because the runtime baseline/denial evidence is unavailable.
-4. If seccomp is the only blocker, install the reviewed versioned profile under the kubelet's
-   configured seccomp root on **each eligible node**, using the existing node-management
-   process. Determine the actual root from kubelet configuration; do not assume the k3s
-   path. Validate ownership/mode/hash and profile loading, then label only those nodes with
-   the reviewed version. Do not mount host paths or add a privileged profile-installer DaemonSet.
-5. If AppArmor is also blocking, stop and review a narrow WORK-specific profile with the
-   operator. This PR does not configure AppArmor or change host userns sysctls. Any need
-   for broad host-policy relaxation is an explicit human security decision, not a default.
-6. Only after isolated canary verification, propose the actual homelab profile provisioning
-   and `kubernetes.json` opt-in together for review. Do not opt the single homelab node in
-   speculatively. Maintain the paired host/WORK image digest invariant.
+Prior PR34 runtime evidence: `/ms-playwright/chromium-1247/chrome-linux64/chrome` reached
+`No usable sandbox`/SIGABRT. Disposable user, user+mount and user+network namespace probes
+returned EPERM. This confirms inability to launch under the combined policy, **not** which
+seccomp/AppArmor/sysctl rule denied it. No node audit logs or host policy were inspected.
 
-## Actual-image test gate
+`npm run browser:smoke` runs a small controlled loopback fixture through the actual
+BrowserSession: JavaScript, cross-navigation persistence, screenshot, direct close and
+finally cleanup. It never disables sandboxing, downloads a browser or changes pod policy.
+A failure before navigation is a failed release gate, not a network or JavaScript verdict.
+Unit tests cover repeated/unused/failed-launch close without forwarding upstream close,
+reconnect on the next action, cancellation, sanitized environment and directory removal.
 
-The Dockerfile includes `scripts/browser-runtime-smoke.ts`. In a **candidate WORK pod**
-created by the normal generator on the reviewed node/runtime, run (operator commands):
+Fresh checks for this revision: `npm run verify` passed **37 files / 350 tests**, including
+TypeScript, lint, architecture and formatting checks. `npm run browser:smoke` reached the
+installed revision 1247 but failed before navigation with **No usable sandbox / SIGABRT**.
+Its temporary directory was removed; a subsequent `/proc/*/exe` inspection found no visible
+`/ms-playwright/` executables. No screenshot or successful JavaScript execution is claimed.
 
-```sh
-kubectl -n kaeno exec <candidate-work-pod> -c envd -- \
-  node /app/scripts/browser-runtime-smoke.ts --diagnose-only
-kubectl -n kaeno exec <candidate-work-pod> -c envd -- \
-  node /app/scripts/browser-runtime-smoke.ts
-```
-
-The second command exits nonzero on any MCP/Chromium error. It exercises the actual
-`BrowserSession`, its sanitized child environment, pinned server/browser, sandbox enabled,
-controlled loopback JavaScript, two navigations with `window.name` persistence, a real image
-screenshot and close. It always closes the MCP client and local fixture. The probes only
-read fixed kernel metadata and call unshare in disposable children; no credentials or private
-services are read. Use `npm run browser:smoke -- --diagnose-only` in a source checkout.
-This fixture intentionally uses loopback: it proves browser startup, **not network isolation**.
-
-Record candidate digest, node/runtime, effective seccomp/AppArmor profile hashes, pod manifest,
-command exit code and output. A PASS from Docker or an unrestricted laptop is **not sufficient**.
-Still gate release on distinct-pod session isolation, cancellation, process/temp-directory
-cleanup, normal native-tool invocation and the network matrix in [browser-mcp.md](browser-mcp.md)
-(public egress, configured private/tailnet/link-local denials, IPv6, redirects/rebinding,
-loopback and envd bearer rejection). Do not change live policy to run this gate automatically.
-
-In this investigation `npm run browser:smoke` exited **1** with the sandbox failure above;
-no successful screenshot or remediated launch is claimed. There is no Docker executable or
-node administration access in this WORK, so candidate image building and policy-enabled
-canary verification remain release gates. Unit/integration tests cannot substitute for them.
+Before releasing either chosen runtime policy, validate real browser launch, screenshots,
+sibling-session isolation, cancellation/process cleanup and actual CNI egress/private-network
+restrictions in the candidate WORK pod. No live Kubernetes deployment or node changes are
+part of this revision. Until security approval and a passing runtime gate, close is fixed
+but browser navigation remains unavailable on the observed restricted runtime.

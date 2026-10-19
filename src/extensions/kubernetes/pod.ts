@@ -46,10 +46,6 @@ export function sandboxPod(
     service: string;
     serviceAccount: string;
     resources: Resources;
-    sandboxPolicy?: {
-      seccompLocalhostProfile: string;
-      nodeSelector: Record<string, string>;
-    };
   },
 ): object {
   return {
@@ -72,9 +68,6 @@ export function sandboxPod(
       hostname: reservation.pod,
       subdomain: options.service,
       restartPolicy: "Never",
-      ...(options.sandboxPolicy
-        ? { nodeSelector: options.sandboxPolicy.nodeSelector }
-        : {}),
       activeDeadlineSeconds: 4 * 3600,
       serviceAccountName: options.serviceAccount,
       automountServiceAccountToken: false,
@@ -84,12 +77,7 @@ export function sandboxPod(
         runAsUser: 1000,
         runAsGroup: 1000,
         fsGroup: 1000,
-        seccompProfile: options.sandboxPolicy
-          ? {
-              type: "Localhost",
-              localhostProfile: options.sandboxPolicy.seccompLocalhostProfile,
-            }
-          : { type: "RuntimeDefault" },
+        seccompProfile: { type: "RuntimeDefault" },
       },
       containers: [
         {
