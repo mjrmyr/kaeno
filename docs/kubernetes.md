@@ -1,6 +1,6 @@
 # Kubernetes worker extension
 
-The optional Kubernetes extension replaces Docker as the worker execution backend. It is not a `kubectl` tool and grants agents no Kubernetes API access. It composes through `KaenoExtension` and `WorkEnvironment`; all Kubernetes implementation details live in `src/extensions/kubernetes/`.
+The optional Kubernetes extension replaces the local [microsandbox](microsandbox.md) backend as the worker execution backend. It is not a `kubectl` tool and grants agents no Kubernetes API access. It composes through `KaenoExtension` and `WorkEnvironment`; all Kubernetes implementation details live in `src/extensions/kubernetes/`.
 
 ## Configure
 
@@ -23,7 +23,7 @@ export KAENO_KUBERNETES_CONFIG=/etc/kaeno/kubernetes.json
 npm start
 ```
 
-The CLI selects Kubernetes when this variable is set; otherwise it keeps the existing Docker backend. No cluster credentials are needed when Kubernetes is disabled. Agent and skill selection come from the same `KAENO_CONFIG` in both cases; only the source cache path/storage differs. Mount its `sourceDirectory` on the host (for example, a PVC at `/sources`), never into worker pods. The independent GitHub App reader/tools work with either backend.
+The CLI selects Kubernetes when this variable is set; otherwise it uses the local microsandbox backend. No cluster credentials are needed when Kubernetes is disabled. Agent and skill selection come from the same `KAENO_CONFIG` in both cases; only the source cache path/storage differs. Mount its `sourceDirectory` on the host (for example, a PVC at `/sources`), never into worker pods. The independent GitHub App reader/tools work with either backend.
 
 `owner` must be a stable, unique DNS label (maximum 32 characters) for this application/database. Never share it between independent databases, including database clones. Pod names are `<owner>-work-<workId>`.
 

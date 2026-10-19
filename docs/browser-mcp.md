@@ -45,8 +45,9 @@ This is not a claim of perfect public-only networking. The repository's example
 [`cluster.yaml`](../src/extensions/kubernetes/cluster.yaml) excludes RFC1918, 127/8 and
 169.254/16 from its IPv4 allow rule; it does **not** include tailnet 100.64/10 or every
 cluster/node/reserved range. Check the actual deployed exclusions and DNS exceptions rather
-than assuming the example covers your LAN/tailnet. Docker networking is a separate backend;
-Kubernetes policy guarantees do not automatically apply there.
+than assuming the example covers your LAN/tailnet. The local [microsandbox](microsandbox.md)
+backend applies microsandbox's own egress policy instead; Kubernetes policy guarantees do not
+apply there.
 
 Pod loopback is **not isolated** by NetworkPolicy, even with 127/8 in an ipBlock exclusion.
 Node traffic and CNI-specific exceptions can also escape the expected policy boundary.

@@ -23,9 +23,10 @@ import {
 import { ApiServer } from "../src/extensions/api/index.ts";
 import { RemoteExecutionEnv } from "../src/extensions/execution/index.ts";
 import {
-  DockerSandboxProvider,
+  MicrosandboxEngine,
+  MicrosandboxSandboxProvider,
   SandboxWorkEnvironment,
-} from "../src/extensions/docker/index.ts";
+} from "../src/extensions/microsandbox/index.ts";
 
 const directory = await mkdtemp(join(tmpdir(), "kaeno-work-smoke-"));
 const faux = fauxProvider({ provider: "openai" });
@@ -65,7 +66,7 @@ faux.setResponses(
       workerRanShell = true;
       workerShellResult = JSON.stringify(last);
       return fauxAssistantMessage([
-        fauxText("Verified command ran in the Docker sandbox."),
+        fauxText("Verified command ran in the microsandbox VM."),
       ]);
     }
     if (last?.role === "user" && String(last.content).includes("Work #")) {
@@ -84,7 +85,7 @@ faux.setResponses(
         [
           fauxToolCall("start_work", {
             agent: "worker",
-            title: "Docker smoke test",
+            title: "microsandbox smoke test",
             brief: "Run echo WORK_CONTAINER_OK and report the exact output.",
           }),
         ],
@@ -121,7 +122,8 @@ const core = await openKaeno({
     maxDepth: 1,
     maxConcurrent: 2,
     environment: new SandboxWorkEnvironment({
-      sandbox: new DockerSandboxProvider({
+      sandbox: new MicrosandboxSandboxProvider({
+        engine: new MicrosandboxEngine(),
         namespace: createHash("sha256")
           .update(directory)
           .digest("hex")
@@ -167,7 +169,7 @@ try {
   }
   if (!workerRanShell || !workerShellResult.includes("WORK_CONTAINER_OK")) {
     throw new Error(
-      "The worker did not successfully run the command in Docker",
+      "The worker did not successfully run the command in a microsandbox VM",
     );
   }
 } finally {

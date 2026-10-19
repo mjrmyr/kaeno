@@ -17,9 +17,10 @@ import { ApiServer } from "../extensions/api/index.ts";
 import { RemoteExecutionEnv } from "../extensions/execution/index.ts";
 import { loadKubernetesConfiguration } from "../extensions/kubernetes/index.ts";
 import {
-  DockerSandboxProvider,
+  MicrosandboxEngine,
+  MicrosandboxSandboxProvider,
   SandboxWorkEnvironment,
-} from "../extensions/docker/index.ts";
+} from "../extensions/microsandbox/index.ts";
 
 import { browserExtension } from "../extensions/browser/index.ts";
 
@@ -74,14 +75,14 @@ if (configuration.work) {
     configuration.work.environment = kubernetes.environment;
   } else {
     configuration.work.environment = new SandboxWorkEnvironment({
-      sandbox: new DockerSandboxProvider({
+      sandbox: new MicrosandboxSandboxProvider({
+        engine: new MicrosandboxEngine(),
         namespace:
           process.env.KAENO_SANDBOX_NAMESPACE ??
           createHash("sha256")
             .update(resolve(process.env.KAENO_DB ?? "/data/kaeno.sqlite"))
             .digest("hex")
             .slice(0, 16),
-        apiHost: process.env.KAENO_SANDBOX_API_HOST ?? "127.0.0.1",
         createEnvironment: ({ url, token, id, cwd, fetch }) =>
           new RemoteExecutionEnv(url, token, id, cwd, fetch),
       }),

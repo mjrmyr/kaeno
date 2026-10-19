@@ -106,7 +106,7 @@ export class SandboxWorkEnvironment implements WorkEnvironment {
       }
     }
     if (identities.length === 0) {
-      // A fresh standalone installation must not need Docker merely to boot. Only contact the
+      // A fresh standalone installation must not need microsandbox merely to boot. Only contact the
       // backend if this database has actually owned an environment (including terminal orphans).
       let cursor: Cursor | undefined;
       let owned = false;

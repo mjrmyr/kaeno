@@ -9,8 +9,8 @@ permissions:
   contents: read
 
 jobs:
-  # One image serves both roles: the host runs src/host/main.ts, and Docker or Kubernetes sandbox
-  # pods run src/host/envd.ts from the same digest, so host and worker code can never drift apart.
+  # One image serves both roles: the host runs src/host/main.ts, and microsandbox VMs or Kubernetes
+  # sandbox pods run src/host/envd.ts from the same digest, so host and worker code can never drift apart.
   publish:
     runs-on: ubuntu-latest
     outputs:

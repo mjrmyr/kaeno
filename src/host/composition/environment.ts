@@ -97,7 +97,7 @@ export interface LoadedEnvironment {
   diagnostics: Diagnostic[];
 }
 
-/** The same host operation for local directories, Docker volumes and Kubernetes PVCs. */
+/** The same host operation for local directories and Kubernetes PVCs. */
 export async function loadEnvironment(
   options: LoadEnvironmentOptions,
 ): Promise<LoadedEnvironment> {
