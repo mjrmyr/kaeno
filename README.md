@@ -50,6 +50,10 @@ The embedding entry point is `openKaeno` in `src/core/application/index.ts`. Cal
 
 Native extensions are trusted process code, fixed before the harness opens. There is no hot loader or plugin marketplace. Agent/skill Markdown is data, not executable extension code. An agent may author a patch or a future native extension, but adopting that code into the running process remains an owner-controlled release decision.
 
+## WORK progress, questions and cleanup
+
+Use `message_parent` with `kind: "progress"` for nonblocking updates and `kind: "question"` only when input is required. A final answer completes WORK: persist required artifacts first; its durable report/notification precede automatic environment cleanup. Worker-result turns remain read-only. See [WORK lifecycle](docs/work-lifecycle.md) for inspection, recovery and compatibility details.
+
 ## Private repository work
 
 The optional [GitHub App extension](docs/github.md) gives all agents installation-wide repository discovery, credential-free sandbox checkout, and draft-PR publishing. Configure `KAENO_GITHUB_CONFIG` with an owner-controlled App/installation file; GitHub tools become defaults for Kaeno and workers, while explicit `tools` lists still override defaults; no GitHub credentials are needed when the extension is disabled. GitHub controls repository access and permissions, with no duplicated per-agent policies. Other platforms can supply independent extensions through the same tool/binding/prompt-section composition.
