@@ -1,6 +1,6 @@
 import type { ConversationId, TaskId, Tx } from "@earendil-works/pi-durable";
 import type { TurnCoordinator } from "../turns/index.ts";
-import type { WorkReport, WorkTurns } from "./work.ts";
+import type { WorkReport, WorkTurns } from "./model.ts";
 
 /** Adapt work reports to Kaeno's generic causal activity-result protocol. */
 export function workTurns(turns: () => TurnCoordinator): WorkTurns {

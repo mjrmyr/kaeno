@@ -6,7 +6,7 @@ import {
   createMockTransaction,
 } from "../../../test/mocks/durable.ts";
 import { conversationId, taskId } from "../../../test/mocks/identifiers.ts";
-import { Work, type WorkTurns } from "./index.ts";
+import { Work, WorkIndex, WorkScope, type WorkTurns } from "./index.ts";
 vi.mock("@earendil-works/pi-durable", async () => {
   const { createMockSdk } = await import("../../../test/mocks/sdk.ts");
   return createMockSdk();
@@ -74,6 +74,49 @@ it("publishes orchestration and parent tools and reports an empty directory", as
   expect(work.parentTools.map((tool) => tool.name)).toEqual(["message_parent"]);
   expect(await work.listWork(conversationId(12))).toEqual([]);
   expect(work.describeForChat()).toContain("- local:root: Root");
+});
+it("preserves the durable task and document identities behind the public API", () => {
+  const { work } = setup();
+  expect(work.extension.name).toBe("kaeno-work");
+  expect(work.extension.tasks).toHaveLength(1);
+  const definition = work.extension.tasks?.[0].definition;
+  expect(definition).toMatchObject({ name: "kaeno.work", version: 3 });
+  expect(Object.keys(definition?.phases ?? {})).toEqual([
+    "start",
+    "supervise",
+    "message",
+    "report",
+  ]);
+  expect(WorkIndex.definition).toMatchObject({
+    kind: "kaeno.work-index",
+    version: 1,
+    scope: "conversation",
+    history: "latest",
+    fork: "initial",
+  });
+  expect(WorkIndex.definition.initial()).toEqual({ launches: {} });
+  expect(WorkScope.definition).toMatchObject({
+    kind: "kaeno.work-node",
+    version: 1,
+    scope: "conversation",
+    history: "latest",
+    fork: "initial",
+  });
+  expect(WorkScope.definition.initial()).toEqual({
+    workId: null,
+    depth: 0,
+    maxDepth: null,
+    agent: null,
+    plan: null,
+    message: null,
+  });
+  expect(work.extension.tools).toEqual([
+    ...work.orchestrationTools,
+    ...work.parentTools,
+  ]);
+  expect(work.extension.tools?.every((tool) => tool.replay === "safe")).toBe(
+    true,
+  );
 });
 const states: [
   TaskRecord<JsonValue, JsonValue, unknown>["state"],
