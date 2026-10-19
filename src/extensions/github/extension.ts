@@ -22,6 +22,7 @@ import {
   readGitHubInstallation,
 } from "./access.ts";
 import { GitHubClient } from "./client.ts";
+import { githubReadTools, GITHUB_READ_TOOLS } from "./read-tools.ts";
 import { commitSchema, HostGit, type RepositoryTransport } from "./git.ts";
 import {
   exportCheckout,
@@ -93,7 +94,7 @@ function text(value: unknown): { content: [{ type: "text"; text: string }] } {
   return { content: [{ type: "text", text: JSON.stringify(value) }] };
 }
 
-/** Three native tools, extension-owned bindings and a truthful contextual prompt section. */
+/** Native GitHub tools, extension-owned bindings and a truthful contextual prompt section. */
 export function githubExtension(
   options: GitHubExtensionOptions,
 ): KaenoExtension {
@@ -354,7 +355,7 @@ export function githubExtension(
   return {
     durable: defineExtension({
       name: GITHUB_EXTENSION,
-      tools: [list, checkout, publish],
+      tools: [list, checkout, publish, ...githubReadTools(client, tokenFor)],
       sections: [
         section("github", async ({ conversationId, read, agent }, context) => {
           const tools = agent.tools.map((tool) => tool.name);
@@ -365,7 +366,7 @@ export function githubExtension(
         }),
       ],
     }),
-    readOnlyTools: [GITHUB_TOOLS[0]],
+    readOnlyTools: [GITHUB_TOOLS[0], ...GITHUB_READ_TOOLS],
     validateBinding: (binding) => {
       if (readGitHubInstallation(binding) !== installationId) {
         throw new Error(
