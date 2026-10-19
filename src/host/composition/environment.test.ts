@@ -317,3 +317,14 @@ it.each([
     ),
   ).toThrow();
 });
+
+it("offers sandbox-only tools to workers, not the assistant defaults", async () => {
+  const { configFile } = await fixture();
+  const config = await loadEnvironment({
+    configFile,
+    workerTools: ["browser_snapshot"],
+  });
+  expect(config.assistant.tools).not.toContain("browser_snapshot");
+  expect(config.work.tools).toContain("browser_snapshot");
+  expect(config.work.agents[0].setup.tools).toContain("browser_snapshot");
+});

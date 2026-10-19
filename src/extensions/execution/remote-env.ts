@@ -423,6 +423,9 @@ export class RemoteExecutionEnv {
       (value) => shellResultSchema.parse(value),
     );
   }
+  browser(input: object, ctx: Context): Promise<unknown> {
+    return this.request("/browser", input, [], ctx);
+  }
   async cleanup(ctx: Context): Promise<void> {
     await this.request("/cleanup", {}, [], ctx, ctx.abortSignal);
   }

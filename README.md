@@ -65,3 +65,11 @@ See the [core entry point](src/core/application/index.ts), [WORK implementation]
 ```sh
 npm run verify
 ```
+
+### Optional WORK browser tools
+
+The official Playwright MCP integration exposes browser tools directly to worker models,
+with one isolated stdio session inside each WORK sandbox. It is disabled by default.
+See [browser MCP prerequisites and lifecycle](docs/browser-mcp.md) before setting
+`KAENO_BROWSER_PROXY`: an enforced public-only proxy/egress boundary and a runtime supporting
+sandboxed Chromium are required. No deployment security settings are relaxed automatically.

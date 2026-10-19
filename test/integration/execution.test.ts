@@ -72,3 +72,47 @@ it("does not expose the removed collection endpoint", async () => {
     );
   }
 });
+
+it("keeps the browser in envd across transient remote clients and cleans it up", async () => {
+  let calls = 0;
+  let closed = false;
+  const server = new EnvironmentServer(
+    "token",
+    (cwd) => new NodeExecutionEnv({ cwd }),
+    process.cwd(),
+    {
+      async call(input) {
+        expect(input).toMatchObject({ name: "browser_snapshot" });
+        return { content: [{ type: "text", text: String(++calls) }] };
+      },
+      async close() {
+        closed = true;
+      },
+    },
+  ).server;
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected TCP address");
+    }
+    const url = `http://127.0.0.1:${address.port}`;
+    const remote = () =>
+      new RemoteExecutionEnv(url, "token", "work", process.cwd(), fetch);
+    expect((await fetch(`${url}/browser`, { method: "POST" })).status).toBe(
+      401,
+    );
+    expect(
+      await remote().browser({ name: "browser_snapshot" }, context),
+    ).toMatchObject({ content: [{ text: "1" }] });
+    expect(
+      await remote().browser({ name: "browser_snapshot" }, context),
+    ).toMatchObject({ content: [{ text: "2" }] });
+    await remote().cleanup(context);
+    expect(closed).toBe(true);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
