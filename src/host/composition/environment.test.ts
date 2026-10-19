@@ -328,3 +328,24 @@ it("offers sandbox-only tools to workers, not the assistant defaults", async () 
   expect(config.work.tools).toContain("browser_snapshot");
   expect(config.work.agents[0].setup.tools).toContain("browser_snapshot");
 });
+
+it.each([
+  { tools: "tools: []\n", expected: [] },
+  { tools: "tools: [read]\n", expected: ["read"] },
+  { tools: "tools: [browser_snapshot]\n", expected: ["browser_snapshot"] },
+])(
+  "respects explicit WORK tool lists instead of adding browser defaults ($tools)",
+  async ({ tools, expected }) => {
+    const { root, configFile } = await fixture();
+    await put(
+      join(root, "agents/swe/AGENT.md"),
+      agent("swe", `model: openai/worker\n${tools}`),
+    );
+    const config = await loadEnvironment({
+      configFile,
+      workerTools: ["browser_snapshot"],
+    });
+    expect(config.work.agents[0].setup.tools).toEqual(expected);
+    expect(config.assistant.tools).not.toContain("browser_snapshot");
+  },
+);
