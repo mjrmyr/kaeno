@@ -20,10 +20,11 @@ function tokenHash(token: string): string {
 export function assertIdentity(
   pod: Pod,
   reservation: Reservation,
-  owner: string,
+  options: { owner: string; runtimeClassName?: string },
 ): void {
   if (
-    pod.metadata.labels[OWNER_LABEL] !== owner ||
+    pod.metadata.labels[OWNER_LABEL] !== options.owner ||
+    pod.spec.runtimeClassName !== options.runtimeClassName ||
     pod.metadata.annotations["kaeno.io/work"] !== String(reservation.workId) ||
     pod.metadata.annotations["kaeno.io/conversation"] !==
       String(reservation.conversationId) ||
@@ -46,6 +47,7 @@ export function sandboxPod(
     service: string;
     serviceAccount: string;
     resources: Resources;
+    runtimeClassName?: string;
   },
 ): object {
   return {
@@ -65,6 +67,9 @@ export function sandboxPod(
       },
     },
     spec: {
+      ...(options.runtimeClassName === undefined
+        ? {}
+        : { runtimeClassName: options.runtimeClassName }),
       hostname: reservation.pod,
       subdomain: options.service,
       restartPolicy: "Never",

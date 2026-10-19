@@ -29,7 +29,10 @@ const podSchema = z.object({
     annotations: z.record(z.string(), z.string()).default({}),
     deletionTimestamp: z.string().nullable().optional(),
   }),
-  spec: z.object({ containers: z.array(z.object({ image: z.string() })) }),
+  spec: z.object({
+    runtimeClassName: z.string().optional(),
+    containers: z.array(z.object({ image: z.string() })),
+  }),
   status: z
     .object({
       conditions: z
@@ -78,7 +81,10 @@ export class KubernetesClient {
     signal?: AbortSignal,
   ): Promise<unknown> {
     const token = (await this.options.readToken()).trim();
-    const url = `${this.options.api}/api/v1/namespaces/${this.options.namespace}/${path}`;
+    // Relative paths are namespace-local core resources; absolute paths are cluster-scoped.
+    const url = path.startsWith("/")
+      ? `${this.options.api}${path}`
+      : `${this.options.api}/api/v1/namespaces/${this.options.namespace}/${path}`;
     const headers = {
       authorization: `Bearer ${token}`,
       "content-type": "application/json",
@@ -207,6 +213,33 @@ export class KubernetesClient {
       );
     }
     return spec.hard;
+  }
+  async runtimeClass(
+    name: string,
+    signal?: AbortSignal,
+  ): Promise<{ cpu?: string; memory?: string }> {
+    const value = await this.call(
+      "GET",
+      `/apis/node.k8s.io/v1/runtimeclasses/${name}`,
+      undefined,
+      signal,
+    );
+    if (value === undefined) {
+      throw new Error(`Kubernetes RuntimeClass ${name} not found`);
+    }
+    const { overhead } = z
+      .object({
+        overhead: z
+          .object({
+            podFixed: z
+              .object({ cpu: z.string(), memory: z.string() })
+              .partial()
+              .optional(),
+          })
+          .optional(),
+      })
+      .parse(value);
+    return overhead?.podFixed ?? {};
   }
 }
 

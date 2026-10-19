@@ -108,3 +108,43 @@ spec:
               - 192.168.0.0/16
               - 127.0.0.0/8
               - 169.254.0.0/16
+---
+# Only needed when kubernetes.json sets runtimeClassName (e.g. Kata Containers).
+# Kaeno reads the RuntimeClass overhead to size quota; list each configured name.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kaeno-kubernetes-host-runtimeclass
+rules:
+  - apiGroups: [node.k8s.io]
+    resources: [runtimeclasses]
+    resourceNames: [kata-qemu]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kaeno-kubernetes-host-runtimeclass
+subjects:
+  - kind: ServiceAccount
+    name: kaeno-kubernetes-host
+    namespace: kaeno
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kaeno-kubernetes-host-runtimeclass
+# kata-deploy installs RuntimeClasses like the following. Create one yourself only
+# when installing Kata another way; the handler must match the containerd/CRI-O config.
+# ---
+# apiVersion: node.k8s.io/v1
+# kind: RuntimeClass
+# metadata:
+#   name: kata-qemu
+# handler: kata-qemu
+# overhead:
+#   podFixed:
+#     cpu: 250m
+#     memory: 160Mi
+# scheduling:
+#   nodeSelector:
+#     katacontainers.io/kata-runtime: "true"

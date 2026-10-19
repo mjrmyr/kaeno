@@ -52,6 +52,8 @@ export const configurationSchema = z
     quota: dnsName.default("kaeno-sandbox"),
     service: dnsName.default("kaeno-sandbox"),
     serviceAccount: dnsName.default("kaeno-sandbox"),
+    /** Optional RuntimeClass, e.g. Kata Containers for per-pod microVM isolation. */
+    runtimeClassName: dnsName.optional(),
     readyTimeoutMs: z.number().int().positive().default(240_000),
   })
   .strict();
@@ -126,6 +128,10 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
       quota: config.quota,
       service: config.service,
       serviceAccount: config.serviceAccount,
+      // Omitted when unset so identities saved before this option still match.
+      ...(config.runtimeClassName === undefined
+        ? {}
+        : { runtimeClassName: config.runtimeClassName }),
     });
     this.identity = `kubernetes:${this.target}`;
   }
@@ -139,10 +145,14 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
   }
 
   async capacity(context: Context): Promise<number> {
-    return capacity(
-      await this.client.quota(this.config.quota, context.abortSignal),
-      this.config.resources,
-    );
+    const signal = context.abortSignal;
+    const [hard, overhead] = await Promise.all([
+      this.client.quota(this.config.quota, signal),
+      this.config.runtimeClassName === undefined
+        ? undefined
+        : this.client.runtimeClass(this.config.runtimeClassName, signal),
+    ]);
+    return capacity(hard, this.config.resources, overhead);
   }
 
   async ensure(
@@ -187,7 +197,7 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
         (pod) => pod.metadata.name === reservation.pod,
       );
       if (existing) {
-        assertIdentity(existing, reservation, this.config.owner);
+        assertIdentity(existing, reservation, this.config);
       }
       const granted = await runtime.commit(async (tx) => {
         const state = await tx.doc(Sandboxes);
@@ -234,7 +244,7 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
       signal?.throwIfAborted();
       const existing = await this.client.pod(reservation.pod, signal);
       if (existing) {
-        assertIdentity(existing, reservation, this.config.owner);
+        assertIdentity(existing, reservation, this.config);
         break;
       }
       try {
@@ -261,7 +271,7 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
           `Kubernetes sandbox ${reservation.pod} disappeared before becoming ready`,
         );
       }
-      assertIdentity(pod, reservation, this.config.owner);
+      assertIdentity(pod, reservation, this.config);
       const reason = failure(pod);
       if (reason) {
         throw new Error(
@@ -300,7 +310,7 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
     }
     const pod = await this.client.pod(reservation.pod);
     if (pod) {
-      assertIdentity(pod, reservation, this.config.owner);
+      assertIdentity(pod, reservation, this.config);
       await this.client.remove(reservation.pod);
     }
     for (let attempt = 0; attempt < 40; attempt++) {

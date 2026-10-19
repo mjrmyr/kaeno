@@ -2,6 +2,8 @@
 
 The optional [microsandbox](https://github.com/superradcompany/microsandbox) extension runs each WORK in its own microVM with its own Linux kernel. It is selectable alongside Docker and Kubernetes; Docker remains the default. Kaeno starts VMs in-process through the SDK, with no Docker daemon needed at runtime. Production SDK calls live in [`src/extensions/microsandbox/vm.ts`](../src/extensions/microsandbox/vm.ts).
 
+Microsandbox is a single-host backend: the SDK runs VMs in the Kaeno process and has no remote API. For microVM isolation on a cluster, use the Kubernetes backend with a Kata Containers RuntimeClass instead; see [MicroVM isolation with Kata Containers](kubernetes.md#microvm-isolation-with-kata-containers).
+
 Agents use the same execution protocol as other backends: `envd` runs in the guest, and Kaeno talks to it over HTTP with a per-work bearer token. Tools, files, browser tools and checkout do not need microVM-specific logic in core.
 
 ## Host requirements

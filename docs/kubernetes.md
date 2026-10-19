@@ -35,15 +35,16 @@ This is a fragment alongside the existing agent/source configuration. `configFil
 
 Optional configuration:
 
-| Field            | Default                                                | Purpose                                                      |
-| ---------------- | ------------------------------------------------------ | ------------------------------------------------------------ |
-| `api`            | `https://kubernetes.default.svc`                       | API origin, without credentials or a URL path                |
-| `tokenFile`      | `/var/run/secrets/kubernetes.io/serviceaccount/token`  | Host-only bearer token; reread on every request for rotation |
-| `caFile`         | `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt` | API CA certificate; `null` uses system trust                 |
-| `quota`          | `kaeno-sandbox`                                        | Sandbox ResourceQuota name                                   |
-| `service`        | `kaeno-sandbox`                                        | Headless Service for sandbox DNS                             |
-| `serviceAccount` | `kaeno-sandbox`                                        | Unprivileged sandbox service account                         |
-| `readyTimeoutMs` | `240000`                                               | Maximum pod readiness wait                                   |
+| Field              | Default                                                | Purpose                                                      |
+| ------------------ | ------------------------------------------------------ | ------------------------------------------------------------ |
+| `api`              | `https://kubernetes.default.svc`                       | API origin, without credentials or a URL path                |
+| `tokenFile`        | `/var/run/secrets/kubernetes.io/serviceaccount/token`  | Host-only bearer token; reread on every request for rotation |
+| `caFile`           | `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt` | API CA certificate; `null` uses system trust                 |
+| `quota`            | `kaeno-sandbox`                                        | Sandbox ResourceQuota name                                   |
+| `service`          | `kaeno-sandbox`                                        | Headless Service for sandbox DNS                             |
+| `serviceAccount`   | `kaeno-sandbox`                                        | Unprivileged sandbox service account                         |
+| `runtimeClassName` | none                                                   | RuntimeClass for sandbox pods, e.g. `kata-qemu` for microVMs |
+| `readyTimeoutMs`   | `240000`                                               | Maximum pod readiness wait                                   |
 
 Credential paths resolve relative to the configuration file. HTTPS verifies the configured CA; TLS verification is never disabled. HTTP exists for local API fixtures/proxies and should not be used across untrusted networks. API calls have a 30-second timeout. API error bodies are not surfaced, because Kubernetes can echo submitted environment secrets.
 
@@ -60,6 +61,23 @@ Review and adapt [`src/extensions/kubernetes/cluster.yaml`](../src/extensions/ku
 Create the namespace separately. Set the host Deployment's `serviceAccountName` to `kaeno-kubernetes-host` and label its pod `app.kubernetes.io/name: kaeno`. Mount the configuration file and durable SQLite storage on the host. Adapt DNS labels, private pod/service CIDRs, metadata endpoints, CNI-specific behavior, and permitted egress for your cluster before applying the example. NetworkPolicy requires an enforcing CNI; pod security settings alone do not provide network isolation. The extension does not create infrastructure, grant RBAC, or alter network policy.
 
 Disable automatic sidecar injection for sandbox pods: identity checks and quota arithmetic assume exactly one execution container. The sandbox image must run `/app/src/host/envd.ts` with Node.js and support UID/GID 1000, as the current Dockerfile does. Configure image-pull credentials on the sandbox service account if needed. Those registry credentials are for the kubelet, not environment variables available to agents.
+
+## MicroVM isolation with Kata Containers
+
+[Microsandbox](microsandbox.md) runs microVMs in-process on one host and has no remote API, so it cannot schedule across a cluster. To get the same per-work kernel boundary on Kubernetes, run sandbox pods under a [Kata Containers](https://katacontainers.io) RuntimeClass. Everything else in this backend stays the same, including scheduling, the headless Service, NetworkPolicy, quota, readiness and reconciliation.
+
+1. Install Kata on the nodes that have `/dev/kvm` (bare metal, or VMs with nested virtualization), for example with [kata-deploy](https://github.com/kata-containers/kata-containers/tree/main/tools/packaging/kata-deploy). It labels capable nodes `katacontainers.io/kata-runtime=true` and creates RuntimeClasses such as `kata-qemu` whose `scheduling.nodeSelector` targets those nodes. Check with `kubectl get runtimeclass`.
+2. Apply the RuntimeClass ClusterRole/ClusterRoleBinding from `cluster.yaml`, listing every name you configure in `resourceNames`. It grants `get` on those RuntimeClass objects only.
+3. Set `"runtimeClassName": "kata-qemu"` in `kubernetes.json`.
+
+Behavior and caveats:
+
+- **Mixed clusters:** the RuntimeClass's node selector places sandbox pods only on Kata nodes. Kaeno does no node selection itself. If no Kata node can schedule a pod, it stays Pending and fails at `readyTimeoutMs`. The Kaeno host pod uses the default runtime and can run on any node.
+- **Quota:** ResourceQuota charges the RuntimeClass `overhead.podFixed` on top of container requests and limits. Kaeno reads it alongside the quota on each admission, so capacity reflects both. A configured RuntimeClass that is missing is a configuration error.
+- **Identity:** `runtimeClassName` is part of the saved target, and adoption requires a pod's `spec.runtimeClassName` to match. Switching between runc and Kata with unfinished work is rejected, just like other target changes. Configurations that do not set it keep their previous identity.
+- **Image architecture:** Kata runs the same OCI image. It must match the Kata nodes' architecture, and the published GHCR image is linux/amd64 only.
+- **Network:** Kata pods keep the host-side pod network interface, so NetworkPolicy still applies. Verify this with your CNI.
+- **Verify** that a sandbox really ran in a VM: `kubectl get pod <pod> -o jsonpath='{.spec.runtimeClassName} {.spec.overhead}'`, and compare `uname -r` inside the worker with the node's kernel.
 
 ## Lifecycle and capacity
 

@@ -66,7 +66,7 @@ Every newly admitted work saves its environment's non-secret, stable identity (o
 
 - Docker identity includes provider, owner namespace, and API host.
 - Microsandbox identity includes provider, owner namespace, and the absolute local store path (`MSB_HOME`, default `~/.microsandbox`). Changing stores while work is unfinished is rejected; keep the host and underlying store stable as well.
-- Kubernetes identity includes provider and the existing cluster/owner/resource target configuration. Image changes do not replace the image saved for an existing sandbox.
+- Kubernetes identity includes provider and the existing cluster/owner/resource target configuration, plus `runtimeClassName` when set. Image changes do not replace the image saved for an existing sandbox.
 - Removing an environment or adding one to unfinished environment-free work is also a change.
 - Work admitted by an older release without an environment identity fails closed. Drain it with that release before upgrading; take a consistent database backup first.
 
