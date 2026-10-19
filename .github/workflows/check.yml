@@ -23,3 +23,25 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run verify
+  browser-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build the actual runtime image
+        run: docker build --tag kaeno-browser:check .
+      - name: Smoke Chromium with worker restrictions and no network
+        # Do not weaken seccomp, sandboxing or privileges to make this pass.
+        # Failure here is a runtime compatibility blocker, not a reason to add --no-sandbox.
+        run: |
+          docker run --rm --init --network none \
+            --user 1000:1000 --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --pids-limit 256 \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --tmpfs /home/agent:rw,noexec,nosuid,size=16m,uid=1000,gid=1000 \
+            --workdir /workspace kaeno-browser:check \
+            env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/tmp LANG=C.UTF-8 \
+            PLAYWRIGHT_BROWSERS_PATH=/opt/playwright \
+            /usr/local/bin/node /app/scripts/browser-smoke.mjs
