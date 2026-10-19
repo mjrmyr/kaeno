@@ -6,8 +6,8 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts \
- && node node_modules/playwright/cli.js install --with-deps chromium
- && chmod -R a+rX /ms-playwright
+ && node node_modules/playwright/cli.js install --with-deps chromium \
+ && chmod -R a+rX /ms-playwright \
  && npm cache clean --force \
  && mkdir -p /data /workspace /home/agent \
  && chown -R node:node /data /workspace /home/agent
