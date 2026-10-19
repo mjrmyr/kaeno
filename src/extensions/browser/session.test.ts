@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => {
         input: object,
         schema: unknown,
         options: { signal: AbortSignal },
-      ) => Promise<{ content: unknown[] }>
+      ) => Promise<{ content: unknown[]; isError?: boolean }>
     >(),
     transports,
   };
@@ -46,9 +46,9 @@ it("reuses one sanitized isolated stdio session and removes its temporary direct
   expect(mocks.connect).toHaveBeenCalledTimes(1);
   const transport = mocks.transports[0];
   expect(transport.args).toEqual(
-    expect.arrayContaining(["--sandbox", "--isolated"]),
+    expect.arrayContaining(["--no-sandbox", "--isolated"]),
   );
-  expect(transport.args).not.toContain("--no-sandbox");
+  expect(transport.args).not.toContain("--sandbox");
   expect(transport.args).not.toContain("--proxy-server");
   expect(transport.args).not.toContain("--proxy-bypass");
   const environment = transport.env;
@@ -112,11 +112,49 @@ it("resets when popups exceed the tab budget", async () => {
   await expect(session.call(input)).rejects.toThrow("8 tabs");
   expect(mocks.close).toHaveBeenCalledOnce();
 });
-it("does not reopen the browser to count tabs after close", async () => {
-  mocks.call.mockResolvedValue({ content: [] });
+it("does not initialize an unused browser on close", async () => {
   const session = new BrowserSession();
+  expect(await session.call({ ...input, name: "browser_close" })).toEqual({
+    content: [],
+  });
+  expect(mocks.connect).not.toHaveBeenCalled();
+  expect(mocks.call).not.toHaveBeenCalled();
+  expect(mocks.transports).toHaveLength(0);
+});
+
+it("closes failed initialization without forwarding close or relaunching Chromium", async () => {
+  const failure = {
+    isError: true,
+    content: [{ type: "text", text: "No usable sandbox!" }],
+  };
+  mocks.call.mockResolvedValueOnce(failure);
+  const session = new BrowserSession();
+  expect(
+    await session.call({
+      name: "browser_navigate",
+      arguments: { url: "https://example.com" },
+    }),
+  ).toEqual(failure);
+  const directory = String(mocks.transports[0].cwd);
+  await session.call({ ...input, name: "browser_close" });
   await session.call({ ...input, name: "browser_close" });
   expect(mocks.call).toHaveBeenCalledOnce();
+  expect(mocks.connect).toHaveBeenCalledOnce();
+  expect(mocks.close).toHaveBeenCalledOnce();
+  expect(existsSync(directory)).toBe(false);
+});
+
+it("tears down an active session locally and reconnects only on the next action", async () => {
+  mocks.call.mockResolvedValue({ content: [] });
+  const session = new BrowserSession();
+  await session.call(input);
+  const directory = String(mocks.transports[0].cwd);
+  await session.call({ ...input, name: "browser_close" });
+  expect(mocks.call).toHaveBeenCalledTimes(2); // action and tab check, never upstream close
+  expect(mocks.close).toHaveBeenCalledOnce();
+  expect(existsSync(directory)).toBe(false);
+  await session.call(input);
+  expect(mocks.connect).toHaveBeenCalledTimes(2);
   await session.close();
 });
 

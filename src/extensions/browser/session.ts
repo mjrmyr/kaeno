@@ -69,6 +69,11 @@ export class BrowserSession {
       : deadline;
     try {
       cancellation.throwIfAborted();
+      // Upstream close initializes a browser even after launch failed. Own teardown locally.
+      if (input.name === "browser_close") {
+        await this.close();
+        return { content: [] };
+      }
       if (!this.client) {
         this.directory = await mkdtemp(join(tmpdir(), "kaeno-browser-"));
         const transport = new StdioClientTransport({
@@ -86,7 +91,8 @@ export class BrowserSession {
             "--browser",
             "chromium",
             "--isolated",
-            "--sandbox",
+            // Owner-approved: restricted WORK pod is the outer boundary, not renderer isolation.
+            "--no-sandbox",
             "--no-webmcp",
             "--block-service-workers",
             "--codegen",
@@ -132,7 +138,7 @@ export class BrowserSession {
       if (JSON.stringify(result).length > 4_000_000) {
         throw new Error("Browser response exceeds 4 MB; session reset");
       }
-      if (input.name === "browser_close" || result.isError) {
+      if (result.isError) {
         return CallToolResultSchema.parse(result);
       }
       const tabs = await this.client.callTool(
