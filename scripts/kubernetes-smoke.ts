@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { parseAllDocuments } from "yaml";
 import { z } from "zod";
+import { kubernetesList } from "./infrastructure-smoke-transport.ts";
 
 // Do not follow a developer Docker context to a remote or live daemon.
 const dockerHost = process.env.DOCKER_HOST ?? "unix:///var/run/docker.sock";
@@ -152,7 +153,7 @@ function kubectl(args: string[], options: Parameters<typeof run>[2] = {}) {
 }
 async function apply(objects: unknown[]) {
   await kubectl(["apply", "-f", "-"], {
-    input: objects.map((value) => JSON.stringify(value)).join("\n---\n"),
+    input: kubernetesList(objects),
   });
 }
 async function until(
