@@ -25,6 +25,10 @@ import {
   parseEnvironmentConfiguration,
 } from "../src/host/composition/index.ts";
 
+import { dockerExecutionProvider } from "../src/extensions/docker/index.ts";
+import { kubernetesExecutionProvider } from "../src/extensions/kubernetes/index.ts";
+import { microsandboxExecutionProvider } from "../src/extensions/microsandbox/index.ts";
+
 // Usage: node scripts/work-smoke.ts [docker|microsandbox|kubernetes] [backend-config-file]
 // Use a dedicated backend file; never reuse an active application's explicit namespace/owner.
 const directory = await mkdtemp(join(tmpdir(), "kaeno-work-smoke-"));
@@ -40,7 +44,11 @@ const selection = parseEnvironmentConfiguration(
   },
   join(directory, "config.json"),
 ).execution;
-const backend = await loadExecution(selection, join(directory, "core.sqlite"));
+const backend = await loadExecution(selection, join(directory, "core.sqlite"), [
+  dockerExecutionProvider,
+  kubernetesExecutionProvider,
+  microsandboxExecutionProvider,
+]);
 const faux = fauxProvider({ provider: "openai" });
 const models = createModels();
 models.setProvider(faux.provider);

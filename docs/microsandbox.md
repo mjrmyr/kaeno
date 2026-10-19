@@ -11,7 +11,7 @@ Agents use the same execution protocol as other backends: `envd` runs in the gue
 - Keep npm optional dependencies enabled: microsandbox needs its platform-specific native addon and runtime binaries.
 - The SDK is beta software, pinned to exactly `0.7.8`. Upgrade deliberately and rerun the verification below.
 
-Selecting Docker or Kubernetes does not import the native microsandbox SDK. Selecting microsandbox loads it, but configuration loading does not boot a VM; WORK provisions resources when needed.
+Installing `microsandboxExecutionProvider` and loading its configuration do not import the native SDK or boot a VM. The engine loads the SDK only when resource operations are needed; selecting Docker or Kubernetes never loads it.
 
 ## Configuration
 
@@ -43,11 +43,11 @@ This fragment sits alongside the normal source/agent configuration. The path res
 | `cpus`        | `1`                       | Positive vCPUs per VM, rounded up to a whole CPU                        |
 | `memoryBytes` | `1073741824`              | Integer bytes, at least one MiB, rounded down to whole MiB              |
 
-The namespace accepts at most 32 letters/digits/underscores/dots/hyphens, starting with a letter or digit. Unknown settings are rejected. There is no `apiHost`: the execution port is always loopback-only. The old `KAENO_SANDBOX_*` and resource environment variables are not supported; settings belong in the extension's file.
+The namespace accepts at most 32 letters/digits/underscores/dots/hyphens, starting with a letter or digit. Unknown settings are rejected. There is no `apiHost`: the execution port is always loopback-only. Backend settings belong in the extension's file.
 
 The SDK uses `MSB_HOME`, or `~/.microsandbox` by default, for its local store. Keep that store and host stable across restarts. The provider's saved identity includes `microsandbox`, the namespace and the absolute store path, so changing stores or providers with unfinished work fails before recovery or reconciliation. This is a local-store identity, not detection of a moved/replaced underlying host or filesystem.
 
-`loadMicrosandboxConfiguration` from `src/extensions/microsandbox/index.ts` implements the shared `ExecutionConfigurationLoader` contract. It returns `{ environment, extensions: [] }`, using the injected transport and shared `SandboxWorkEnvironment` factories. Schemas, defaults, native engine and provider construction stay inside the microsandbox extension.
+`microsandboxExecutionProvider` from `src/extensions/microsandbox/index.ts` registers the name `microsandbox` and the `loadMicrosandboxConfiguration` loader. That loader implements the shared `ExecutionConfigurationLoader` contract. It returns `{ environment, extensions: [] }`, using the injected transport and shared `SandboxWorkEnvironment` factories. Schemas, defaults, native engine and provider construction stay inside the microsandbox extension.
 
 ## Image
 

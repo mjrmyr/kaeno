@@ -3,6 +3,7 @@ import { z } from "zod";
 import type {
   ConfiguredExecution,
   ExecutionConfigurationContext,
+  ExecutionProvider,
 } from "../execution/index.ts";
 import { DockerSandboxProvider } from "./docker.ts";
 
@@ -40,3 +41,8 @@ export async function loadDockerConfiguration(
     extensions: [],
   };
 }
+
+export const dockerExecutionProvider: ExecutionProvider = {
+  name: "docker",
+  loadConfiguration: loadDockerConfiguration,
+};

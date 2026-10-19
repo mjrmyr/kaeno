@@ -3,6 +3,7 @@ import { z } from "zod";
 import type {
   ConfiguredExecution,
   ExecutionConfigurationContext,
+  ExecutionProvider,
 } from "../execution/index.ts";
 import { MicrosandboxSandboxProvider } from "./microsandbox.ts";
 import { MicrosandboxEngine } from "./vm.ts";
@@ -40,3 +41,8 @@ export async function loadMicrosandboxConfiguration(
     extensions: [],
   };
 }
+
+export const microsandboxExecutionProvider: ExecutionProvider = {
+  name: "microsandbox",
+  loadConfiguration: loadMicrosandboxConfiguration,
+};

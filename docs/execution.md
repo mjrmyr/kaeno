@@ -58,7 +58,7 @@ Copy `microsandbox.config.example.json` to that path. Its settings are `image`, 
 
 For every provider, `configFile` resolves relative to the owner config, not the working directory, and the referenced file must exist. Omitting `execution` defaults to Docker with `./docker.json` next to the owner config. Cluster-specific settings and credentials remain in the separate [Kubernetes configuration](kubernetes.md). Selecting Docker does not load Kubernetes credentials or the native microsandbox SDK, and does not contact a cluster.
 
-The old variables `KAENO_KUBERNETES_CONFIG`, `KAENO_SANDBOX_NAMESPACE`, `KAENO_SANDBOX_API_HOST`, `KAENO_SANDBOX_IMAGE`, `KAENO_WORK_CPUS`, and `KAENO_WORK_MEMORY_BYTES` now fail startup with a configuration error. Move them into the referenced backend configuration file before starting this release. `KAENO_DB`, `KAENO_WORK_MAX_DEPTH`, and `KAENO_WORK_MAX_CONCURRENT` are unchanged.
+Backend settings come only from the selected extension's file. `KAENO_DB`, `KAENO_WORK_MAX_DEPTH`, and `KAENO_WORK_MAX_CONCURRENT` configure the host independently of the backend.
 
 ## Recovery and switching
 
@@ -74,7 +74,21 @@ To change backends: finish or cancel all work using the old backend, let its cle
 
 ## Composition and embedding
 
-The host's owner-config schema validates only `{ provider, configFile }`. `src/host/composition/execution.ts` selects an explicitly installed loader and supplies a database-derived default namespace, execution transport factory and shared sandbox lifecycle adapter. It does not read backend files, validate provider settings, or construct providers.
+The host's owner-config schema validates `{ provider, configFile }` as nonempty strings, without an enum of provider names. Docker with `./docker.json` remains the default when `execution` is omitted.
+
+Each extension exports an `ExecutionProvider` registration containing its `name` and `loadConfiguration` loader. The application explicitly installs the providers it supports:
+
+```ts
+const execution = await loadExecution(configuration.execution, databaseFile, [
+  dockerExecutionProvider,
+  kubernetesExecutionProvider,
+  microsandboxExecutionProvider,
+]);
+```
+
+The registrations come from their respective extension's public `index.ts`. `src/host/composition/execution.ts` receives this list; it imports no concrete backend. It rejects duplicate registrations and unknown configured names before invoking a loader, reporting the installed names for an unknown provider. Adding a provider requires implementing its extension and installing its registration, not changing the schema or resolver. There is no implicit installation in the resolver: embedders using the Docker default must install Docker's registration.
+
+The resolver supplies a database-derived default namespace, execution transport factory and shared sandbox lifecycle adapter. It does not read backend files, validate provider settings, or construct providers.
 
 Each extension owns its strict schema, defaults, file loading and construction:
 

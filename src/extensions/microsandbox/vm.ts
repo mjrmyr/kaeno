@@ -3,11 +3,7 @@ import { join, resolve } from "node:path";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { z } from "zod";
-import {
-  Sandbox,
-  SandboxNotFoundError,
-  type SandboxHandle,
-} from "microsandbox";
+import type { Sandbox, SandboxHandle } from "microsandbox";
 import type { SandboxIdentity, SandboxOptions } from "../execution/index.ts";
 import {
   MANAGED_LABEL,
@@ -39,6 +35,7 @@ export class MicrosandboxEngine implements SandboxEngine {
     options: SandboxOptions,
     labels: Record<string, string>,
   ): Promise<void> {
+    const { Sandbox } = await import("microsandbox");
     const vm = await Sandbox.builder(name)
       .image(sandbox.image)
       .cpus(Math.ceil(options.limits.cpus))
@@ -60,10 +57,12 @@ export class MicrosandboxEngine implements SandboxEngine {
   }
 
   async start(name: string): Promise<void> {
+    const { Sandbox } = await import("microsandbox");
     await (await Sandbox.get(name)).startDetached();
   }
 
   async launch(name: string): Promise<void> {
+    const { Sandbox } = await import("microsandbox");
     await launchEnvd(await (await Sandbox.get(name)).connect());
   }
 
@@ -73,6 +72,7 @@ export class MicrosandboxEngine implements SandboxEngine {
   }
 
   async managed(): Promise<WorkVm[]> {
+    const { Sandbox } = await import("microsandbox");
     const vms: WorkVm[] = [];
     let cursor: string | undefined;
     do {
@@ -88,6 +88,7 @@ export class MicrosandboxEngine implements SandboxEngine {
 }
 
 async function find(name: string): Promise<SandboxHandle | undefined> {
+  const { Sandbox, SandboxNotFoundError } = await import("microsandbox");
   try {
     return await Sandbox.get(name);
   } catch (error) {

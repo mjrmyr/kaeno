@@ -2,6 +2,7 @@ export type {
   ConfiguredExecution,
   ExecutionConfigurationContext,
   ExecutionConfigurationLoader,
+  ExecutionProvider,
 } from "./configuration.ts";
 export { SandboxWorkEnvironment } from "./sandbox-work-environment.ts";
 export type {

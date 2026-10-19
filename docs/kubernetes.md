@@ -29,7 +29,7 @@ Select it in the owner configuration (`KAENO_CONFIG`):
 }
 ```
 
-This is a fragment alongside the existing agent/source configuration. `configFile` resolves relative to that owner file. Start with `npm start`. The CLI selects Kubernetes explicitly through this field; omitted `execution` defaults to Docker. `KAENO_KUBERNETES_CONFIG` is no longer supported; see [execution configuration and switching](execution.md). No cluster credentials are needed when Kubernetes is disabled. Agent and skill selection come from the same `KAENO_CONFIG` in both cases; only the source cache path/storage differs. Mount its `sourceDirectory` on the host (for example, a PVC at `/sources`), never into worker pods. The independent GitHub App reader/tools work with either backend.
+This is a fragment alongside the existing agent/source configuration. `configFile` resolves relative to that owner file. Start with `npm start`. The CLI selects Kubernetes explicitly through this field; omitted `execution` defaults to Docker. See [execution configuration and switching](execution.md). No cluster credentials are needed when Kubernetes is disabled. Agent and skill selection come from the same `KAENO_CONFIG` in both cases; only the source cache path/storage differs. Mount its `sourceDirectory` on the host (for example, a PVC at `/sources`), never into worker pods. The independent GitHub App reader/tools work with either backend.
 
 `owner` must be a stable, unique DNS label (maximum 32 characters) for this application/database. Never share it between independent databases, including database clones. Pod names are `<owner>-work-<workId>`.
 
@@ -101,7 +101,7 @@ await openKaeno({
 });
 ```
 
-Import `kubernetesExtension` or `loadKubernetesConfiguration` from `src/extensions/kubernetes/index.ts`. For file-backed loading, call `loadKubernetesConfiguration(path, { defaultNamespace, createEnvironment, createSandboxEnvironment })`; it implements the shared `ExecutionConfigurationLoader` contract and returns `{ environment, extensions }`. The Kubernetes file owns its explicit `owner`, so it does not use the fallback namespace or the shared `createSandboxEnvironment` factory. Embedders still supply both as part of the common loader context. Its schema, credential paths, defaults and construction remain inside the extension. The API client, pod schemas/specs, quantity parser, and reservation documents are not exported. Execution transport is injected by composition rather than constructed across feature boundaries.
+Install `kubernetesExecutionProvider` for generic host selection, or import `kubernetesExtension` or `loadKubernetesConfiguration` directly from `src/extensions/kubernetes/index.ts`. For file-backed loading, call `loadKubernetesConfiguration(path, { defaultNamespace, createEnvironment, createSandboxEnvironment })`; it implements the shared `ExecutionConfigurationLoader` contract and returns `{ environment, extensions }`. The Kubernetes file owns its explicit `owner`, so it does not use the fallback namespace or the shared `createSandboxEnvironment` factory. Embedders still supply both as part of the common loader context. Its schema, credential paths, defaults and construction remain inside the extension. The API client, pod schemas/specs, quantity parser, and reservation documents are not exported. Execution transport is injected by composition rather than constructed across feature boundaries.
 
 ## Boundary choice
 

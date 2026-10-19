@@ -3,4 +3,7 @@ export type {
   KubernetesConfiguration,
   KubernetesExtensionOptions,
 } from "./extension.ts";
-export { loadKubernetesConfiguration } from "./configuration.ts";
+export {
+  kubernetesExecutionProvider,
+  loadKubernetesConfiguration,
+} from "./configuration.ts";

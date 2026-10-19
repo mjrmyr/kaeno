@@ -5,6 +5,7 @@ import { configurationSchema, kubernetesExtension } from "./extension.ts";
 import type {
   ConfiguredExecution,
   ExecutionConfigurationContext,
+  ExecutionProvider,
 } from "../execution/index.ts";
 
 const serviceAccountRoot = "/var/run/secrets/kubernetes.io/serviceaccount";
@@ -44,3 +45,8 @@ export async function loadKubernetesConfiguration(
     extensions: [configured.extension],
   };
 }
+
+export const kubernetesExecutionProvider: ExecutionProvider = {
+  name: "kubernetes",
+  loadConfiguration: loadKubernetesConfiguration,
+};

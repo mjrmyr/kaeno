@@ -14,21 +14,9 @@ import { parseModelRef } from "../extensions/agents/index.ts";
 import { ApiServer } from "../extensions/api/index.ts";
 
 import { browserExtension } from "../extensions/browser/index.ts";
-
-for (const name of [
-  "KAENO_KUBERNETES_CONFIG",
-  "KAENO_SANDBOX_NAMESPACE",
-  "KAENO_SANDBOX_API_HOST",
-  "KAENO_SANDBOX_IMAGE",
-  "KAENO_WORK_CPUS",
-  "KAENO_WORK_MEMORY_BYTES",
-]) {
-  if (process.env[name] !== undefined) {
-    throw new Error(
-      `${name} is no longer supported; configure execution in KAENO_CONFIG instead`,
-    );
-  }
-}
+import { dockerExecutionProvider } from "../extensions/docker/index.ts";
+import { kubernetesExecutionProvider } from "../extensions/kubernetes/index.ts";
+import { microsandboxExecutionProvider } from "../extensions/microsandbox/index.ts";
 
 const browser = await browserExtension();
 const browserTools = browser.durable.tools?.map((tool) => tool.name) ?? [];
@@ -71,7 +59,11 @@ const port = z.coerce
   .parse(process.env.PORT ?? 8080);
 
 const databaseFile = process.env.KAENO_DB ?? "/data/kaeno.sqlite";
-const execution = await loadExecution(configuration.execution, databaseFile);
+const execution = await loadExecution(configuration.execution, databaseFile, [
+  dockerExecutionProvider,
+  kubernetesExecutionProvider,
+  microsandboxExecutionProvider,
+]);
 const credentials = new FileCredentialStore(
   process.env.KAENO_AUTH_FILE ?? DEFAULT_AUTH_FILE,
 );

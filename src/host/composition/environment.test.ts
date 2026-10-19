@@ -78,7 +78,17 @@ it("parses explicit execution providers, defaults Docker and resolves backend fi
     provider: "docker",
     configFile: "/owner/backends/docker.json",
   });
+  expect(
+    parseEnvironmentConfiguration(
+      {
+        ...base,
+        execution: { provider: "custom-remote", configFile: "remote.json" },
+      },
+      "/owner/config.json",
+    ).execution,
+  ).toEqual({ provider: "custom-remote", configFile: "/owner/remote.json" });
   for (const execution of [
+    { provider: "", configFile: "empty.json" },
     { provider: "unknown" },
     { provider: "kubernetes" },
     { provider: "kubernetes", configFile: "" },

@@ -7,34 +7,54 @@ import { expect, it } from "vitest";
 import {
   loadExecution,
   parseEnvironmentConfiguration,
+  type ExecutionConfiguration,
 } from "../../src/host/composition/index.ts";
+import { dockerExecutionProvider } from "../../src/extensions/docker/index.ts";
+import { kubernetesExecutionProvider } from "../../src/extensions/kubernetes/index.ts";
+import { microsandboxExecutionProvider } from "../../src/extensions/microsandbox/index.ts";
 
-it.each([
-  "KAENO_KUBERNETES_CONFIG",
-  "KAENO_SANDBOX_NAMESPACE",
-  "KAENO_SANDBOX_API_HOST",
-  "KAENO_SANDBOX_IMAGE",
-  "KAENO_WORK_CPUS",
-  "KAENO_WORK_MEMORY_BYTES",
-])(
-  "rejects retired %s instead of silently choosing another configuration",
-  async (name) => {
-    await expect(
-      promisify(execFile)(process.execPath, [resolve("src/host/main.ts")], {
-        env: { ...process.env, [name]: "retired-setting" },
-        timeout: 10000,
-      }),
-    ).rejects.toMatchObject({
-      code: 1,
-      stderr: expect.stringContaining(
-        "is no longer supported; configure execution in KAENO_CONFIG instead",
-      ),
-    });
-  },
-);
+const providers = [
+  dockerExecutionProvider,
+  kubernetesExecutionProvider,
+  microsandboxExecutionProvider,
+];
 
-it("constructs interchangeable backends with their native extensions and stable target identities", async () => {
+it("installs and configures providers without loading the native SDK", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "kaeno-execution-sdk-"));
+  try {
+    const configFile = join(directory, "backend.json");
+    await writeFile(configFile, "{}");
+    const script = `
+      import { registerHooks } from "node:module";
+      registerHooks({ resolve(specifier, context, next) {
+        if (specifier === "microsandbox") throw new Error("Native SDK must stay unloaded");
+        return next(specifier, context);
+      }});
+      const { loadExecution } = await import(${JSON.stringify(resolve("src/host/composition/index.ts"))});
+      const { dockerExecutionProvider } = await import(${JSON.stringify(resolve("src/extensions/docker/index.ts"))});
+      const { kubernetesExecutionProvider } = await import(${JSON.stringify(resolve("src/extensions/kubernetes/index.ts"))});
+      const { microsandboxExecutionProvider } = await import(${JSON.stringify(resolve("src/extensions/microsandbox/index.ts"))});
+      const installed = [dockerExecutionProvider, kubernetesExecutionProvider, microsandboxExecutionProvider];
+      for (const provider of ["docker", "microsandbox"]) {
+        await loadExecution({provider, configFile: process.argv[1]}, "db.sqlite", installed);
+      }
+      console.log("Configured without native SDK");
+    `;
+    const { stdout } = await promisify(execFile)(
+      process.execPath,
+      ["--input-type=module", "-e", script, configFile],
+      { timeout: 10_000 },
+    );
+    expect(stdout).toContain("Configured without native SDK");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("constructs interchangeable installed backends with native extensions and stable target identities", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-execution-config-"));
+  const load = (config: ExecutionConfiguration, databaseFile: string) =>
+    loadExecution(config, databaseFile, providers);
   try {
     const configFile = join(directory, "config.json");
     const databaseFile = join(directory, "db.sqlite");
@@ -44,9 +64,9 @@ it("constructs interchangeable backends with their native extensions and stable 
       configFile,
     ).execution;
     await writeFile(join(directory, "docker.json"), "{}");
-    const docker = await loadExecution(dockerConfig, databaseFile);
-    const repeated = await loadExecution(dockerConfig, databaseFile);
-    const otherDatabase = await loadExecution(
+    const docker = await load(dockerConfig, databaseFile);
+    const repeated = await load(dockerConfig, databaseFile);
+    const otherDatabase = await load(
       dockerConfig,
       join(directory, "other.sqlite"),
     );
@@ -72,10 +92,11 @@ it("constructs interchangeable backends with their native extensions and stable 
       },
       configFile,
     ).execution;
-    const owned = await loadExecution(explicit, databaseFile);
+    const owned = await load(explicit, databaseFile);
     expect(owned.environment.identity).toBe(
-      (await loadExecution(explicit, "another-db")).environment.identity,
+      (await load(explicit, "another-db")).environment.identity,
     );
+
     await writeFile(join(directory, "microsandbox.json"), "{}");
     const vmConfig = parseEnvironmentConfiguration(
       {
@@ -87,24 +108,25 @@ it("constructs interchangeable backends with their native extensions and stable 
       },
       configFile,
     ).execution;
-    const microvm = await loadExecution(vmConfig, databaseFile);
+    const microvm = await load(vmConfig, databaseFile);
     expect(microvm.environment.cwd).toBe(docker.environment.cwd);
     expect(microvm.extensions).toEqual([]);
     expect(microvm.environment.identity).not.toBe(docker.environment.identity);
     expect(microvm.environment.identity).toBe(
-      (await loadExecution(vmConfig, databaseFile)).environment.identity,
+      (await load(vmConfig, databaseFile)).environment.identity,
     );
     expect(microvm.environment.identity).not.toBe(
-      (await loadExecution(vmConfig, join(directory, "other.sqlite")))
-        .environment.identity,
+      (await load(vmConfig, join(directory, "other.sqlite"))).environment
+        .identity,
     );
     await writeFile(
       join(directory, "microsandbox.json"),
       JSON.stringify({ namespace: "owner", cpus: 1.5, memoryBytes: 536870912 }),
     );
-    expect(
-      (await loadExecution(vmConfig, databaseFile)).environment.identity,
-    ).toBe((await loadExecution(vmConfig, "another-db")).environment.identity);
+    expect((await load(vmConfig, databaseFile)).environment.identity).toBe(
+      (await load(vmConfig, "another-db")).environment.identity,
+    );
+
     await writeFile(
       join(directory, "cluster.json"),
       JSON.stringify({
@@ -125,7 +147,7 @@ it("constructs interchangeable backends with their native extensions and stable 
       },
       configFile,
     ).execution;
-    const kubernetes = await loadExecution(kubernetesConfig, databaseFile);
+    const kubernetes = await load(kubernetesConfig, databaseFile);
     expect(kubernetes.environment.cwd).toBe(docker.environment.cwd);
     expect(kubernetes.environment.identity).not.toBe(
       docker.environment.identity,
@@ -134,8 +156,7 @@ it("constructs interchangeable backends with their native extensions and stable 
       microvm.environment.identity,
     );
     expect(kubernetes.environment.identity).toBe(
-      (await loadExecution(kubernetesConfig, databaseFile)).environment
-        .identity,
+      (await load(kubernetesConfig, databaseFile)).environment.identity,
     );
     expect(
       kubernetes.extensions.map((extension) => extension.durable.name),

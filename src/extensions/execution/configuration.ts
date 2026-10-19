@@ -33,3 +33,9 @@ export type ExecutionConfigurationLoader = (
   path: string,
   context: ExecutionConfigurationContext,
 ) => Promise<ConfiguredExecution>;
+
+/** Trusted application code installs providers; configuration only selects by name. */
+export interface ExecutionProvider {
+  readonly name: string;
+  readonly loadConfiguration: ExecutionConfigurationLoader;
+}
