@@ -1,7 +1,7 @@
 name: Check
 on:
+  # Include stacked follow-ups so the actual image smoke runs before merging into a feature PR.
   pull_request:
-    branches: [main]
   push:
     branches: [main]
 permissions:
