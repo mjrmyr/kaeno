@@ -1,7 +1,8 @@
 # WORK browser tools over MCP
 
 Proxy-free follow-up to PR27's official MCP integration. No proxy service, new environment
-variable, deployment change, or privilege relaxation is introduced.
+variable or deployment change is introduced. Chromium renderer sandboxing is explicitly
+disabled with owner approval; pod security settings are unchanged.
 
 ## Shape and alternatives
 
@@ -16,7 +17,7 @@ variable, deployment change, or privilege relaxation is introduced.
 
 Laziness protocol: reuse tool registration, remote execution, cancellation and WORK sandbox
 removal; no vendored seccomp policy or general MCP framework.
-The restricted-runtime diagnostic/smoke command is documented in
+The runtime smoke command and researched deployment alternatives are documented in
 [browser-runtime-gate.md](browser-runtime-gate.md).
 Boundary discipline: validate the envd request and MCP result at their entry points.
 
@@ -55,15 +56,16 @@ browser environment is not a substitute for route authentication or OS process i
 Do not infer redirect, DNS-rebinding or metadata denial from URL validation or browser flags.
 Verify the actual pod/runtime network behavior before relying on it for untrusted pages.
 
-Chromium is launched with **`--sandbox`**, never `--no-sandbox`. The image remains non-root;
-existing Kubernetes `RuntimeDefault`, dropped capabilities and `allowPrivilegeEscalation:false`
-are unchanged. Linux must permit unprivileged user namespaces and the necessary namespace
-syscalls under its seccomp/AppArmor policy. Some RuntimeDefault profiles prohibit them;
-those deployments will fail browser launch. An operator-reviewed, narrowly scoped Localhost
-seccomp/AppArmor policy may be necessary; no blanket privileged/unconfined fallback is supplied.
-Current production compatibility is not claimed. See the
-[restricted-runtime investigation and opt-in policy gate](browser-runtime-gate.md) for
-observed namespace denials, validated Localhost configuration support, and node prerequisites.
+Chromium is launched with explicit **`--no-sandbox`**, an owner-approved security tradeoff
+for the existing restricted ephemeral WORK pod. This removes Chromium renderer isolation;
+container/pod isolation is the outer boundary, **not equivalent protection**. A compromised
+renderer may access WORK files, same-UID processes, network/loopback and potentially the
+envd token. Sanitized environment variables do not prevent same-identity process access.
+The image remains non-root; Kubernetes `RuntimeDefault`, dropped capabilities,
+read-only root and `allowPrivilegeEscalation:false` are unchanged. No custom node profiles,
+privileges, network changes, new services or environment variables are introduced.
+See the [deployment decision](browser-runtime-gate.md) for official-source alternatives,
+residual risks and runtime verification limits. There is no automatic fallback.
 
 The image installs Chromium and OS dependencies at build time using the **lockfile-pinned**
 Playwright CLI. `@playwright/mcp` is 0.0.83; its matching Playwright is
@@ -108,12 +110,10 @@ cleanup, cancellation, tool validation, proxy-free requests, explicit worker too
 and tab limits. Session lifecycle tests mock the
 SDK process. HTTP envd tests use a fake browser capability, not Chromium.
 
-This follow-up's checks do not launch real Chromium. A previous attempt reached Chromium
-launch but failed on missing `libglib-2.0.so.0`; that is not runtime verification here.
-Outstanding: build the image; run real Chromium under the restricted non-root WORK pod's
-seccomp/AppArmor/user-namespace settings; verify controlled JavaScript navigation, screenshots,
-session persistence/isolation, cancellation and process/directory cleanup. Test actual public
-egress and configured private/LAN/tailnet/link-local IPv4 denials, off-pod IPv6 denial,
-redirects/rebinding/metadata, loopback reachability and envd bearer rejection without a token.
-No successful image build, restricted-pod browser launch, browser screenshot, egress isolation
-or real-browser session cleanup is claimed by the mocked lifecycle/HTTP tests.
+`npm run browser:smoke` exercises the real BrowserSession against a loopback fixture:
+JavaScript, cross-navigation session persistence, screenshot and direct close. It keeps
+the explicitly approved `--no-sandbox` policy; it never changes pod security or retries
+with extra privileges. A launch failure is a failed gate.
+Run it in the candidate WORK image/pod. Unit tests alone do not prove browser startup,
+real process cleanup, CNI enforcement or private-network isolation. Before release, verify
+those properties and sibling-session isolation/cancellation in the actual cluster.

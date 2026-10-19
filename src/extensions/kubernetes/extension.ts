@@ -49,24 +49,6 @@ export const configurationSchema = z
     owner: dnsName.max(32),
     image: z.string().trim().min(1),
     resources: resourcesSchema,
-    // Explicit opt-in only: a missing node profile must fail closed, never fall back.
-    sandboxPolicy: z
-      .object({
-        seccompLocalhostProfile: z
-          .string()
-          .max(255)
-          .regex(
-            /^[A-Za-z0-9_-][A-Za-z0-9_.-]*(?:\/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$/,
-          ),
-        nodeSelector: z
-          .record(z.string().min(1), z.string().min(1))
-          .refine(
-            (value) => Object.keys(value).length > 0,
-            "Select provisioned nodes",
-          ),
-      })
-      .strict()
-      .optional(),
     quota: dnsName.default("kaeno-sandbox"),
     service: dnsName.default("kaeno-sandbox"),
     serviceAccount: dnsName.default("kaeno-sandbox"),
@@ -143,7 +125,6 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
       quota: config.quota,
       service: config.service,
       serviceAccount: config.serviceAccount,
-      ...(config.sandboxPolicy ? { sandboxPolicy: config.sandboxPolicy } : {}),
     });
   }
 
