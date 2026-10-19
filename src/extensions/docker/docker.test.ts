@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { DockerSandboxProvider, type DockerEngine } from "./index.ts";
-import type { SandboxIdentity, SandboxOptions } from "./provider.ts";
+import type { SandboxIdentity, SandboxOptions } from "../execution/index.ts";
 
 const sandbox: SandboxIdentity = {
   id: "work-42",

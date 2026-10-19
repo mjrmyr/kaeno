@@ -1,12 +1,23 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, it } from "vitest";
+import type { ExecutionConfigurationContext } from "../execution/index.ts";
+import { afterEach, expect, it, vi } from "vitest";
 import { loadDockerConfiguration } from "./index.ts";
 
 const roots: string[] = [];
 const context = {
   defaultNamespace: "application",
+  createSandboxEnvironment: vi.fn<
+    ExecutionConfigurationContext["createSandboxEnvironment"]
+  >(({ sandbox }) => ({
+    cwd: "/workspace",
+    identity: sandbox.identity,
+    ensure: async () => {},
+    release: async () => {},
+    reconcile: async () => {},
+    executionEnvironment: async () => undefined,
+  })),
   createEnvironment: () => {
     throw new Error("Loading configuration must not execute work");
   },
@@ -57,6 +68,13 @@ it("constructs the common configured result with extension-owned defaults and ho
     context,
   );
   expect(configured.extensions).toEqual([]);
+  expect(context.createSandboxEnvironment).toHaveBeenLastCalledWith({
+    sandbox: expect.objectContaining({
+      identity: configured.environment.identity,
+    }),
+    image: "kaeno:local",
+    limits: { cpus: 1, memoryBytes: 1_073_741_824 },
+  });
   expect(configured.environment.cwd).toBe("/workspace");
   expect(JSON.parse(configured.environment.identity)).toEqual({
     provider: "docker",
@@ -74,6 +92,13 @@ it("constructs the common configured result with extension-owned defaults and ho
     }),
     context,
   );
+  expect(context.createSandboxEnvironment).toHaveBeenLastCalledWith({
+    sandbox: expect.objectContaining({
+      identity: explicit.environment.identity,
+    }),
+    image: "worker:v2",
+    limits: { cpus: 2, memoryBytes: 536870912 },
+  });
   expect(JSON.parse(explicit.environment.identity)).toEqual({
     provider: "docker",
     namespace: "owner",

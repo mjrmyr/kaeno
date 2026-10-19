@@ -8,7 +8,7 @@ import type {
   SandboxIdentity,
   SandboxOptions,
   SandboxProvider,
-} from "./provider.ts";
+} from "../execution/index.ts";
 
 const execFile = promisify(execFileCallback);
 const MANAGED_LABEL = "kaeno.io/managed-work";

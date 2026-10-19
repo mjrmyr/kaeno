@@ -76,6 +76,35 @@ it("constructs interchangeable backends with their native extensions and stable 
     expect(owned.environment.identity).toBe(
       (await loadExecution(explicit, "another-db")).environment.identity,
     );
+    await writeFile(join(directory, "microsandbox.json"), "{}");
+    const vmConfig = parseEnvironmentConfiguration(
+      {
+        ...base,
+        execution: {
+          provider: "microsandbox",
+          configFile: "microsandbox.json",
+        },
+      },
+      configFile,
+    ).execution;
+    const microvm = await loadExecution(vmConfig, databaseFile);
+    expect(microvm.environment.cwd).toBe(docker.environment.cwd);
+    expect(microvm.extensions).toEqual([]);
+    expect(microvm.environment.identity).not.toBe(docker.environment.identity);
+    expect(microvm.environment.identity).toBe(
+      (await loadExecution(vmConfig, databaseFile)).environment.identity,
+    );
+    expect(microvm.environment.identity).not.toBe(
+      (await loadExecution(vmConfig, join(directory, "other.sqlite")))
+        .environment.identity,
+    );
+    await writeFile(
+      join(directory, "microsandbox.json"),
+      JSON.stringify({ namespace: "owner", cpus: 1.5, memoryBytes: 536870912 }),
+    );
+    expect(
+      (await loadExecution(vmConfig, databaseFile)).environment.identity,
+    ).toBe((await loadExecution(vmConfig, "another-db")).environment.identity);
     await writeFile(
       join(directory, "cluster.json"),
       JSON.stringify({
@@ -100,6 +129,9 @@ it("constructs interchangeable backends with their native extensions and stable 
     expect(kubernetes.environment.cwd).toBe(docker.environment.cwd);
     expect(kubernetes.environment.identity).not.toBe(
       docker.environment.identity,
+    );
+    expect(kubernetes.environment.identity).not.toBe(
+      microvm.environment.identity,
     );
     expect(kubernetes.environment.identity).toBe(
       (await loadExecution(kubernetesConfig, databaseFile)).environment

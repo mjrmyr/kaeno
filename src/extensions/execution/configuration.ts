@@ -1,3 +1,4 @@
+import type { SandboxLimits, SandboxProvider } from "./sandbox-provider.ts";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type {
   KaenoExtension,
@@ -14,6 +15,11 @@ export interface ConfiguredExecution {
 export interface ExecutionConfigurationContext {
   /** Stable application namespace, used when the provider file does not specify one. */
   readonly defaultNamespace: string;
+  createSandboxEnvironment(options: {
+    sandbox: SandboxProvider;
+    image: string;
+    limits: SandboxLimits;
+  }): WorkEnvironment;
   createEnvironment(input: {
     url: string;
     token: string;

@@ -18,8 +18,10 @@ import {
   parseAgent,
   resolveAgents,
 } from "../../src/extensions/agents/index.ts";
-import { SandboxWorkEnvironment } from "../../src/extensions/docker/index.ts";
-import type { SandboxProvider } from "../../src/extensions/docker/index.ts";
+import {
+  SandboxWorkEnvironment,
+  type SandboxProvider,
+} from "../../src/extensions/execution/index.ts";
 
 it("offers and launches every configured worker even when none delegate to each other", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-templates-"));

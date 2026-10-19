@@ -140,7 +140,7 @@ it.each([
   },
 );
 
-it.each(["test:docker", undefined])(
+it.each(["test:docker", "test:microsandbox", undefined])(
   "checks the admitted environment before recovery, including work with no environment (%s)",
   async (identity) => {
     const directory = await mkdtemp(join(tmpdir(), "kaeno-work-environment-"));
@@ -256,9 +256,12 @@ it.each(["test:docker", undefined])(
       ).toBe(identity ?? null);
       await core.close();
       const before = { reconciliations, provisions };
-      for (const replacement of identity === undefined
-        ? ["test:kubernetes"]
-        : ["test:kubernetes", undefined]) {
+      for (const replacement of [
+        "test:docker",
+        "test:microsandbox",
+        "test:kubernetes",
+        undefined,
+      ].filter((target) => target !== identity)) {
         await expect(open(replacement)).rejects.toThrow(
           "Execution environment changed",
         );

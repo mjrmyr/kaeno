@@ -673,6 +673,9 @@ it("loads explicit configuration with relative token paths and uses the real HTT
     join(directory, "config.json"),
     {
       defaultNamespace: "unused",
+      createSandboxEnvironment: () => {
+        throw new Error("Kubernetes must not construct a sandbox adapter");
+      },
       createEnvironment: () => {
         throw new Error("unused");
       },

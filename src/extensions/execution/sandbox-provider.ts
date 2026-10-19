@@ -20,7 +20,7 @@ export interface SandboxOptions {
 }
 
 /**
- * Work depends on this lifecycle, not on Docker/Kubernetes concepts. Implementations
+ * Work depends on this lifecycle, not on Docker, microVM or Kubernetes concepts. Implementations
  * must make ensure idempotent and remove safe to repeat; reconcile removes resources
  * that no longer correspond to active work.
  */

@@ -5,7 +5,6 @@ import type {
   ExecutionConfigurationContext,
 } from "../execution/index.ts";
 import { DockerSandboxProvider } from "./docker.ts";
-import { SandboxWorkEnvironment } from "./work-environment.ts";
 
 const configurationSchema = z
   .object({
@@ -29,7 +28,7 @@ export async function loadDockerConfiguration(
     JSON.parse(await readFile(path, "utf8")),
   );
   return {
-    environment: new SandboxWorkEnvironment({
+    environment: context.createSandboxEnvironment({
       sandbox: new DockerSandboxProvider({
         namespace: config.namespace ?? context.defaultNamespace,
         apiHost: config.apiHost,

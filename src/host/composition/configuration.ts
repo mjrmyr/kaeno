@@ -83,7 +83,7 @@ const directoryDeclaration = z
 // The host selects installed code and a file; each extension owns the contents of that file.
 const executionSchema = z
   .object({
-    provider: z.enum(["docker", "kubernetes"]),
+    provider: z.enum(["docker", "kubernetes", "microsandbox"]),
     configFile: z.string().min(1),
   })
   .strict();

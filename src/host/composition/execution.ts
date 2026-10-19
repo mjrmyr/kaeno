@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { loadDockerConfiguration } from "../../extensions/docker/index.ts";
 import {
   RemoteExecutionEnv,
+  SandboxWorkEnvironment,
   type ConfiguredExecution,
   type ExecutionConfigurationLoader,
 } from "../../extensions/execution/index.ts";
@@ -15,6 +16,12 @@ const loaders: Record<
   ExecutionConfigurationLoader
 > = {
   docker: loadDockerConfiguration,
+  // Do not load the native SDK on Docker/Kubernetes-only hosts.
+  microsandbox: async (path, context) => {
+    const { loadMicrosandboxConfiguration } =
+      await import("../../extensions/microsandbox/index.ts");
+    return loadMicrosandboxConfiguration(path, context);
+  },
   kubernetes: loadKubernetesConfiguration,
 };
 
@@ -28,6 +35,7 @@ export async function loadExecution(
       .update(resolve(databaseFile))
       .digest("hex")
       .slice(0, 16),
+    createSandboxEnvironment: (options) => new SandboxWorkEnvironment(options),
     createEnvironment: ({ url, token, id, cwd }) =>
       new RemoteExecutionEnv(url, token, id, cwd, fetch),
   });

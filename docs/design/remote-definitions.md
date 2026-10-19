@@ -238,6 +238,7 @@ const core = await openKaeno({ ...configuration, storage, models });
 const backend = await loadKubernetesConfiguration(backendFile, {
   defaultNamespace: "application",
   createEnvironment: createEnv,
+  createSandboxEnvironment: (options) => new SandboxWorkEnvironment(options),
 });
 const configuration = await loadEnvironment({
   configFile: "/etc/kaeno/config.json",
