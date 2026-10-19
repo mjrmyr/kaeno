@@ -23,17 +23,15 @@ import {
 
 import { browserExtension } from "../extensions/browser/index.ts";
 
-const browser = process.env.KAENO_BROWSER_PROXY
-  ? await browserExtension(process.env.KAENO_BROWSER_PROXY)
-  : undefined;
-const browserTools = browser?.durable.tools?.map((tool) => tool.name) ?? [];
+const browser = await browserExtension();
+const browserTools = browser.durable.tools?.map((tool) => tool.name) ?? [];
 const github: Partial<Awaited<ReturnType<typeof loadGitHubConfiguration>>> =
   process.env.KAENO_GITHUB_CONFIG
     ? await loadGitHubConfiguration(process.env.KAENO_GITHUB_CONFIG)
     : {};
 const configuration = await loadEnvironment({
   ...github,
-  extensions: [...(github.extensions ?? []), ...(browser ? [browser] : [])],
+  extensions: [...(github.extensions ?? []), browser],
   tools: github.tools,
   workerTools: browserTools,
   configFile: process.env.KAENO_CONFIG ?? ".kaeno/config.json",

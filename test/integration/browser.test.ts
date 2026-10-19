@@ -9,7 +9,7 @@ import {
 import { RemoteExecutionEnv } from "../../src/extensions/execution/index.ts";
 
 it("discovers real official MCP schemas and registers model-visible tools", async () => {
-  const extension = await browserExtension("http://egress:3128");
+  const extension = await browserExtension();
   expect(extension.durable.tools?.map((tool) => tool.name)).toEqual(
     BROWSER_TOOLS,
   );
@@ -27,15 +27,17 @@ it("discovers real official MCP schemas and registers model-visible tools", asyn
   ).rejects.toThrow("host execution is forbidden");
 });
 it("routes to sandbox and forwards bounded text and screenshot images", async () => {
-  const extension = await browserExtension("http://egress:3128");
+  const extension = await browserExtension();
   let requested = "";
+  let requestBody: unknown;
   const env = new RemoteExecutionEnv(
     "http://sandbox",
     "secret",
     "work",
     "/workspace",
-    async (url) => {
+    async (url, options) => {
       requested = String(url);
+      requestBody = JSON.parse(String(options?.body));
       return new Response(
         JSON.stringify({
           ret: {
@@ -54,6 +56,11 @@ it("routes to sandbox and forwards bounded text and screenshot images", async ()
     BACKGROUND_CONTEXT,
   );
   expect(requested).toBe("http://sandbox/browser");
+  expect(requestBody).toMatchObject({
+    name: "browser_navigate",
+    arguments: { url: "https://example.com" },
+  });
+  expect(requestBody).not.toHaveProperty("proxy");
   expect(result?.content?.[0]).toEqual({
     type: "text",
     text: "x".repeat(32_768),

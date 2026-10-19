@@ -27,10 +27,6 @@ export const BROWSER_TOOLS = [
 export const browserRequest = z.object({
   name: z.enum(BROWSER_TOOLS),
   arguments: z.record(z.string(), z.unknown()),
-  proxy: z.url().refine((value) => {
-    const url = new URL(value);
-    return url.protocol === "http:" && !url.username && !url.password;
-  }, "Browser requires an unauthenticated HTTP public-egress proxy"),
 });
 
 /** Schema discovery only: the official server does not launch Chromium until a browser call. */
@@ -59,7 +55,6 @@ export async function discoverBrowserTools(): Promise<Tool[]> {
 export class BrowserSession {
   private client?: Client;
   private directory?: string;
-  private proxy?: string;
   private busy = false;
 
   async call(value: unknown, signal?: AbortSignal): Promise<CallToolResult> {
@@ -76,7 +71,6 @@ export class BrowserSession {
       cancellation.throwIfAborted();
       if (!this.client) {
         this.directory = await mkdtemp(join(tmpdir(), "kaeno-browser-"));
-        this.proxy = input.proxy;
         const transport = new StdioClientTransport({
           command: process.execPath,
           maxBufferSize: 4_000_000,
@@ -97,10 +91,6 @@ export class BrowserSession {
             "--block-service-workers",
             "--codegen",
             "none",
-            "--proxy-server",
-            input.proxy,
-            "--proxy-bypass",
-            "<-loopback>",
             "--timeout-action",
             "10000",
             "--timeout-navigation",
@@ -133,9 +123,6 @@ export class BrowserSession {
           signal: cancellation,
           timeout: 15_000,
         });
-      }
-      if (this.proxy !== input.proxy) {
-        throw new Error("Browser proxy changed within WORK");
       }
       const result = await this.client.callTool(
         { name: input.name, arguments: input.arguments },
@@ -177,7 +164,6 @@ export class BrowserSession {
         await rm(this.directory, { recursive: true, force: true });
       }
       this.directory = undefined;
-      this.proxy = undefined;
     }
   }
 }

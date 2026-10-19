@@ -33,7 +33,6 @@ import { BrowserSession } from "./index.ts";
 const input = {
   name: "browser_snapshot",
   arguments: {},
-  proxy: "http://egress:3128",
 };
 afterEach(() => {
   vi.resetAllMocks();
@@ -47,12 +46,26 @@ it("reuses one sanitized isolated stdio session and removes its temporary direct
   expect(mocks.connect).toHaveBeenCalledTimes(1);
   const transport = mocks.transports[0];
   expect(transport.args).toEqual(
-    expect.arrayContaining([
-      "--sandbox",
-      "--isolated",
-      "--proxy-bypass",
-      "<-loopback>",
-    ]),
+    expect.arrayContaining(["--sandbox", "--isolated"]),
+  );
+  expect(transport.args).not.toContain("--no-sandbox");
+  expect(transport.args).not.toContain("--proxy-server");
+  expect(transport.args).not.toContain("--proxy-bypass");
+  const environment = transport.env;
+  if (!environment || typeof environment !== "object") {
+    throw new Error("Missing sanitized environment");
+  }
+  expect(Object.keys(environment).sort()).toEqual(
+    [
+      "HOME",
+      "TMPDIR",
+      "PATH",
+      "LOGNAME",
+      "USER",
+      "SHELL",
+      "TERM",
+      "PLAYWRIGHT_BROWSERS_PATH",
+    ].sort(),
   );
   expect(transport.env).not.toHaveProperty("KAENO_ENV_TOKEN");
   expect(transport.env).not.toHaveProperty("NODE_OPTIONS");
@@ -62,16 +75,10 @@ it("reuses one sanitized isolated stdio session and removes its temporary direct
   expect(existsSync(String(transport.cwd))).toBe(false);
   expect(mocks.close).toHaveBeenCalledOnce();
 });
-it("rejects unknown tools and credentialed/non-HTTP proxies before starting a process", async () => {
+it("rejects unknown tools before starting a process", async () => {
   const session = new BrowserSession();
   await expect(
     session.call({ ...input, name: "browser_run_code" }),
-  ).rejects.toThrow();
-  await expect(
-    session.call({ ...input, proxy: "http://secret:password@egress" }),
-  ).rejects.toThrow();
-  await expect(
-    session.call({ ...input, proxy: "file:///tmp/x" }),
   ).rejects.toThrow();
   expect(mocks.connect).not.toHaveBeenCalled();
 });

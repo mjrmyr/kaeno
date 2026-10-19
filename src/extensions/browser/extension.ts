@@ -7,12 +7,11 @@ import {
 } from "@earendil-works/pi-durable";
 import type { KaenoExtension } from "../../core/application/index.ts";
 import { RemoteExecutionEnv } from "../execution/index.ts";
-import { browserRequest, discoverBrowserTools } from "./session.ts";
+import { discoverBrowserTools } from "./session.ts";
 import { z } from "zod";
 
-/** Do not register browser tools unless the operator has provisioned public-only egress. */
-export async function browserExtension(proxy: string): Promise<KaenoExtension> {
-  browserRequest.shape.proxy.parse(proxy);
+/** Register WORK-only browser tools; execution stays inside the WORK network boundary. */
+export async function browserExtension(): Promise<KaenoExtension> {
   const discovered = await discoverBrowserTools();
   const tools: ToolRegistration[] = discovered.map((tool) => ({
     name: tool.name,
@@ -27,10 +26,7 @@ export async function browserExtension(proxy: string): Promise<KaenoExtension> {
         );
       }
       const response = resultSchema.parse(
-        await api.env.browser(
-          { name: tool.name, arguments: args, proxy },
-          context,
-        ),
+        await api.env.browser({ name: tool.name, arguments: args }, context),
       );
       let bytes = 0;
       const content: NonNullable<ToolExecutionResult["content"]> = [];
