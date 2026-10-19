@@ -38,19 +38,60 @@ with reduced sandboxing.
 prove an actual Chromium process can start. The `browser-image` PR check builds
 this Dockerfile, then runs `/app/scripts/browser-smoke.mjs` from `/workspace` as
 UID/GID 1000 with read-only root, dropped capabilities, no-new-privileges, Docker's
-default seccomp, worker-sized writable tmpfs mounts and no network. The smoke
+a scoped CI-only seccomp profile, worker-sized writable tmpfs mounts and no network. The smoke
 renders controlled inline JavaScript, checks its resulting DOM text and title,
 reports the browser version/UID, and closes the browser. Run it manually with the
 same `docker build` / `docker run` commands in `.github/workflows/check.yml`.
 
-**Image build, real Chromium launch and sandbox compatibility were not validated
-in the implementation workspace: it has no Docker/Podman executable or Docker
-socket.** The added CI check must establish Docker compatibility. A Docker pass
-also does not prove Kubernetes RuntimeDefault seccomp/user-namespace compatibility;
-repeat the controlled smoke in a worker pod under the existing security policy
-before declaring that deployment browser-ready. A namespace/seccomp denial is a
-runtime compatibility blocker: do not work around it with `--no-sandbox`,
-privileged pods, relaxed security settings or runtime package installs.
+### Why CI needs a namespace exception
+
+The original PR #25 check ([failed job](https://github.com/mjrmyr/kaeno/actions/runs/39226683615/job/117974566495))
+built the image successfully on Ubuntu 24.04.5, then launched
+`/opt/playwright/chromium-1248/chrome-linux64/chrome` (156.0.8078.4) without
+`--no-sandbox`. It aborted with `zygote_host_impl_linux.cc:130: No usable sandbox!`.
+The later crashpad CPU-frequency-file errors are crash reporting, not the cause.
+
+With capabilities dropped and no-new-privileges, Chromium must use unprivileged
+user namespaces, not a privileged/setuid sandbox. Docker's default seccomp policy
+blocks namespace-bearing `clone` and `unshare` without CAP_SYS_ADMIN. The CI
+command previously supplied no exception. The log proves sandbox establishment
+failed; it does **not** identify an AppArmor audit denial or the exact denied
+syscall. Read-only root is retained: Chromium's profile and temporary files use
+writable `/tmp`, while the executable remains in `/opt/playwright`.
+
+`scripts/browser-seccomp.mjs` adds only the `clone`, `setns`, `unshare` allow rule
+recommended by [Playwright's Docker guide](https://playwright.dev/docs/docker#crawling-and-scraping)
+to a vendored, deny-by-default Docker v28.0.0 profile. Provenance and limitations
+are in `.github/seccomp/README.md`. CI generates this policy outside the image.
+All other syscall rules, non-root UID, capability drop, no-new-privileges,
+read-only root, tmpfs limits and network isolation remain. This exposes namespace
+syscalls to the whole smoke container, not only Chromium; it is a targeted CI
+exception, **not** an approved policy for untrusted workers. Chromium sandboxing
+and its fixed environment are unchanged.
+
+AppArmor and host user-namespace limits are independent of seccomp. CI reports
+host settings but does not modify them. If the scoped profile still fails, inspect
+host audit denials and user-namespace limits; do not disable AppArmor globally,
+use unconfined seccomp, add CAP_SYS_ADMIN, or retry without Chromium's sandbox.
+
+### Deployment remains blocked pending worker validation
+
+**No Docker/Podman executable or Docker socket is available in the implementation
+workspace.** Unit tests validate the policy delta, not a real launch. The CI
+image smoke must pass before claiming this CI correction works.
+
+**Existing Kubernetes RuntimeDefault browser support is unverified and likely
+blocked by the same namespace restriction.** A green scoped Docker check is
+only image/CI validation, not deployment approval. No production security policy
+is changed here. Before merging/deploying the browser feature, run the controlled
+smoke in a newly created worker pod with the exact published image digest and
+existing security context (RuntimeDefault seccomp, AppArmor, no privilege
+escalation, dropped capabilities, read-only root and bounded writable volumes).
+Record the digest, runtime/node versions, applied policies and smoke output.
+If it fails, browser deployment remains blocked: either retain the existing
+policy and do not deploy the browser feature, or obtain separate approval for a
+reviewed node-local seccomp/AppArmor policy and validate again. Do not interpret
+this CI exception as authorization to change homelab or pod policy.
 
 After review/merge, the image publishing workflow builds the image. Pin the same
 published `ghcr.io/mjrmyr/kaeno@sha256:…` digest for **both** the homelab host and

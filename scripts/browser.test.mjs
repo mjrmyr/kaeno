@@ -57,3 +57,25 @@ test("rejects browser paths outside the image instead of using a workspace brows
 });
 
 test.afterEach(() => mock.restoreAll());
+
+test("CI seccomp retains the pinned Docker deny-by-default policy plus only Playwright's namespace exception", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { createHash } = await import("node:crypto");
+  const { browserSeccompProfile } = await import("./browser-seccomp.mjs");
+  const baseline = readFileSync(
+    new URL("../.github/seccomp/docker-default-v28.0.0.json", import.meta.url),
+  );
+  assert.equal(
+    createHash("sha256").update(baseline).digest("hex"),
+    "9c1025c88ccaa517b648da571961838744ea2137f176bfe6a48b21294cae9c76",
+  );
+  const profile = browserSeccompProfile();
+  assert.equal(profile.defaultAction, "SCMP_ACT_ERRNO");
+  assert.deepEqual(profile.syscalls.pop(), {
+    names: ["clone", "setns", "unshare"],
+    action: "SCMP_ACT_ALLOW",
+    comment:
+      "Allow Chromium to establish its unprivileged user namespace sandbox",
+  });
+  assert.deepEqual(profile, JSON.parse(baseline));
+});

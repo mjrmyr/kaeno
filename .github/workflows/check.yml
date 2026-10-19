@@ -32,13 +32,25 @@ jobs:
           persist-credentials: false
       - name: Build the actual runtime image
         run: docker build --tag kaeno-browser:check .
-      - name: Smoke Chromium with worker restrictions and no network
-        # Do not weaken seccomp, sandboxing or privileges to make this pass.
-        # Failure here is a runtime compatibility blocker, not a reason to add --no-sandbox.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Prepare scoped CI namespace policy and report host restrictions
+        run: |
+          node scripts/browser-seccomp.mjs > "$RUNNER_TEMP/browser-seccomp.json"
+          docker version
+          docker info --format '{{json .SecurityOptions}}'
+          sysctl kernel.unprivileged_userns_clone user.max_user_namespaces \
+            kernel.apparmor_restrict_unprivileged_userns || true
+      - name: Smoke sandboxed Chromium with scoped CI seccomp and no network
+        # CI-only Playwright namespace exception; all other restrictions remain.
+        # This is NOT proof of Kubernetes RuntimeDefault compatibility. See docs/browser-runtime.md.
+        # Never fall back to --no-sandbox or disable AppArmor if this fails.
         run: |
           docker run --rm --init --network none \
             --user 1000:1000 --read-only --cap-drop ALL \
             --security-opt no-new-privileges --pids-limit 256 \
+            --security-opt "seccomp=$RUNNER_TEMP/browser-seccomp.json" \
             --tmpfs /tmp:rw,noexec,nosuid,size=64m \
             --tmpfs /home/agent:rw,noexec,nosuid,size=16m,uid=1000,gid=1000 \
             --workdir /workspace kaeno-browser:check \
