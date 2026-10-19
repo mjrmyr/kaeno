@@ -59,9 +59,16 @@ failed; it does **not** identify an AppArmor audit denial or the exact denied
 syscall. Read-only root is retained: Chromium's profile and temporary files use
 writable `/tmp`, while the executable remains in `/opt/playwright`.
 
-`scripts/browser-seccomp.mjs` adds only the `clone`, `setns`, `unshare` allow rule
+`scripts/browser-seccomp.mjs` adds the `clone`, `setns`, `unshare` allow rule
 recommended by [Playwright's Docker guide](https://playwright.dev/docs/docker#crawling-and-scraping)
-to a vendored, deny-by-default Docker v28.0.0 profile. Provenance and limitations
+to a vendored, deny-by-default Docker v28.0.0 profile, plus a `chroot` syscall
+allowance for Chromium's filesystem isolation inside its new user namespace.
+The first scoped CI run passed the original namespace failure but failed
+`sys_chroot("/proc/self/fdinfo/") == 0`: Docker gates this syscall on the outer
+CAP_SYS_CHROOT, which remains dropped. The added rule grants no capability;
+kernel namespace capability checks still apply. See the evidence in
+[the scoped run](https://github.com/mjrmyr/kaeno/actions/runs/39232342522/job/117993052921).
+Provenance and limitations
 are in `.github/seccomp/README.md`. CI generates this policy outside the image.
 All other syscall rules, non-root UID, capability drop, no-new-privileges,
 read-only root, tmpfs limits and network isolation remain. This exposes namespace

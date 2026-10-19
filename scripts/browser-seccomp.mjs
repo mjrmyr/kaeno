@@ -18,6 +18,14 @@ export function browserSeccompProfile() {
     comment:
       "Allow Chromium to establish its unprivileged user namespace sandbox",
   });
+  // Chromium chroots inside its new user namespace. Docker's baseline gates
+  // this syscall on the *outer* CAP_SYS_CHROOT, which we deliberately drop.
+  // Allow the syscall, not the capability: the kernel still checks namespace ownership.
+  profile.syscalls.push({
+    names: ["chroot"],
+    action: "SCMP_ACT_ALLOW",
+    comment: "Allow Chromium filesystem isolation inside its user namespace",
+  });
   return profile;
 }
 

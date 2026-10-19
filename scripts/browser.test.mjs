@@ -58,7 +58,7 @@ test("rejects browser paths outside the image instead of using a workspace brows
 
 test.afterEach(() => mock.restoreAll());
 
-test("CI seccomp retains the pinned Docker deny-by-default policy plus only Playwright's namespace exception", async () => {
+test("CI seccomp retains the pinned Docker deny-by-default policy plus only Chromium namespace and chroot exceptions", async () => {
   const { readFileSync } = await import("node:fs");
   const { createHash } = await import("node:crypto");
   const { browserSeccompProfile } = await import("./browser-seccomp.mjs");
@@ -71,6 +71,11 @@ test("CI seccomp retains the pinned Docker deny-by-default policy plus only Play
   );
   const profile = browserSeccompProfile();
   assert.equal(profile.defaultAction, "SCMP_ACT_ERRNO");
+  assert.deepEqual(profile.syscalls.pop(), {
+    names: ["chroot"],
+    action: "SCMP_ACT_ALLOW",
+    comment: "Allow Chromium filesystem isolation inside its user namespace",
+  });
   assert.deepEqual(profile.syscalls.pop(), {
     names: ["clone", "setns", "unshare"],
     action: "SCMP_ACT_ALLOW",
