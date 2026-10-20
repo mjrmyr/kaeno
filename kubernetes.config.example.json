@@ -1,0 +1,10 @@
+{
+  "namespace": "kaeno",
+  "owner": "kaeno-smoke",
+  "image": "kaeno:local",
+  "runtimeClassName": "kata-qemu",
+  "resources": {
+    "requests": { "cpu": "100m", "memory": "128Mi" },
+    "limits": { "cpu": "1", "memory": "1Gi" }
+  }
+}

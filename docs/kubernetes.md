@@ -137,3 +137,22 @@ The sandbox lifecycle, quota sizing, admission deadlock prevention, retry bounds
 Do not switch execution backends with unfinished work. Drain/cancel work and back up SQLite first. A database that has recorded Kubernetes state rejects changes to its cluster, namespace, owner, resource sizing, quota, Service, or sandbox service account rather than silently adopting different resources; use the original configuration or a deliberately fresh database. Live edits to the quota itself remain supported.
 
 Integration tests use a simulated Kubernetes API, real SQLite reopen, a real local HTTP API transport, and the real remote execution server. Live-cluster scheduling, TLS, image pulling, DNS and CNI enforcement still require deployment verification against your cluster.
+
+## Live smoke test
+
+`npm run smoke:kubernetes` runs the WORK smoke test inside your cluster. It uses the current kubectl context:
+
+```sh
+KAENO_K3S_SSH=user@node npm run smoke:kubernetes            # uses kubernetes.config.example.json
+KAENO_K3S_SSH=user@node npm run smoke:kubernetes -- ./my-kubernetes.json
+```
+
+1. It builds this checkout as `kaeno:local` for `linux/amd64`. Set `KAENO_PLATFORM` for another architecture, or `KAENO_SKIP_BUILD=1` to reuse an existing build.
+2. It imports the image with `k3s ctr images import` over SSH. Leave `KAENO_K3S_SSH` unset when the node can already pull the image, and change `image` in the backend file to match.
+3. It checks the `cluster.yaml` prerequisites in the `kaeno` namespace.
+4. It runs [`scripts/kubernetes-smoke.yaml`](../scripts/kubernetes-smoke.yaml) as a Job. The Job uses the host service account and the host label, so the sandbox NetworkPolicy lets it in. `scripts/work-smoke.ts` and the backend file are mounted from a ConfigMap.
+5. It prints the Job logs and exits non-zero if the Job fails.
+
+Set `KAENO_HOST_SERVICE_ACCOUNT` when your host runs under a service account other than `kaeno-kubernetes-host`. That account also needs the RuntimeClass ClusterRole binding when Kata is enabled. The Job pod has a deadline, so it temporarily takes one slot in the `Terminating` sandbox quota rather than competing with the long-running host.
+
+The model is simulated, so no model credentials are needed. A worker runs a shell command in a real sandbox pod, and the test checks Linux, UID 1000 and `/workspace`. It also prints `uname -r`: under Kata that shows the guest kernel, not the node's. The example file uses the dedicated owner `kaeno-smoke` and `runtimeClassName: kata-qemu`. Remove `runtimeClassName` to test plain runc pods. Never use an active application's owner: the test reconciles that owner's sandbox pods away.

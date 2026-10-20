@@ -1,0 +1,51 @@
+# One-off in-cluster WORK smoke test, applied by scripts/kubernetes-smoke.sh.
+# It runs as the Kaeno host service account (the script substitutes
+# KAENO_HOST_SERVICE_ACCOUNT) and carries the host label, so sandbox ingress
+# policy admits it. The script and backend file come from the kaeno-smoke
+# ConfigMap; the image only needs this checkout's src/.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kaeno-smoke
+  namespace: kaeno
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kaeno
+    spec:
+      serviceAccountName: kaeno-kubernetes-host
+      restartPolicy: Never
+      # A pod deadline makes this a Terminating pod: it borrows one sandbox quota
+      # slot instead of competing with the long-running host for a NotTerminating one.
+      activeDeadlineSeconds: 900
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: smoke
+          image: kaeno:local
+          imagePullPolicy: IfNotPresent
+          command:
+            [node, scripts/work-smoke.ts, kubernetes, /config/kubernetes.json]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 250m, memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          volumeMounts:
+            - name: smoke
+              mountPath: /app/scripts/work-smoke.ts
+              subPath: work-smoke.ts
+            - name: smoke
+              mountPath: /config/kubernetes.json
+              subPath: kubernetes.json
+      volumes:
+        - name: smoke
+          configMap:
+            name: kaeno-smoke

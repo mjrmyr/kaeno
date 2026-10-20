@@ -80,7 +80,7 @@ faux.setResponses(
       return fauxAssistantMessage(
         [
           fauxToolCall("bash", {
-            command: "echo WORK_SANDBOX_OK; uname -s; id -u; pwd",
+            command: "echo WORK_SANDBOX_OK; uname -s; uname -r; id -u; pwd",
           }),
         ],
         { stopReason: "toolUse" },
@@ -162,7 +162,8 @@ try {
     BACKGROUND_CONTEXT,
   );
   await core.harness.waitForTask(task, BACKGROUND_CONTEXT);
-  const end = Date.now() + 45_000;
+  // Covers a cold sandbox: Kubernetes readiness alone may take minutes (image pull, microVM boot).
+  const end = Date.now() + 300_000;
   let replies = await core.turns.readReplies(thread, 0);
   while (
     !replies.replies.some((reply) =>
