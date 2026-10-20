@@ -97,8 +97,9 @@ it("keeps the browser in envd across transient remote clients and cleans it up",
       throw new Error("Expected TCP address");
     }
     const url = `http://127.0.0.1:${address.port}`;
-    const remote = () =>
-      new RemoteExecutionEnv(url, "token", "work", process.cwd(), fetch);
+    function remote() {
+      return new RemoteExecutionEnv(url, "token", "work", process.cwd(), fetch);
+    }
     expect((await fetch(`${url}/browser`, { method: "POST" })).status).toBe(
       401,
     );

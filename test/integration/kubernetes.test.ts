@@ -99,6 +99,7 @@ function cluster() {
   let postStatus = 201;
   let deleting = false;
   let token = "cluster-secret";
+  const runtimeClasses = new Map<string, Record<string, string>>();
   const requests: { method: string; path: string; body: string }[] = [];
   const api = vi.fn<typeof fetch>(async (input, init) => {
     const url = new URL(String(input));
@@ -109,6 +110,14 @@ function cluster() {
     expect(new Headers(init?.headers).get("authorization")).toBe(
       `Bearer ${token}`,
     );
+    const runtimeClass =
+      /^\/apis\/node\.k8s\.io\/v1\/runtimeclasses\/(.+)$/.exec(path)?.[1];
+    if (runtimeClass !== undefined) {
+      const podFixed = runtimeClasses.get(runtimeClass);
+      return podFixed
+        ? Response.json({ handler: "kata", overhead: { podFixed } })
+        : new Response(null, { status: 404 });
+    }
     if (path.includes("resourcequotas")) {
       return Response.json({ spec: { scopes: ["Terminating"], hard: quota } });
     }
@@ -132,16 +141,18 @@ function cluster() {
       }
       return new Response(null, { status: 200 });
     }
-    const wire = (pod: z.infer<typeof manifestSchema>) => ({
-      ...pod,
-      status: {
-        phase: status,
-        conditions: ready ? [{ type: "Ready", status: "True" }] : [],
-        containerStatuses: waitingReason
-          ? [{ name: "envd", state: { waiting: { reason: waitingReason } } }]
-          : [],
-      },
-    });
+    function wire(pod: z.infer<typeof manifestSchema>) {
+      return {
+        ...pod,
+        status: {
+          phase: status,
+          conditions: ready ? [{ type: "Ready", status: "True" }] : [],
+          containerStatuses: waitingReason
+            ? [{ name: "envd", state: { waiting: { reason: waitingReason } } }]
+            : [],
+        },
+      };
+    }
     if (name === "pods") {
       const selector = url.searchParams.get("labelSelector") ?? "";
       const owner = /kaeno.io\/owner=([^,]+)/.exec(selector)?.[1];
@@ -178,6 +189,9 @@ function cluster() {
     deleting: (value: boolean) => {
       deleting = value;
     },
+    runtimeClass: (name: string, podFixed: Record<string, string>) => {
+      runtimeClasses.set(name, podFixed);
+    },
     rotate: () => {
       token = "rotated-secret";
     },
@@ -208,7 +222,7 @@ async function fixture(overrides: Partial<KubernetesExtensionOptions> = {}) {
     context,
   );
   cleanups.push(() => harness.close(context));
-  const work = async (): Promise<WorkInstance> => {
+  async function work(): Promise<WorkInstance> {
     const conversation = await harness.createConversation(
       { ownership: { kind: "ownerless" } },
       context,
@@ -223,7 +237,7 @@ async function fixture(overrides: Partial<KubernetesExtensionOptions> = {}) {
       context,
     );
     return { workId, conversationId: conversation.id };
-  };
+  }
   return { ...extension, server, harness, work, options };
 }
 
@@ -512,6 +526,84 @@ it("refuses adoption and deletion when a deterministic pod has a different ident
   ).toHaveLength(0);
 });
 
+it("runs pods under a configured RuntimeClass and charges its overhead to quota", async () => {
+  const rig = await fixture({ runtimeClassName: "kata-qemu" });
+  rig.server.runtimeClass("kata-qemu", { cpu: "250m", memory: "160Mi" });
+  // 100m + 250m requests fit twice in 800m; without overhead they would fit eight times.
+  rig.server.quota({ "requests.cpu": "800m", pods: "8" });
+  expect(await rig.environment.capacity?.(context)).toBe(2);
+  // 1Gi + 160Mi limits fit once in 2Gi.
+  rig.server.quota({ "limits.memory": "2Gi" });
+  expect(await rig.environment.capacity?.(context)).toBe(1);
+  await rig.environment.ensure(await rig.work(), rig.harness, context);
+  const creation = rig.server.requests.find(
+    (request) => request.method === "POST",
+  );
+  expect(JSON.parse(creation?.body ?? "{}").spec.runtimeClassName).toBe(
+    "kata-qemu",
+  );
+  expect(
+    rig.server.requests.some(
+      (request) =>
+        request.path === "/apis/node.k8s.io/v1/runtimeclasses/kata-qemu",
+    ),
+  ).toBe(true);
+});
+
+it("rejects a configured RuntimeClass that does not exist", async () => {
+  const rig = await fixture({ runtimeClassName: "kata-qemu" });
+  await expect(rig.environment.capacity?.(context)).rejects.toThrow(
+    "RuntimeClass kata-qemu not found",
+  );
+});
+
+it.each<{ configured?: string; actual?: string }>([
+  { actual: "kata-qemu" },
+  { configured: "kata-qemu" },
+])(
+  "refuses to adopt a pod with RuntimeClass $actual when $configured is configured",
+  async ({ configured, actual }) => {
+    const rig = await fixture(
+      configured ? { runtimeClassName: configured } : {},
+    );
+    if (configured) {
+      rig.server.runtimeClass(configured, {});
+    }
+    const work = await rig.work();
+    await rig.environment.ensure(work, rig.harness, context);
+    const pod = [...rig.server.pods.values()][0];
+    pod.spec = { ...pod.spec, runtimeClassName: actual };
+    await expect(
+      rig.environment.ensure(work, rig.harness, context),
+    ).rejects.toThrow("identity mismatch");
+  },
+);
+
+it("keeps identities without a RuntimeClass and rejects adding one to saved work", async () => {
+  const rig = await fixture();
+  expect(rig.environment.identity).toBe(
+    `kubernetes:${JSON.stringify({
+      api: "https://kubernetes.default.svc",
+      namespace: "test",
+      owner: "owner",
+      resources,
+      quota: "kaeno-sandbox",
+      service: "kaeno-sandbox",
+      serviceAccount: "kaeno-sandbox",
+    })}`,
+  );
+  const work = await rig.work();
+  await rig.environment.ensure(work, rig.harness, context);
+  const kata = kubernetesExtension({
+    ...rig.options,
+    runtimeClassName: "kata-qemu",
+  });
+  expect(kata.environment.identity).not.toBe(rig.environment.identity);
+  await expect(kata.environment.reconcile([work], rig.harness)).rejects.toThrow(
+    "differs",
+  );
+});
+
 it("validates resource quantities and rejects a quota that cannot fit a sandbox", async () => {
   expect(() =>
     kubernetesExtension({
@@ -570,7 +662,7 @@ it("reopens SQLite, adopts saved pod/token/image, and rejects retargeting saved 
   cleanups.push(() => rm(directory, { recursive: true, force: true }));
   const rig = await fixture();
   const database = join(directory, "state.sqlite");
-  const open = async () => {
+  async function open() {
     const registry = createRegistry();
     registry.install(rig.extension.durable);
     registry.install(
@@ -581,7 +673,7 @@ it("reopens SQLite, adopts saved pod/token/image, and rejects retargeting saved 
       { registry, models: createModels() },
       context,
     );
-  };
+  }
   const harness = await open();
   const conversation = await harness.createConversation(
     { ownership: { kind: "ownerless" } },
@@ -793,10 +885,11 @@ it("runs WORK through a pod execution environment and rejects child admission wh
       const last = request.messages.findLast(
         (message) => message.role !== "system",
       );
-      const call = (name: string, input: Record<string, string>) =>
-        fauxAssistantMessage([fauxToolCall(name, input)], {
+      function call(name: string, input: Record<string, string>) {
+        return fauxAssistantMessage([fauxToolCall(name, input)], {
           stopReason: "toolUse",
         });
+      }
       if (!worker) {
         if (
           last?.role === "user" &&

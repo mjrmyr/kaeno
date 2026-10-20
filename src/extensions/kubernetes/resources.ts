@@ -25,18 +25,44 @@ export const resourcesSchema = z
   });
 export type Resources = z.infer<typeof resourcesSchema>;
 
+/** Fixed per-pod RuntimeClass overhead, charged by ResourceQuota on top of container resources. */
+export interface Overhead {
+  cpu?: string;
+  memory?: string;
+}
+
 export function capacity(
   hard: Readonly<Record<string, string>>,
   resources: Resources,
+  overhead: Overhead = {},
 ): number {
-  const charges: Record<string, string> = {
-    pods: "1",
-    cpu: resources.requests.cpu,
-    memory: resources.requests.memory,
-    "requests.cpu": resources.requests.cpu,
-    "requests.memory": resources.requests.memory,
-    "limits.cpu": resources.limits.cpu,
-    "limits.memory": resources.limits.memory,
+  // ResourceQuota charges every sandbox pod its container resources PLUS the
+  // RuntimeClass overhead (e.g. the Kata VM). Without a RuntimeClass the overhead is 0.
+  const overheadCpu = requiredQuantity(
+    overhead.cpu ?? "0",
+    "RuntimeClass overhead cpu",
+  );
+  const overheadMemory = requiredQuantity(
+    overhead.memory ?? "0",
+    "RuntimeClass overhead memory",
+  );
+  const requestsCpu =
+    requiredQuantity(resources.requests.cpu, "requests.cpu") + overheadCpu;
+  const requestsMemory =
+    requiredQuantity(resources.requests.memory, "requests.memory") +
+    overheadMemory;
+  const limitsCpu =
+    requiredQuantity(resources.limits.cpu, "limits.cpu") + overheadCpu;
+  const limitsMemory =
+    requiredQuantity(resources.limits.memory, "limits.memory") + overheadMemory;
+  const charges: Record<string, bigint> = {
+    pods: requiredQuantity("1", "pod count"),
+    cpu: requestsCpu,
+    memory: requestsMemory,
+    "requests.cpu": requestsCpu,
+    "requests.memory": requestsMemory,
+    "limits.cpu": limitsCpu,
+    "limits.memory": limitsMemory,
   };
   let slots: number | undefined;
   for (const [key, value] of Object.entries(hard)) {
@@ -45,13 +71,12 @@ export function capacity(
         `Kubernetes quota bounds ${key}, but sandbox pods declare no ephemeral-storage`,
       );
     }
-    const charge = charges[key];
-    if (charge === undefined) {
+    const required = charges[key];
+    if (required === undefined) {
       continue;
     }
     const allowed = quantity(value);
-    const required = quantity(charge);
-    if (allowed === undefined || required === undefined) {
+    if (allowed === undefined) {
       throw new Error(`Invalid Kubernetes quota quantity for ${key}`);
     }
     const fit = Number(allowed / required);
@@ -66,6 +91,14 @@ export function capacity(
     );
   }
   return slots;
+}
+
+function requiredQuantity(text: string, what: string): bigint {
+  const value = quantity(text);
+  if (value === undefined) {
+    throw new Error(`Invalid Kubernetes quantity for ${what}`);
+  }
+  return value;
 }
 
 function quantity(text: string): bigint | undefined {

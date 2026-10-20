@@ -11,8 +11,8 @@ import { openKaeno, type Kaeno } from "../../src/core/application/index.ts";
 it("reopens a core-only native conversation", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-minimal-"));
   let core: Kaeno | undefined;
-  const open = async () =>
-    openKaeno({
+  async function open() {
+    return openKaeno({
       storage: await openNodeSqliteStorage(join(directory, "core.sqlite")),
       models: createModels(),
       assistant: {
@@ -20,6 +20,7 @@ it("reopens a core-only native conversation", async () => {
         instructions: "Be helpful",
       },
     });
+  }
   try {
     core = await open();
     const id = await core.threads.getOrCreateConversation("minimal");

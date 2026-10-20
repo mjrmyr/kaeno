@@ -40,7 +40,9 @@ async function main(): Promise<void> {
     output: process.stdout,
   });
   const cancellation = new AbortController();
-  const cancel = (): void => cancellation.abort();
+  function cancel(): void {
+    cancellation.abort();
+  }
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
   terminal.on("SIGINT", cancel);

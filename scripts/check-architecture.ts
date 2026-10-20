@@ -115,11 +115,15 @@ const paths = [
   ...(await filesIn(resolve(root, "scripts"))),
   ...(await filesIn(resolve(root, "test"))),
 ];
-for (const path of paths) {
+function sourceFileFor(path: string): ts.SourceFile {
   const file = program.getSourceFile(path);
   if (!file) {
     throw new Error(`TypeScript configuration does not include ${path}`);
   }
+  return file;
+}
+for (const path of paths) {
+  const file = sourceFileFor(path);
   const owner = featureOf(path);
   const layer = layerOf(path);
   if (layer !== undefined && !layers.has(layer)) {
@@ -131,7 +135,7 @@ for (const path of paths) {
   }
   const unit = path.endsWith(".test.ts") && owner !== undefined;
   const mockedModules = new Set<string>();
-  const collectMocks = (node: ts.Node): void => {
+  function collectMocks(node: ts.Node): void {
     if (
       ts.isCallExpression(node) &&
       ts.isPropertyAccessExpression(node.expression) &&
@@ -143,9 +147,9 @@ for (const path of paths) {
       mockedModules.add(node.arguments[0].text);
     }
     ts.forEachChild(node, collectMocks);
-  };
+  }
   collectMocks(file);
-  const visit = (node: ts.Node): void => {
+  function visit(node: ts.Node): void {
     if (
       ts.isConditionalExpression(node) &&
       (ts.isConditionalExpression(node.whenTrue) ||
@@ -387,7 +391,7 @@ for (const path of paths) {
       }
     }
     ts.forEachChild(node, visit);
-  };
+  }
   visit(file);
 }
 if (errors.length) {

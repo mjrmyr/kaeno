@@ -93,17 +93,17 @@ export class RemoteExecutionEnv {
     if (signal?.aborted) {
       onAbort();
     }
-    const detach = (): void => {
+    function detach(): void {
       signal?.removeEventListener("abort", onAbort);
       clearTimeout(cancellationDeadline);
-    };
-    const resolveCallback = (id: number): WireCallback => {
+    }
+    function resolveCallback(id: number): WireCallback {
       const callback = callbacks.at(id);
       if (!callback) {
         throw new Error(`Unknown remote callback ${id}`);
       }
       return callback;
-    };
+    }
     let response: Response;
     try {
       response = await this.post(
@@ -137,13 +137,13 @@ export class RemoteExecutionEnv {
     };
     return new Promise((resolve, reject) => {
       let settled = false;
-      const settle = (action: () => void): void => {
+      function settle(action: () => void): void {
         if (!settled) {
           settled = true;
           detach();
           action();
         }
-      };
+      }
       void (async (): Promise<void> => {
         const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
         let buffer = "";

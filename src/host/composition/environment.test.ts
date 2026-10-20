@@ -9,10 +9,12 @@ async function put(path: string, text: string): Promise<void> {
   await mkdir(join(path, ".."), { recursive: true });
   await writeFile(path, text);
 }
-const agent = (name: string, fields = "model: openai/test\n") =>
-  `---\nname: ${name}\ndescription: Profile ${name}\n${fields}---\nInstructions for ${name}.\n`;
-const skill = (name: string) =>
-  `---\nname: ${name}\ndescription: Skill ${name}\n---\nKnowledge ${name}.\n`;
+function agent(name: string, fields = "model: openai/test\n") {
+  return `---\nname: ${name}\ndescription: Profile ${name}\n${fields}---\nInstructions for ${name}.\n`;
+}
+function skill(name: string) {
+  return `---\nname: ${name}\ndescription: Skill ${name}\n---\nKnowledge ${name}.\n`;
+}
 async function fixture(
   overrides: Record<string, unknown> = {},
 ): Promise<{ root: string; configFile: string }> {

@@ -130,7 +130,7 @@ async function snapshot(sources: DefinitionSources) {
 async function localGit(root: string) {
   const repository = join(root, "git");
   await mkdir(repository);
-  const git = async (args: readonly string[]) => {
+  async function git(args: readonly string[]) {
     const result = await execute(
       "git",
       [
@@ -157,7 +157,7 @@ async function localGit(root: string) {
       },
     );
     return result.stdout.trim();
-  };
+  }
   await git(["init", "--initial-branch=trunk", "--template="]);
   await exportDefinitions(repository);
   await git(["add", "."]);

@@ -16,6 +16,7 @@
     "eqeqeq": ["error", "always"],
     "no-nested-ternary": "error",
     "no-else-return": "error",
+    "func-style": ["error", "declaration", { "allowArrowFunctions": false }],
     "vitest/require-to-throw-message": "off",
     "typescript/no-explicit-any": "error",
     "typescript/no-non-null-assertion": "error",

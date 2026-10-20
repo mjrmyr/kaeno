@@ -7,10 +7,10 @@ export class ApiServer {
   readonly server: Server;
   constructor(core: Kaeno) {
     this.server = createServer(async (req, res) => {
-      const json = (status: number, value: unknown) => {
+      function json(status: number, value: unknown) {
         res.writeHead(status, { "content-type": "application/json" });
         res.end(JSON.stringify(value));
-      };
+      }
 
       try {
         const url = new URL(req.url ?? "/", "http://localhost");

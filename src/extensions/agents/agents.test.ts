@@ -6,8 +6,9 @@ import {
   resolveAgents,
   type SkillBinder,
 } from "./index.ts";
-const manifest = (frontmatter: string, body = "Prompt") =>
-  `---\n${frontmatter}\n---\n${body}`;
+function manifest(frontmatter: string, body = "Prompt") {
+  return `---\n${frontmatter}\n---\n${body}`;
+}
 it("requires only name and description and preserves body and future metadata", () => {
   const agent = parseAgent(
     manifest(

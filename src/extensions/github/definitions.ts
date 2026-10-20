@@ -153,7 +153,7 @@ async function git(
     let errorBytes = 0;
     let failure: string | undefined;
     let monitoring = false;
-    const stop = (message: string): void => {
+    function stop(message: string): void {
       failure ??= message;
       // Git can spawn a remote helper/upload-pack. Stop the entire private group.
       if (process.platform !== "win32" && child.pid) {
@@ -165,8 +165,10 @@ async function git(
         }
       }
       child.kill("SIGKILL");
-    };
-    const abort = (): void => stop("GitHub repository read cancelled");
+    }
+    function abort(): void {
+      stop("GitHub repository read cancelled");
+    }
     options.signal?.addEventListener("abort", abort, { once: true });
     if (options.signal?.aborted) {
       abort();
@@ -373,11 +375,12 @@ export function githubRepositoryReader(
         }
         const remote = localPath ?? `https://github.com/${repository}.git`;
         const local = localPath !== undefined;
-        const run = (
+        function run(
           args: readonly string[],
           maxBytes?: number,
-        ): Promise<Buffer> =>
-          git(directory ?? "", args, { local, signal, maxBytes });
+        ): Promise<Buffer> {
+          return git(directory ?? "", args, { local, signal, maxBytes });
+        }
         await run(["init", "--bare", "--quiet", "--template="]);
         let token = "";
         if (options.app) {
@@ -400,8 +403,14 @@ export function githubRepositoryReader(
             throw new ReadFailure("Invalid GitHub App credential response");
           }
         }
-        const network = (args: readonly string[]): Promise<Buffer> =>
-          git(directory ?? "", args, { local, token, signal, monitor: true });
+        function network(args: readonly string[]): Promise<Buffer> {
+          return git(directory ?? "", args, {
+            local,
+            token,
+            signal,
+            monitor: true,
+          });
+        }
         let ref = request.ref;
         if (ref !== "HEAD" && !ref.startsWith("refs/") && !COMMIT.test(ref)) {
           const branches = `refs/heads/${ref}`;

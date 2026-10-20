@@ -151,18 +151,20 @@ it.each(["test:docker", "test:microsandbox", undefined])(
     const model = { provider: "faux", modelId: "faux-1" };
     let reconciliations = 0;
     let provisions = 0;
-    const environmentFor = (target: string): WorkEnvironment => ({
-      identity: target,
-      cwd: "/workspace",
-      ensure: async () => {
-        provisions++;
-      },
-      release: async () => {},
-      reconcile: async () => {
-        reconciliations++;
-      },
-      executionEnvironment: async () => undefined,
-    });
+    function environmentFor(target: string): WorkEnvironment {
+      return {
+        identity: target,
+        cwd: "/workspace",
+        ensure: async () => {
+          provisions++;
+        },
+        release: async () => {},
+        reconcile: async () => {
+          reconciliations++;
+        },
+        executionEnvironment: async () => undefined,
+      };
+    }
     faux.setResponses(
       Array.from({ length: 30 }, () => async (request) => {
         const system = getCurrentSystemPrompt(request.messages);
@@ -197,8 +199,8 @@ it.each(["test:docker", "test:microsandbox", undefined])(
         return fauxAssistantMessage("ACK");
       }),
     );
-    const open = async (target: string | undefined) =>
-      openKaeno({
+    async function open(target: string | undefined) {
+      return openKaeno({
         storage: await openNodeSqliteStorage(databaseFile),
         models,
         assistant: { model, instructions: "CHAT", tools: ["start_work"] },
@@ -219,6 +221,7 @@ it.each(["test:docker", "test:microsandbox", undefined])(
             target === undefined ? undefined : environmentFor(target),
         },
       });
+    }
     const core = await open(identity);
     try {
       const conversationId =

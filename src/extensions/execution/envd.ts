@@ -90,11 +90,11 @@ export class EnvironmentServer {
       res.writeHead(401).end();
       return;
     }
-    const write = (frame: object): void => {
+    function write(frame: object): void {
       if (!res.writableEnded) {
         res.write(JSON.stringify(frame) + "\n");
       }
-    };
+    }
     try {
       let raw = "";
       req.setEncoding("utf8");

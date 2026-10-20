@@ -76,9 +76,9 @@ it("routes to sandbox and forwards bounded text and screenshot images", async ()
 });
 
 function apiWithEnvironment(env: ToolExecutionApi["env"]): ToolExecutionApi {
-  const unexpected = async (): Promise<never> => {
+  async function unexpected(): Promise<never> {
     throw new Error("Unexpected tool API operation");
-  };
+  }
   return {
     env,
     taskId: taskId(1),

@@ -35,12 +35,14 @@ function engineStub(): SandboxEngine & {
   remove: ReturnType<typeof vi.fn>;
 } {
   const vms = new Map<string, FakeVm>();
-  const describe = (name: string, vm: FakeVm) => ({
-    name,
-    running: vm.running,
-    labels: vm.labels,
-    hostPort: 49152,
-  });
+  function describe(name: string, vm: FakeVm) {
+    return {
+      name,
+      running: vm.running,
+      labels: vm.labels,
+      hostPort: 49152,
+    };
+  }
   return {
     target: "local-test-store",
     vms,

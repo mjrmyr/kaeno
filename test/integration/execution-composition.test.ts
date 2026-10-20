@@ -53,8 +53,9 @@ it("installs and configures providers without loading the native SDK", async () 
 
 it("constructs interchangeable installed backends with native extensions and stable target identities", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-execution-config-"));
-  const load = (config: ExecutionConfiguration, databaseFile: string) =>
-    loadExecution(config, databaseFile, providers);
+  function load(config: ExecutionConfiguration, databaseFile: string) {
+    return loadExecution(config, databaseFile, providers);
+  }
   try {
     const configFile = join(directory, "config.json");
     const databaseFile = join(directory, "db.sqlite");
