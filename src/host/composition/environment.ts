@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import {
   WORK_TOOLS,
-  type Binding,
   type ConversationSetup,
   type KaenoExtension,
   type ModelRef,
@@ -14,7 +13,6 @@ import {
   parseModelRef,
   parseAgents,
   resolveAgentSetup,
-  resolveAgents,
   type AgentDefinition,
 } from "../../extensions/agents/index.ts";
 import {
@@ -28,13 +26,12 @@ import {
 import { githubRepositoryReader } from "../../extensions/github/index.ts";
 import {
   loadSkills,
-  skillBinder,
   skillsExtension,
-  SKILLS_EXTENSION,
   SKILL_TOOLS,
   SkillCatalog,
-  type BoundSkill,
 } from "../../extensions/skills/index.ts";
+import type { AgentExtension } from "../../extensions/contributions/index.ts";
+import { resolveExtensions, type ContributionPolicy } from "./contributions.ts";
 import {
   parseEnvironmentConfiguration,
   type ExecutionConfiguration,
@@ -81,16 +78,8 @@ export interface LoadEnvironmentOptions {
   maxDepth?: number;
   maxConcurrent?: number;
   defaultModel?: ModelRef;
-  extensions?: readonly KaenoExtension[];
-  tools?: readonly string[];
-  /** Sandbox-only tools, never offered to the assistant by default. */
-  workerTools?: readonly string[];
-  /** Extension data every selected agent carries (e.g. a GitHub installation). */
-  bindings?: readonly Binding[];
-  skillsFor?: (
-    agent: AgentDefinition,
-    role: "assistant" | "worker",
-  ) => readonly BoundSkill[];
+  extensions?: readonly AgentExtension[];
+  policy?: ContributionPolicy;
   signal?: AbortSignal;
 }
 export interface LoadedEnvironment {
@@ -157,61 +146,55 @@ export async function loadEnvironment(
             ? parseModelRef(config.defaultModel)
             : undefined),
       };
-      const bindings = options.bindings ?? [];
-      if (bindings.some((binding) => binding.owner === SKILLS_EXTENSION)) {
-        throw new Error(
-          "Use skillsFor for native skill contributions; bindings must not supply a second skills binding",
-        );
-      }
-      function binderFor(agent: AgentDefinition, role: "assistant" | "worker") {
-        return skillBinder(catalog, options.skillsFor?.(agent, role));
-      }
-      const assistantBinder = binderFor(assistantDefinition, "assistant");
-      const assistant = resolveAgentSetup(
-        assistantDefinition,
-        {
-          ...defaults,
-          tools: [...ORCHESTRATION, ...(options.tools ?? []), ...SKILL_TOOLS],
-        },
-        assistantBinder,
-        bindings,
-      );
-      const workerTools = [
-        ...new Set([
-          ...WORKER_TOOLS,
-          ...SKILL_TOOLS,
-          ...(options.tools ?? []),
-          ...(options.workerTools ?? []),
-        ]),
+      const standard: KaenoExtension[] = [
+        { durable: CodingTools },
+        skillsExtension(),
+        definitionOriginsExtension(),
       ];
-      // Selected workers must resolve; tool and binding fit is checked by core when Kaeno opens.
-      const agents = resolveAgents({
-        agents: workerDefinitions,
-        defaults: {
-          ...defaults,
-          tools: [
-            ...WORKER_TOOLS,
-            ...(options.tools ?? []),
-            ...(options.workerTools ?? []),
-            ...SKILL_TOOLS,
-          ],
-        },
-        skills: (agent) => binderFor(agent, "worker"),
-        bindings,
+      const contributions = resolveExtensions({
+        extensions: options.extensions ?? [],
+        standard,
+        sourceSkills: catalog,
+        assistantTools: [...ORCHESTRATION, ...SKILL_TOOLS],
+        workerTools: [...WORKER_TOOLS, ...SKILL_TOOLS],
+        policy: options.policy,
       });
+      function setupFor(
+        agent: AgentDefinition,
+        role: "assistant" | "worker",
+      ): ConversationSetup {
+        try {
+          const assigned = contributions.resolve(agent, role);
+          return resolveAgentSetup(
+            agent,
+            { ...defaults, tools: assigned.tools },
+            () => assigned.skillBinding,
+            assigned.bindings,
+          );
+        } catch (error) {
+          throw new Error(
+            `Agent ${agent.id} is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+            { cause: error },
+          );
+        }
+      }
+      const assistant = setupFor(assistantDefinition, "assistant");
+      const agents = workerDefinitions.map((agent) => ({
+        id: agent.id,
+        description: agent.description,
+        setup: setupFor(agent, "worker"),
+      }));
       return {
         execution: config.execution,
         assistant,
         extensions: [
-          { durable: CodingTools },
-          skillsExtension(),
-          definitionOriginsExtension(),
-          ...(options.extensions ?? []),
+          ...standard,
+          ...(options.extensions ?? []).map((extension) => extension.runtime),
         ],
         work: {
           agents,
           environment: options.environment,
-          tools: workerTools,
+          tools: contributions.workerTools,
           maxDepth: options.maxDepth ?? 2,
           maxConcurrent: options.maxConcurrent ?? 4,
         },

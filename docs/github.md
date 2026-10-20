@@ -54,7 +54,7 @@ npm start
 
 Git must be installed on both the host and worker image. The provided Dockerfile includes it. Rebuild the image before using checkout/publish with an older image.
 
-The owner configuration is loaded at startup, not watched. Enabling it provides the installation and default GitHub tools to every agent in newly admitted work; already-admitted work retains its frozen bindings and tools. Start new work to pick up newly enabled capabilities. Revoke installation access, repository access, or permissions on GitHub to deny subsequent operations for saved work too. Changing the configured installation does not silently redirect saved work to another installation: mismatched saved bindings fail recovery closed.
+The owner configuration is loaded at startup, not watched. The CLI explicitly permits and defaults GitHub contributions for both roles. Agents that actually select GitHub contributions receive the extension-owned installation binding; an explicit empty tool list with no GitHub skills receives none. Already-admitted work retains its frozen bindings and tools. Start new work to pick up newly enabled capabilities. Revoke installation access, repository access, or permissions on GitHub to deny subsequent operations for saved work too. Changing the configured installation does not silently redirect saved work to another installation: mismatched saved bindings fail recovery closed.
 
 Leaving `KAENO_GITHUB_CONFIG` unset installs no GitHub tools and needs no GitHub secrets. Removing the entire extension while saved conversations depend on it fails recovery closed. Old version-1 GitHub bindings are intentionally unsupported rather than automatically broadening their previously restricted access. Back up and explicitly migrate existing bound data, or use a fresh development database, before adopting this binding change.
 
@@ -99,9 +99,9 @@ configured installation for all agents
   -> authenticated host Git <-> credential-free bundle <-> worker api.env
 ```
 
-The small generic addition is a host-wide `bindings` list in environment composition; every selected agent carries those bindings. File composition also accepts explicitly installed extensions and additional approved worker tool names. Host-supplied `tools` are included in assistant and worker defaults; explicit tool lists remain authoritative. Core still owns only opaque bindings and native extension selection; it parses no GitHub configuration.
+The loader returns one agent extension and a separate startup repository reader. The application assigns contributions through the common [extension policy](extensions.md), without maintaining tool inventories or constructing GitHub bindings. The private binder receives only actually selected contributions; composition supplies its canonical owner. Native definitions remain the single tool inventory. Core owns only resolved setups, opaque bindings and runtime registration; it parses no GitHub configuration.
 
-A binding records only the installation ID. GitHub enforces repository access and permissions on every operation. A binding never selects tools. Every child worker receives the same configured installation in its own frozen setup. Private keys, App JWTs, and installation tokens are never written to bindings, prompts, results, Git remote URLs, or worker files.
+A binding records only the installation ID. GitHub enforces repository access and permissions on every operation. A binding never selects tools. Every child worker selecting GitHub contributions receives the same configured installation in its own frozen setup. Private keys, App JWTs, and installation tokens are never written to bindings, prompts, results, Git remote URLs, or worker files.
 
 Authentication lives on the host. The extension mints short-lived tokens inheriting the installation's permissions. Discovery uses installation-wide repository access; checkout, publishing, and each diagnostic read request a fresh token restricted to the single target repository. GitHub rejects requests for repositories outside the installation. Repository targeting is an operation detail, not a local allowlist. Host Git receives its token through an ephemeral process environment. Bare host repositories are temporary, do not check out repository code, ignore system/global Git configuration, and disable hooks, credential helpers, and HTTP redirects. Tool errors exclude raw child-process errors and GitHub error bodies. Workers receive Git bundles with objects and refs, never tokens or authenticated remote configuration.
 
@@ -136,7 +136,18 @@ import { loadEnvironment } from "../src/host/composition/index.ts";
 const github = await loadGitHubConfiguration("./.kaeno/github.json");
 const configuration = await loadEnvironment({
   configFile: "./.kaeno/config.json",
-  ...github,
+  repositoryReader: github.repositoryReader,
+  extensions: [github.extension],
+  policy: (base) => ({
+    assistant: {
+      available: [...base.assistant.available, github.extension],
+      defaults: [...base.assistant.defaults, github.extension],
+    },
+    worker: {
+      available: [...base.worker.available, github.extension],
+      defaults: [...base.worker.defaults, github.extension],
+    },
+  }),
 });
 ```
 

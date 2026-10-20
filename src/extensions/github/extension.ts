@@ -11,14 +11,13 @@ import {
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import type { Context } from "@earendil-works/chord";
 import { z } from "zod";
-import {
-  readBinding,
-  type KaenoExtension,
-} from "../../core/application/index.ts";
+import { readBinding } from "../../core/application/index.ts";
+import type { AgentExtension } from "../contributions/index.ts";
 import {
   GITHUB_EXTENSION,
   GITHUB_TOOLS,
   githubPrompt,
+  githubBinding,
   readGitHubInstallation,
 } from "./access.ts";
 import { GitHubClient } from "./client.ts";
@@ -97,7 +96,7 @@ function text(value: unknown): { content: [{ type: "text"; text: string }] } {
 /** Native GitHub tools, extension-owned bindings and a truthful contextual prompt section. */
 export function githubExtension(
   options: GitHubExtensionOptions,
-): KaenoExtension {
+): AgentExtension {
   const installationId = z
     .number()
     .int()
@@ -353,26 +352,40 @@ export function githubExtension(
     },
   });
   return {
-    durable: defineExtension({
-      name: GITHUB_EXTENSION,
-      tools: [list, checkout, publish, ...githubReadTools(client, tokenFor)],
-      sections: [
-        section("github", async ({ conversationId, read, agent }, context) => {
-          const tools = agent.tools.map((tool) => tool.name);
-          const assigned = readGitHubInstallation(
-            await readBinding(read, conversationId, GITHUB_EXTENSION, context),
+    runtime: {
+      durable: defineExtension({
+        name: GITHUB_EXTENSION,
+        tools: [list, checkout, publish, ...githubReadTools(client, tokenFor)],
+        sections: [
+          section(
+            "github",
+            async ({ conversationId, read, agent }, context) => {
+              const tools = agent.tools.map((tool) => tool.name);
+              const assigned = readGitHubInstallation(
+                await readBinding(
+                  read,
+                  conversationId,
+                  GITHUB_EXTENSION,
+                  context,
+                ),
+              );
+              return githubPrompt(tools, assigned === installationId);
+            },
+          ),
+        ],
+      }),
+      readOnlyTools: [GITHUB_TOOLS[0], ...GITHUB_READ_TOOLS],
+      validateBinding: (binding) => {
+        if (readGitHubInstallation(binding) !== installationId) {
+          throw new Error(
+            "GitHub: saved installation does not match the configured installation",
           );
-          return githubPrompt(tools, assigned === installationId);
-        }),
-      ],
-    }),
-    readOnlyTools: [GITHUB_TOOLS[0], ...GITHUB_READ_TOOLS],
-    validateBinding: (binding) => {
-      if (readGitHubInstallation(binding) !== installationId) {
-        throw new Error(
-          "GitHub: saved installation does not match the configured installation",
-        );
-      }
+        }
+      },
+    },
+    bind: () => {
+      const { version, value } = githubBinding(installationId);
+      return { version, value };
     },
   };
 }

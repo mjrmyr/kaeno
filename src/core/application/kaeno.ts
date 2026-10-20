@@ -45,6 +45,7 @@ export interface Kaeno {
   close(): Promise<void>;
 }
 
+/** Runtime integration only. Agent-facing contributions are composed outside core. */
 export interface KaenoExtension {
   /** Native tools, tasks, sections, hooks and wrappers, fixed before the harness opens. */
   durable: Extension;
@@ -131,9 +132,14 @@ async function assertBindingsValid(
         context,
       );
       const savedBindings = z.array(bindingSchema).parse(saved?.bindings ?? []);
+      const bindingSet = new Set<string>();
       for (const binding of savedBindings) {
         const owner = owners.get(binding.owner);
         try {
+          if (bindingSet.has(binding.owner)) {
+            throw new Error(`duplicate binding owner "${binding.owner}"`);
+          }
+          bindingSet.add(binding.owner);
           if (!owner) {
             throw new Error(`owner "${binding.owner}" is not installed`);
           }
@@ -237,11 +243,27 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
   const deliveries = new Map<string, NonNullable<KaenoExtension["delivery"]>>();
   const byName = new Map<string, KaenoExtension>();
   let environment: HarnessOptions["env"];
+  const toolNames = new Set<string>();
   for (const extension of extensions) {
     if (names.has(extension.durable.name)) {
       throw new Error(`Duplicate extension: ${extension.durable.name}`);
     }
     names.add(extension.durable.name);
+    const ownedTools = new Set<string>();
+    for (const tool of extension.durable.tools ?? []) {
+      if (toolNames.has(tool.name)) {
+        throw new Error(`Duplicate tool: ${tool.name}`);
+      }
+      toolNames.add(tool.name);
+      ownedTools.add(tool.name);
+    }
+    for (const name of extension.readOnlyTools ?? []) {
+      if (!ownedTools.has(name)) {
+        throw new Error(
+          `Extension ${extension.durable.name}: read-only tool "${name}" is not owned here`,
+        );
+      }
+    }
     byName.set(extension.durable.name, extension);
     if (extension.environment) {
       if (environment) {

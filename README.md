@@ -49,6 +49,8 @@ To provision a login from a read-only source such as a Kubernetes Secret, set `K
 
 The embedding entry point is `openKaeno` in `src/core/application/index.ts`. Callers supply resolved native assistant settings and explicitly install pi-durable extensions. WORK takes `work.agents`: plain agent profiles (`id`, `description`, resolved `setup`). `openKaeno` checks every agent against the approved worker tools and installed binding owners and throws on a misfit, so an agent that cannot run fails startup instead of being listed as unavailable. `loadEnvironment` in `src/host/composition/index.ts` resolves the same configured sources for local, Docker, and Kubernetes hosts; source acquisition and catalogs do not enter durable core.
 
+Agent-facing extensions expose tools and skills through an [extension contribution boundary](docs/extensions.md), backed by a small native runtime projection. The application installs extensions and separately sets availability and defaults; exact profile lists override defaults. Private binding production and skill snapshots are handled by composition, not extension-specific host wiring.
+
 Native extensions are trusted process code, fixed before the harness opens. There is no hot loader or plugin marketplace. Agent/skill Markdown is data, not executable extension code. An agent may author a patch or a future native extension, but adopting that code into the running process remains an owner-controlled release decision.
 
 ## Private repository work

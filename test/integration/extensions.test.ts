@@ -26,6 +26,8 @@ import {
   type KaenoExtension,
 } from "../../src/core/application/index.ts";
 
+import { ConversationBindings } from "../../src/core/conversation/index.ts";
+
 const assistant = {
   model: { provider: "faux", modelId: "faux-1" },
   instructions: "Use the extension when requested.",
@@ -286,7 +288,7 @@ it("rejects a removed delivery capability before resuming its pending turn", asy
   }
 });
 
-it.each(["extension", "task", "tool", "channel", "environment"])(
+it.each(["extension", "task", "tool", "channel", "environment", "read-only"])(
   "rejects duplicate %s definitions before services start",
   async (kind) => {
     let starts = 0;
@@ -312,13 +314,18 @@ it.each(["extension", "task", "tool", "channel", "environment"])(
     const extensions: KaenoExtension[] = [0, 1].map((index) => ({
       durable: defineExtension({
         name: kind === "extension" ? "same" : `extension-${index}`,
-        ...(kind === "tool" ? { tools: [tool] } : {}),
+        ...(kind === "tool" || (kind === "read-only" && index === 0)
+          ? { tools: [tool] }
+          : {}),
         ...(kind === "task" ? { tasks: [task] } : {}),
       }),
       ...(kind === "channel"
         ? { delivery: { channel: "same", send: async () => {} } }
         : {}),
       ...(kind === "environment" ? { environment: () => undefined } : {}),
+      ...(kind === "read-only" && index === 1
+        ? { readOnlyTools: [tool.name] }
+        : {}),
       start: async () => {
         starts++;
       },
@@ -334,6 +341,62 @@ it.each(["extension", "task", "tool", "channel", "environment"])(
     expect(starts).toBe(0);
   },
 );
+
+it("rejects duplicate saved binding owners before any service restarts", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "kaeno-duplicate-bindings-"));
+  const path = join(directory, "core.sqlite");
+  const { models } = catalog();
+  let starts = 0;
+  const owner: KaenoExtension = {
+    durable: defineExtension({ name: "binding-owner" }),
+    validateBinding: () => {},
+    start: async () => {
+      starts++;
+    },
+  };
+  try {
+    await expect(
+      openKaeno({
+        storage: await openNodeSqliteStorage(path),
+        models,
+        assistant,
+        extensions: [
+          owner,
+          {
+            durable: defineExtension({ name: "interrupt" }),
+            start: async (core) => {
+              const id =
+                await core.threads.getOrCreateConversation(
+                  "corrupted-bindings",
+                );
+              await core.harness.commit(async (tx) => {
+                const doc = await tx.doc(ConversationBindings, id);
+                doc.bindings = [0, 1].map(() => ({
+                  owner: "binding-owner",
+                  version: 1,
+                  value: {},
+                }));
+              }, context);
+              throw new Error("interrupted startup");
+            },
+          },
+        ],
+      }),
+    ).rejects.toThrow("interrupted startup");
+    starts = 0;
+    await expect(
+      openKaeno({
+        storage: await openNodeSqliteStorage(path),
+        models,
+        assistant,
+        extensions: [owner],
+      }),
+    ).rejects.toThrow('duplicate binding owner "binding-owner"');
+    expect(starts).toBe(0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 it("aborts all started services and cleans them up when a later service fails", async () => {
   const events: string[] = [];

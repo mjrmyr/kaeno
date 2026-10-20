@@ -219,8 +219,8 @@ export class SkillCatalog {
         : `unknown skill "${reference}"`,
     );
   }
-  /** Expand only `source:*`; sort its members, preserving selector order and deduplicating overlaps. */
-  bind(references: readonly string[]): BoundSkill[] {
+  /** Resolve IDs and source:* wildcards in stable order, without materializing a bounded snapshot. */
+  select(references: readonly string[]): string[] {
     const ids = new Set<string>();
     for (const reference of references) {
       if (!reference.includes("*")) {
@@ -247,8 +247,12 @@ export class SkillCatalog {
         ids.add(id);
       }
     }
+    return [...ids];
+  }
+  /** Snapshot selected packages; enforce the aggregate assignment limit, not a catalog limit. */
+  bind(references: readonly string[]): BoundSkill[] {
     return snapshotSkills(
-      [...ids].map((id) => {
+      this.select(references).map((id) => {
         const skill = this.entries.get(id);
         if (!skill) {
           fail(`unknown skill "${id}"`);

@@ -7,22 +7,15 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { openKaeno } from "../src/core/application/index.ts";
-import { CodingTools } from "@earendil-works/pi-durable/tools";
-import { resolveAgents, parseAgent } from "../src/extensions/agents/index.ts";
-import {
-  SkillCatalog,
-  skillBinder,
-  skillsExtension,
-  SKILL_TOOLS,
-} from "../src/extensions/skills/index.ts";
+import { browserExtension } from "../src/extensions/browser/index.ts";
 import { ApiServer } from "../src/extensions/api/index.ts";
 import {
   loadExecution,
-  parseEnvironmentConfiguration,
+  loadEnvironment,
 } from "../src/host/composition/index.ts";
 
 import { dockerExecutionProvider } from "../src/extensions/docker/index.ts";
@@ -33,26 +26,59 @@ import { microsandboxExecutionProvider } from "../src/extensions/microsandbox/in
 // Use a dedicated backend file; never reuse an active application's explicit namespace/owner.
 const directory = await mkdtemp(join(tmpdir(), "kaeno-work-smoke-"));
 const provider = process.argv[2] ?? "docker";
-const selection = parseEnvironmentConfiguration(
-  {
-    sourceDirectory: directory,
+await mkdir(join(directory, "agents/smoke"), { recursive: true });
+await mkdir(join(directory, "agents/worker"), { recursive: true });
+await writeFile(
+  join(directory, "agents/smoke/AGENT.md"),
+  "---\nname: smoke\ndescription: Smoke assistant\nmodel: openai/faux-1\ntools: [start_work]\n---\nBe helpful.",
+);
+await writeFile(
+  join(directory, "agents/worker/AGENT.md"),
+  "---\nname: worker\ndescription: Sandbox worker\nmodel: openai/faux-1\n---\nComplete the task and verify it.",
+);
+const configFile = join(directory, "config.json");
+await writeFile(
+  configFile,
+  JSON.stringify({
+    sourceDirectory: join(directory, "sources"),
     kaeno: "local:smoke",
+    workers: ["local:worker"],
+    localDefinitions: { agents: [{ alias: "local", directory: "./agents" }] },
     execution: {
       provider,
       configFile: resolve(process.argv[3] ?? `${provider}.config.example.json`),
     },
-  },
-  join(directory, "config.json"),
-).execution;
-const backend = await loadExecution(selection, join(directory, "core.sqlite"), [
-  dockerExecutionProvider,
-  kubernetesExecutionProvider,
-  microsandboxExecutionProvider,
-]);
+  }),
+);
+const browser = await browserExtension();
+const configuration = await loadEnvironment({
+  configFile,
+  extensions: [browser],
+  maxDepth: 1,
+  maxConcurrent: 2,
+  policy: (base) => ({
+    ...base,
+    worker: {
+      available: [...base.worker.available, browser],
+      defaults: [...base.worker.defaults, browser],
+    },
+  }),
+});
+const backend = await loadExecution(
+  configuration.execution,
+  join(directory, "core.sqlite"),
+  [
+    dockerExecutionProvider,
+    kubernetesExecutionProvider,
+    microsandboxExecutionProvider,
+  ],
+);
 const faux = fauxProvider({ provider: "openai" });
 const models = createModels();
 models.setProvider(faux.provider);
 let workerListedSkills = false;
+let workerHasBrowserTools = false;
+let assistantHasBrowserTools = false;
 let workerRanShell = false;
 let workerShellResult = "";
 faux.setResponses(
@@ -64,6 +90,14 @@ faux.setResponses(
       request.messages.filter((message) => message.role === "system"),
     );
     const isWork = system.includes("You are Kaeno WORK");
+    const hasBrowser = system.includes(
+      "Browser tools use an isolated Playwright MCP",
+    );
+    if (isWork) {
+      workerHasBrowserTools ||= hasBrowser;
+    } else {
+      assistantHasBrowserTools ||= hasBrowser;
+    }
     if (isWork && last?.role === "user") {
       return fauxAssistantMessage([fauxToolCall("list_skills", {})], {
         stopReason: "toolUse",
@@ -119,38 +153,12 @@ faux.setResponses(
     return fauxAssistantMessage([fauxText("Unexpected model step")]);
   }),
 );
-const skills = skillBinder(new SkillCatalog([]));
-const agents = resolveAgents({
-  agents: [
-    parseAgent(
-      "---\nname: worker\ndescription: Local sandbox worker\nmodel: openai/faux-1\n---\nComplete the task and verify it.",
-      "local",
-      "smoke",
-    ),
-  ],
-  defaults: { tools: ["bash", ...SKILL_TOOLS] },
-  skills: () => skills,
-});
 const core = await openKaeno({
   storage: await openNodeSqliteStorage(join(directory, "core.sqlite")),
   models,
-  assistant: {
-    model: { provider: "openai", modelId: "faux-1" },
-    instructions: "Be helpful.",
-    tools: ["start_work"],
-  },
-  extensions: [
-    { durable: CodingTools },
-    skillsExtension(),
-    ...backend.extensions,
-  ],
-  work: {
-    agents,
-    tools: ["bash", ...SKILL_TOOLS],
-    maxDepth: 1,
-    maxConcurrent: 2,
-    environment: backend.environment,
-  },
+  assistant: configuration.assistant,
+  extensions: [...configuration.extensions, ...backend.extensions],
+  work: { ...configuration.work, environment: backend.environment },
 });
 const server = new ApiServer(core).server;
 await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -181,6 +189,11 @@ try {
   if (!workerListedSkills) {
     throw new Error(
       "The worker did not successfully discover its empty skill list",
+    );
+  }
+  if (!workerHasBrowserTools || assistantHasBrowserTools) {
+    throw new Error(
+      "Browser contributions were not composed exclusively for WORK",
     );
   }
   console.log(workerShellResult);

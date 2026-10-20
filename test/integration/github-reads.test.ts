@@ -113,7 +113,7 @@ function setup(
   const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) =>
     handler(new URL(String(input)), init),
   );
-  const extension = githubExtension({
+  const { runtime: extension } = githubExtension({
     appId: "123",
     installationId: 12,
     privateKey,

@@ -13,7 +13,10 @@ import {
 import { MemoryStorage } from "@earendil-works/pi-durable";
 import { expect, it, vi } from "vitest";
 import { openKaeno } from "../../src/core/application/index.ts";
-import { loadEnvironment } from "../../src/host/composition/index.ts";
+import {
+  loadEnvironment,
+  type LoadEnvironmentOptions,
+} from "../../src/host/composition/index.ts";
 import {
   githubBinding,
   githubExtension,
@@ -88,8 +91,16 @@ it("gives the assistant, root worker, and nested worker GitHub discovery by defa
     const config = await loadEnvironment({
       configFile,
       extensions: [extension],
-      tools: GITHUB_TOOLS,
-      bindings: [githubBinding(installationId)],
+      policy: (base) => ({
+        assistant: {
+          available: [...base.assistant.available, extension],
+          defaults: [...base.assistant.defaults, extension],
+        },
+        worker: {
+          available: [...base.worker.available, extension],
+          defaults: [...base.worker.defaults, extension],
+        },
+      }),
     });
     const faux = fauxProvider();
     const models = createModels();
@@ -232,7 +243,22 @@ it("configures GitHub for every agent while respecting explicit tool overrides",
         workers: ["global:coder"],
       }),
     );
-    const config = await loadEnvironment({ configFile, ...github });
+    const options: LoadEnvironmentOptions = {
+      configFile,
+      extensions: [github.extension],
+      repositoryReader: github.repositoryReader,
+      policy: (base) => ({
+        assistant: {
+          available: [...base.assistant.available, github.extension],
+          defaults: [...base.assistant.defaults, github.extension],
+        },
+        worker: {
+          available: [...base.worker.available, github.extension],
+          defaults: [...base.worker.defaults, github.extension],
+        },
+      }),
+    };
+    const config = await loadEnvironment(options);
     const setup = config.work?.agents.find(
       (agent) => agent.id === "global:coder",
     )?.setup;
@@ -266,10 +292,10 @@ it("configures GitHub for every agent while respecting explicit tool overrides",
       expect.arrayContaining([...GITHUB_TOOLS]),
     );
     expect(() =>
-      github.extensions[0].validateBinding?.(githubBinding(99)),
+      github.extension.runtime.validateBinding?.(githubBinding(99)),
     ).toThrow("configured installation");
     expect(() =>
-      github.extensions[0].validateBinding?.({
+      github.extension.runtime.validateBinding?.({
         ...githubBinding(installationId),
         version: 1,
       }),
@@ -282,21 +308,19 @@ it("configures GitHub for every agent while respecting explicit tool overrides",
       join(directory, ".agents/agents/kaeno/AGENT.md"),
       "---\nname: kaeno\ndescription: Assistant\nmodel: faux/faux-1\ntools: [github_list_repositories]\n---\nCHAT",
     );
-    const overridden = await loadEnvironment({ configFile, ...github });
+    const overridden = await loadEnvironment(options);
     expect(
       overridden.work?.agents.find((agent) => agent.id === "global:coder")
         ?.setup.tools,
     ).toEqual([]);
     expect(overridden.assistant.tools).toEqual(["github_list_repositories"]);
-    const withoutGitHub = await loadEnvironment({ configFile });
-    await expect(
-      openKaeno({
-        ...withoutGitHub,
-        storage: new MemoryStorage(),
-        models: createModels(),
-      }),
-    ).rejects.toThrow(
-      'Assistant: tool "github_list_repositories" is not available here',
+    expect(
+      overridden.work.agents[0].setup.bindings?.some(
+        (binding) => binding.owner === "kaeno-github",
+      ),
+    ).toBe(false);
+    await expect(loadEnvironment({ configFile })).rejects.toThrow(
+      'tool "github_list_repositories" is outside policy availability',
     );
     await writeFile(
       join(directory, ".agents/agents/kaeno/AGENT.md"),

@@ -2,6 +2,24 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
+import { defineExtension, defineTool } from "@earendil-works/pi-durable";
+import { Type } from "@earendil-works/pi-ai";
+
+const browser = {
+  runtime: {
+    durable: defineExtension({
+      name: "browser",
+      tools: [
+        defineTool({
+          name: "browser_snapshot",
+          description: "Test discovery",
+          parameters: Type.Object({}),
+          execute: async () => ({}),
+        }),
+      ],
+    }),
+  },
+};
 import { loadEnvironment, parseEnvironmentConfiguration } from "./index.ts";
 
 const roots: string[] = [];
@@ -184,66 +202,6 @@ it.each([
     "kaeno: Invalid input: expected string, received object",
   );
 });
-it("native-only knowledge is additive even with source skills/tools explicitly empty", async () => {
-  const { root, configFile } = await fixture();
-  await put(
-    join(root, "agents/coordinator/AGENT.md"),
-    agent("coordinator", "model: openai/test\ntools: []\n"),
-  );
-  const config = await loadEnvironment({
-    configFile,
-    skillsFor: (_agent, role) =>
-      role === "assistant"
-        ? [
-            {
-              id: "native:baseline",
-              description: "Native",
-              disableModelInvocation: false,
-              treeHash: "a".repeat(64),
-              documents: { "SKILL.md": skill("baseline") },
-            },
-          ]
-        : [],
-  });
-  expect(config.assistant.tools).toEqual([]);
-  expect(
-    config.assistant.bindings?.filter(
-      (binding) => binding.owner === "kaeno-skills",
-    ),
-  ).toMatchObject([{ value: { skills: [{ id: "native:baseline" }] } }]);
-});
-it("keeps worker-specific native contributions separate", async () => {
-  const { root, configFile } = await fixture({
-    workers: ["local:swe", "local:other"],
-  });
-  await put(join(root, "agents/other/AGENT.md"), agent("other"));
-  const config = await loadEnvironment({
-    configFile,
-    skillsFor: (definition, role) =>
-      role === "worker"
-        ? [
-            {
-              id: `native:${definition.name}`,
-              description: "Native",
-              disableModelInvocation: false,
-              treeHash: "a".repeat(64),
-              documents: { "SKILL.md": skill(definition.name) },
-            },
-          ]
-        : [],
-  });
-  expect(
-    config.work.agents.find((profile) => profile.id === "local:other")?.setup
-      .bindings,
-  ).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({
-        owner: "kaeno-skills",
-        value: { skills: [expect.objectContaining({ id: "native:other" })] },
-      }),
-    ]),
-  );
-});
 it.each(["[]", "[list_work]"])(
   "explicit assistant tools remain exact (%s)",
   async (tools) => {
@@ -257,15 +215,15 @@ it.each(["[]", "[list_work]"])(
     );
   },
 );
-it("keeps explicit worker tools for core to check when Kaeno opens", async () => {
+it("rejects explicit worker tools outside the approved policy before opening core", async () => {
   const { root, configFile } = await fixture();
   await put(
     join(root, "agents/swe/AGENT.md"),
     agent("swe", "model: openai/test\ntools: [missing_tool]\n"),
   );
-  const config = await loadEnvironment({ configFile });
-  expect(config.work.agents[0].setup.tools).toEqual(["missing_tool"]);
-  expect(config.work.tools).not.toContain("missing_tool");
+  await expect(loadEnvironment({ configFile })).rejects.toThrow(
+    'tool "missing_tool" is outside policy availability',
+  );
 });
 it("does not inherit a worker model from the assistant", async () => {
   const { root, configFile } = await fixture();
@@ -306,14 +264,16 @@ it("reports unused malformed definitions but refuses selecting them or wildcard-
     "invalid skill packages",
   );
 });
-it("rejects a competing native skills owner", async () => {
+it("rejects an extension claiming the shared skills runtime owner", async () => {
   const { configFile } = await fixture();
   await expect(
     loadEnvironment({
       configFile,
-      bindings: [{ owner: "kaeno-skills", version: 1, value: { skills: [] } }],
+      extensions: [
+        { runtime: { durable: defineExtension({ name: "kaeno-skills" }) } },
+      ],
     }),
-  ).rejects.toThrow("Use skillsFor");
+  ).rejects.toThrow("Duplicate or reserved extension");
 });
 it("cached local snapshots survive deletion and are not silently refreshed offline", async () => {
   const { root, configFile } = await fixture();
@@ -384,7 +344,14 @@ it("offers sandbox-only tools to workers, not the assistant defaults", async () 
   const { configFile } = await fixture();
   const config = await loadEnvironment({
     configFile,
-    workerTools: ["browser_snapshot"],
+    extensions: [browser],
+    policy: (base) => ({
+      ...base,
+      worker: {
+        available: [...base.worker.available, browser],
+        defaults: [...base.worker.defaults, browser],
+      },
+    }),
   });
   expect(config.assistant.tools).not.toContain("browser_snapshot");
   expect(config.work.tools).toContain("browser_snapshot");
@@ -405,7 +372,14 @@ it.each([
     );
     const config = await loadEnvironment({
       configFile,
-      workerTools: ["browser_snapshot"],
+      extensions: [browser],
+      policy: (base) => ({
+        ...base,
+        worker: {
+          available: [...base.worker.available, browser],
+          defaults: [...base.worker.defaults, browser],
+        },
+      }),
     });
     expect(config.work.agents[0].setup.tools).toEqual(expected);
     expect(config.assistant.tools).not.toContain("browser_snapshot");

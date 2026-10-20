@@ -9,7 +9,7 @@ import {
 import { RemoteExecutionEnv } from "../../src/extensions/execution/index.ts";
 
 it("discovers real official MCP schemas and registers model-visible tools", async () => {
-  const extension = await browserExtension();
+  const { runtime: extension } = await browserExtension();
   expect(extension.durable.tools?.map((tool) => tool.name)).toEqual(
     BROWSER_TOOLS,
   );
@@ -27,7 +27,7 @@ it("discovers real official MCP schemas and registers model-visible tools", asyn
   ).rejects.toThrow("host execution is forbidden");
 });
 it("routes to sandbox and forwards bounded text and screenshot images", async () => {
-  const extension = await browserExtension();
+  const { runtime: extension } = await browserExtension();
   let requested = "";
   let requestBody: unknown;
   const env = new RemoteExecutionEnv(
