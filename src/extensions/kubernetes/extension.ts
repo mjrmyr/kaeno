@@ -136,10 +136,22 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
     this.identity = `kubernetes:${this.target}`;
   }
 
-  private assertTarget(target: string): void {
-    if (target && target !== this.target) {
+  /**
+   * Saved reservations name pods under the target they were created with, so the target may
+   * only change once none remain. With an empty queue nothing is tracked, and the next
+   * `ensure` adopts the configured target.
+   */
+  private assertTarget(state: {
+    target: string;
+    reservations: readonly unknown[];
+  }): void {
+    if (
+      state.target &&
+      state.target !== this.target &&
+      state.reservations.length > 0
+    ) {
       throw new Error(
-        "Kubernetes saved cluster or sandbox configuration differs; restore it before resuming work",
+        `Kubernetes saved cluster or sandbox configuration differs while ${state.reservations.length} sandbox reservation(s) remain; restore it until that work finishes`,
       );
     }
   }
@@ -162,7 +174,7 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
   ): Promise<void> {
     const reservation = await runtime.commit(async (tx) => {
       const state = await tx.doc(Sandboxes);
-      this.assertTarget(state.target);
+      this.assertTarget(state);
       state.target = this.target;
       let saved = state.reservations.find(
         (entry) => entry.workId === Number(work.workId),
@@ -301,7 +313,7 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
     if (!state) {
       return;
     }
-    this.assertTarget(state.target);
+    this.assertTarget(state);
     const reservation = state.reservations.find(
       (entry) => entry.workId === Number(work.workId),
     );
@@ -336,7 +348,7 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
   ): Promise<void> {
     const state = await runtime.snapshot(Sandboxes, BACKGROUND_CONTEXT);
     if (state) {
-      this.assertTarget(state.target);
+      this.assertTarget(state);
     }
     const active = new Set(live.map((work) => Number(work.workId)));
     // Recheck tasks to avoid deleting a newly admitted work missing from the caller's earlier scan.
@@ -388,7 +400,7 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
     if (!state) {
       return undefined;
     }
-    this.assertTarget(state.target);
+    this.assertTarget(state);
     const reservation = state.reservations.find(
       (entry) => entry.conversationId === Number(target.conversationId),
     );
