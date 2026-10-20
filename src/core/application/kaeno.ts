@@ -132,14 +132,14 @@ async function assertBindingsValid(
         context,
       );
       const savedBindings = z.array(bindingSchema).parse(saved?.bindings ?? []);
-      const seen = new Set<string>();
+      const bindingSet = new Set<string>();
       for (const binding of savedBindings) {
         const owner = owners.get(binding.owner);
         try {
-          if (seen.has(binding.owner)) {
+          if (bindingSet.has(binding.owner)) {
             throw new Error(`duplicate binding owner "${binding.owner}"`);
           }
-          seen.add(binding.owner);
+          bindingSet.add(binding.owner);
           if (!owner) {
             throw new Error(`owner "${binding.owner}" is not installed`);
           }

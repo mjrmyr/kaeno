@@ -84,6 +84,6 @@ Core stores opaque owner/version/value bindings and validates them through insta
 
 New policies govern newly composed profiles. Pending CHAT and frozen WORK retain their saved assignments; narrowing the worker-role ceiling can fail saved WORK recovery. This is not a new per-agent historical revocation system. Extension authorization, such as GitHub's installation access, is still checked by its operations.
 
-Execution environments and delivery are separate runtime capabilities, not tool/skill bundles. GitHub's repository reader is a separate startup capability. Explicit execution-provider installation and the Docker/`./docker.json` default are unchanged. See [execution](execution.md), [GitHub](github.md), and the [design and arena decision](design/extension-contributions.md).
+Execution environments and delivery are separate runtime capabilities, not tool/skill bundles. GitHub's repository reader is a separate startup capability. Explicit execution-provider installation and the Docker/`./docker.json` default are unchanged. See [execution](execution.md) and [GitHub](github.md).
 
 Native extensions are trusted process code. This boundary controls agent composition; it does not sandbox extension implementations or permit executable plugins from Markdown.
