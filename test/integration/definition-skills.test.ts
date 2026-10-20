@@ -65,8 +65,9 @@ function bind(
   }
   return binding;
 }
-const manifest = (name: string): string =>
-  `---\nname: ${name}\ndescription: Guide\n---\nInstructions`;
+function manifest(name: string): string {
+  return `---\nname: ${name}\ndescription: Guide\n---\nInstructions`;
+}
 
 it.each([{ tools: [] }, { tools: ["read_skill"] }])(
   "binds native-only skills once and keeps explicit tools exact (%j)",

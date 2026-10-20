@@ -25,7 +25,9 @@ import {
   type Source,
 } from "./index.ts";
 
-const parseTaskId = (value: number): TaskId => z.custom<TaskId>().parse(value);
+function parseTaskId(value: number): TaskId {
+  return z.custom<TaskId>().parse(value);
+}
 async function fixture() {
   const sent: { notify: Notify; text: string }[] = [];
   const Turn = defineTurn(() => ({
@@ -186,8 +188,8 @@ it("fences stale results and suppresses future results durably", async () => {
         coordinator.admitUserTurn(tx, root.id, "blocked", "blocked"),
       ).rejects.toThrow(/control/);
     }, ctx);
-    const admit = (key: string) =>
-      harness.commit(
+    function admit(key: string) {
+      return harness.commit(
         (tx) =>
           coordinator.admitActivityResult(tx, {
             activityId,
@@ -199,6 +201,7 @@ it("fences stale results and suppresses future results durably", async () => {
           }),
         ctx,
       );
+    }
     const stale = await admit("stale");
     expect(
       await harness.commit(

@@ -37,7 +37,7 @@ async function fixture(): Promise<{
   const destination = join(root, "export");
   await mkdir(repository, { mode: 0o700 });
   await mkdir(destination, { mode: 0o700 });
-  const git = async (args: readonly string[]): Promise<string> => {
+  async function git(args: readonly string[]): Promise<string> {
     const result = await execute(
       "git",
       [
@@ -64,14 +64,14 @@ async function fixture(): Promise<{
       },
     );
     return result.stdout.trim();
-  };
-  const put = async (
+  }
+  async function put(
     path: string,
     content: string | Uint8Array,
-  ): Promise<void> => {
+  ): Promise<void> {
     await mkdir(join(repository, path, ".."), { recursive: true });
     await writeFile(join(repository, path), content);
-  };
+  }
   await git(["init", "--initial-branch=trunk", "--template="]);
   await put(
     "AGENT.md",
@@ -488,7 +488,9 @@ it("redacts raw and encoded credentials from Git errors, using a fixed GitHub UR
   const { root, destination } = await fixture();
   const token = "do-not-leak-git-credential";
   const audit = await auditGit(root, "fail-network", token);
-  const fetch: typeof globalThis.fetch = async () => Response.json({ token });
+  async function fetch(): Promise<Response> {
+    return Response.json({ token });
+  }
   const operation = githubRepositoryReader({ app, host: { fetch } }).read(
     { repository: "Owner/Private", ref: "HEAD" },
     destination,

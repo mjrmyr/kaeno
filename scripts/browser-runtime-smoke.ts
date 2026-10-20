@@ -18,13 +18,13 @@ try {
   if (!address || typeof address === "string") {
     throw new Error("Missing fixture port");
   }
-  const call = async (name: string, args = {}) => {
+  async function call(name: string, args = {}) {
     const result = await session.call({ name, arguments: args });
     if (result.isError) {
       throw new Error(JSON.stringify(result));
     }
     return result;
-  };
+  }
   const url = `http://127.0.0.1:${address.port}/`;
   await call("browser_navigate", { url });
   await call("browser_navigate", { url: `${url}second` });

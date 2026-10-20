@@ -280,16 +280,16 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
       reject(signal.reason ?? new Error("Aborted"));
       return;
     }
-    const finish = () => {
+    function finish() {
       signal?.removeEventListener("abort", abort);
       resolve();
-    };
+    }
     const timer = setTimeout(finish, ms);
-    const abort = () => {
+    function abort() {
       clearTimeout(timer);
       signal?.removeEventListener("abort", abort);
       reject(signal?.reason ?? new Error("Aborted"));
-    };
+    }
     signal?.addEventListener("abort", abort, { once: true });
   });
 }

@@ -119,7 +119,7 @@ function setup(
     privateKey,
     fetch,
   });
-  const call = async (name: string, args: JsonObject) => {
+  async function call(name: string, args: JsonObject) {
     const faux = fauxProvider();
     const models = createModels();
     models.setProvider(faux.provider);
@@ -171,7 +171,7 @@ function setup(
     } finally {
       await core.close();
     }
-  };
+  }
   return { fetch, extension, call };
 }
 function auth(url: URL, init?: RequestInit) {

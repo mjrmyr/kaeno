@@ -21,13 +21,14 @@ const sandbox: SandboxIdentity = {
   image: process.argv[2] ?? "kaeno:local",
 };
 const engine = new MicrosandboxEngine();
-const providerFor = () =>
-  new MicrosandboxSandboxProvider({
+function providerFor() {
+  return new MicrosandboxSandboxProvider({
     engine: new MicrosandboxEngine(),
     namespace,
     createEnvironment: ({ url, token, id, cwd, fetch }) =>
       new RemoteExecutionEnv(url, token, id, cwd, fetch),
   });
+}
 const provider = providerFor();
 async function command(
   current: MicrosandboxSandboxProvider,

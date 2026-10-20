@@ -32,10 +32,12 @@ export function githubReadTools(
     perPage: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
   };
   const sha = Type.String({ pattern: "^[a-fA-F0-9]{40}$" });
-  const page = (args: { page?: number; perPage?: number }) => ({
-    page: args.page ?? 1,
-    perPage: args.perPage ?? 20,
-  });
+  function page(args: { page?: number; perPage?: number }) {
+    return {
+      page: args.page ?? 1,
+      perPage: args.perPage ?? 20,
+    };
+  }
   async function authorized(
     api: ToolExecutionApi,
     context: Context,
@@ -48,9 +50,11 @@ export function githubReadTools(
       repo: await client.repository(token, id, context.abortSignal),
     };
   }
-  const text = (value: unknown) => ({
-    content: [{ type: "text" as const, text: JSON.stringify(value) }],
-  });
+  function text(value: unknown) {
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(value) }],
+    };
+  }
   const common = {
     replay: "safe" as const,
     executionMode: "sequential" as const,

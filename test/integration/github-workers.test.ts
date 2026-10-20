@@ -28,10 +28,10 @@ const installationId = 12;
 
 it("gives the assistant, root worker, and nested worker GitHub discovery by default", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-github-workers-"));
-  const put = async (path: string, content: string) => {
+  async function put(path: string, content: string) {
     await mkdir(join(directory, path, ".."), { recursive: true });
     await writeFile(join(directory, path), content);
-  };
+  }
   try {
     await put(
       ".agents/agents/kaeno/AGENT.md",
@@ -49,7 +49,9 @@ it("gives the assistant, root worker, and nested worker GitHub discovery by defa
       ".agents/skills/engineering/SKILL.md",
       "---\nname: engineering\ndescription: Implement and verify software changes\n---\nRun tests before proposing changes.",
     );
-    const fetch: typeof globalThis.fetch = async (input) => {
+    async function fetch(
+      input: Parameters<typeof globalThis.fetch>[0],
+    ): Promise<Response> {
       const path = new URL(String(input)).pathname;
       if (path.endsWith("access_tokens")) {
         return Response.json({ token: "secret-token" });
@@ -62,7 +64,7 @@ it("gives the assistant, root worker, and nested worker GitHub discovery by defa
         });
       }
       throw new Error("Unexpected GitHub request");
-    };
+    }
     const extension = githubExtension({
       appId: "123",
       privateKey,
@@ -94,10 +96,11 @@ it("gives the assistant, root worker, and nested worker GitHub discovery by defa
     models.setProvider(faux.provider);
     const results = new Map<string, string>();
     const prompts = new Map<string, string>();
-    const call = (name: string, args: Record<string, string>) =>
-      fauxAssistantMessage([fauxToolCall(name, args)], {
+    function call(name: string, args: Record<string, string>) {
+      return fauxAssistantMessage([fauxToolCall(name, args)], {
         stopReason: "toolUse",
       });
+    }
     faux.setResponses(
       Array.from({ length: 40 }, () => async (request) => {
         const prompt = getCurrentSystemPrompt(request.messages);

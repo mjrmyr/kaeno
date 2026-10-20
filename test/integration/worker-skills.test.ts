@@ -18,10 +18,10 @@ it.each([false, true])(
   "gives root and nested workers lazy skill tools independently of assignments (%s)",
   async (assigned) => {
     const directory = await mkdtemp(join(tmpdir(), "kaeno-worker-skills-"));
-    const put = async (path: string, text: string) => {
+    async function put(path: string, text: string) {
       await mkdir(join(directory, path, ".."), { recursive: true });
       await writeFile(join(directory, path), text);
-    };
+    }
     try {
       await put(
         ".agents/agents/kaeno/AGENT.md",
@@ -68,10 +68,11 @@ it.each([false, true])(
       const lists = new Map<string, string>();
       const prompts = new Map<string, string>();
       let readResult = "";
-      const call = (name: string, args: Record<string, string>) =>
-        fauxAssistantMessage([fauxToolCall(name, args)], {
+      function call(name: string, args: Record<string, string>) {
+        return fauxAssistantMessage([fauxToolCall(name, args)], {
           stopReason: "toolUse",
         });
+      }
       faux.setResponses(
         Array.from({ length: 30 }, () => async (request) => {
           const system = getCurrentSystemPrompt(request.messages);

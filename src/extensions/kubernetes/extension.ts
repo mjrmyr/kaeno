@@ -340,7 +340,7 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
     }
     const active = new Set(live.map((work) => Number(work.workId)));
     // Recheck tasks to avoid deleting a newly admitted work missing from the caller's earlier scan.
-    const unfinished = async (workId: number): Promise<boolean> => {
+    async function unfinished(workId: number): Promise<boolean> {
       if (active.has(workId)) {
         return true;
       }
@@ -349,7 +349,7 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
         BACKGROUND_CONTEXT,
       );
       return task !== undefined && task.state.status !== "terminal";
-    };
+    }
     for (const reservation of state?.reservations ?? []) {
       if (!(await unfinished(reservation.workId))) {
         await this.release(

@@ -141,16 +141,18 @@ function cluster() {
       }
       return new Response(null, { status: 200 });
     }
-    const wire = (pod: z.infer<typeof manifestSchema>) => ({
-      ...pod,
-      status: {
-        phase: status,
-        conditions: ready ? [{ type: "Ready", status: "True" }] : [],
-        containerStatuses: waitingReason
-          ? [{ name: "envd", state: { waiting: { reason: waitingReason } } }]
-          : [],
-      },
-    });
+    function wire(pod: z.infer<typeof manifestSchema>) {
+      return {
+        ...pod,
+        status: {
+          phase: status,
+          conditions: ready ? [{ type: "Ready", status: "True" }] : [],
+          containerStatuses: waitingReason
+            ? [{ name: "envd", state: { waiting: { reason: waitingReason } } }]
+            : [],
+        },
+      };
+    }
     if (name === "pods") {
       const selector = url.searchParams.get("labelSelector") ?? "";
       const owner = /kaeno.io\/owner=([^,]+)/.exec(selector)?.[1];
@@ -220,7 +222,7 @@ async function fixture(overrides: Partial<KubernetesExtensionOptions> = {}) {
     context,
   );
   cleanups.push(() => harness.close(context));
-  const work = async (): Promise<WorkInstance> => {
+  async function work(): Promise<WorkInstance> {
     const conversation = await harness.createConversation(
       { ownership: { kind: "ownerless" } },
       context,
@@ -235,7 +237,7 @@ async function fixture(overrides: Partial<KubernetesExtensionOptions> = {}) {
       context,
     );
     return { workId, conversationId: conversation.id };
-  };
+  }
   return { ...extension, server, harness, work, options };
 }
 
@@ -660,7 +662,7 @@ it("reopens SQLite, adopts saved pod/token/image, and rejects retargeting saved 
   cleanups.push(() => rm(directory, { recursive: true, force: true }));
   const rig = await fixture();
   const database = join(directory, "state.sqlite");
-  const open = async () => {
+  async function open() {
     const registry = createRegistry();
     registry.install(rig.extension.durable);
     registry.install(
@@ -671,7 +673,7 @@ it("reopens SQLite, adopts saved pod/token/image, and rejects retargeting saved 
       { registry, models: createModels() },
       context,
     );
-  };
+  }
   const harness = await open();
   const conversation = await harness.createConversation(
     { ownership: { kind: "ownerless" } },
@@ -883,10 +885,11 @@ it("runs WORK through a pod execution environment and rejects child admission wh
       const last = request.messages.findLast(
         (message) => message.role !== "system",
       );
-      const call = (name: string, input: Record<string, string>) =>
-        fauxAssistantMessage([fauxToolCall(name, input)], {
+      function call(name: string, input: Record<string, string>) {
+        return fauxAssistantMessage([fauxToolCall(name, input)], {
           stopReason: "toolUse",
         });
+      }
       if (!worker) {
         if (
           last?.role === "user" &&

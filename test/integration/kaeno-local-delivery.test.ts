@@ -5,16 +5,20 @@ import {
   type ReplyPage,
 } from "../../pi-extension/kaeno/delivery.ts";
 
-const reply = (id: number): Reply => ({
-  id,
-  requestId: `request-${id}`,
-  text: `reply ${id}`,
-});
-const page = (replies: Reply[], next = replies.at(-1)?.id ?? 0): ReplyPage => ({
-  replies,
-  next,
-  truncated: false,
-});
+function reply(id: number): Reply {
+  return {
+    id,
+    requestId: `request-${id}`,
+    text: `reply ${id}`,
+  };
+}
+function page(replies: Reply[], next = replies.at(-1)?.id ?? 0): ReplyPage {
+  return {
+    replies,
+    next,
+    truncated: false,
+  };
+}
 afterEach(() => vi.unstubAllGlobals());
 
 function setup(after: number | "latest" = 0) {

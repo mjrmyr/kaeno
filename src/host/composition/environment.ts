@@ -139,7 +139,7 @@ export async function loadEnvironment(
         ...parsed.diagnostics,
         ...loaded.diagnostics,
       ];
-      const select = (id: string): AgentDefinition => {
+      function select(id: string): AgentDefinition {
         const agent = parsed.agents.find((candidate) => candidate.id === id);
         if (!agent) {
           throw new Error(
@@ -147,7 +147,7 @@ export async function loadEnvironment(
           );
         }
         return agent;
-      };
+      }
       const assistantDefinition = select(config.kaeno);
       const workerDefinitions = config.workers.map(select);
       const defaults = {
@@ -163,10 +163,9 @@ export async function loadEnvironment(
           "Use skillsFor for native skill contributions; bindings must not supply a second skills binding",
         );
       }
-      const binderFor = (
-        agent: AgentDefinition,
-        role: "assistant" | "worker",
-      ) => skillBinder(catalog, options.skillsFor?.(agent, role));
+      function binderFor(agent: AgentDefinition, role: "assistant" | "worker") {
+        return skillBinder(catalog, options.skillsFor?.(agent, role));
+      }
       const assistantBinder = binderFor(assistantDefinition, "assistant");
       const assistant = resolveAgentSetup(
         assistantDefinition,

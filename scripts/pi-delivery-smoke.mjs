@@ -130,13 +130,13 @@ function start() {
         events.off("record", listener);
         reject(new Error(`Timeout: ${stderr}\n${JSON.stringify(records)}`));
       }, 15000);
-      const listener = (event) => {
+      function listener(event) {
         if (test(event)) {
           clearTimeout(timer);
           events.off("record", listener);
           resolve(event);
         }
-      };
+      }
       events.on("record", listener);
     });
   }
