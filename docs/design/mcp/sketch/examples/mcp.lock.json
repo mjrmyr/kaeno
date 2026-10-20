@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "servers": {
+    "linear": {
+      "url": "https://mcp.linear.app/mcp",
+      "tools": {
+        "create_comment": {
+          "description": "Create a comment on a Linear issue.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "issueId": {
+                "type": "string"
+              },
+              "body": {
+                "type": "string"
+              }
+            },
+            "required": ["issueId", "body"]
+          }
+        },
+        "get_issue": {
+          "description": "Retrieve a Linear issue by id.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": ["id"]
+          }
+        },
+        "list_issues": {
+          "description": "…",
+          "inputSchema": {
+            "type": "object"
+          }
+        },
+        "list_projects": {
+          "description": "…",
+          "inputSchema": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "sentry": {
+      "url": "https://mcp.example-sentry.internal/mcp",
+      "tools": {
+        "get_issue_details": {
+          "description": "…",
+          "inputSchema": {
+            "type": "object"
+          }
+        },
+        "search_issues": {
+          "description": "…",
+          "inputSchema": {
+            "type": "object"
+          }
+        },
+        "list_events": {
+          "description": "(retired; pin carried forward unchanged)",
+          "inputSchema": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "notion": {
+      "url": "https://mcp.notion.com/mcp",
+      "tools": {
+        "search": {
+          "description": "(retired server; pins carried forward unchanged)",
+          "inputSchema": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  }
+}
