@@ -604,6 +604,29 @@ it("keeps identities without a RuntimeClass and rejects adding one to saved work
   );
 });
 
+it("adopts a changed target once no sandbox reservations remain", async () => {
+  const rig = await fixture();
+  const first = await rig.work();
+  await rig.environment.ensure(first, rig.harness, context);
+  await rig.environment.release(first, rig.harness);
+  // A restart after all work finished, now with Kata configured.
+  const kata = kubernetesExtension({
+    ...rig.options,
+    runtimeClassName: "kata-qemu",
+  });
+  rig.server.runtimeClass("kata-qemu", {});
+  await kata.environment.reconcile([], rig.harness);
+  const second = await rig.work();
+  await kata.environment.ensure(second, rig.harness, context);
+  expect(
+    rig.server.pods.get(`owner-work-${second.workId}`)?.spec.runtimeClassName,
+  ).toBe("kata-qemu");
+  // The adopted target is now the saved one: the previous configuration is refused.
+  await expect(
+    rig.environment.reconcile([second], rig.harness),
+  ).rejects.toThrow("1 sandbox reservation(s) remain");
+});
+
 it("validates resource quantities and rejects a quota that cannot fit a sandbox", async () => {
   expect(() =>
     kubernetesExtension({
