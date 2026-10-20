@@ -297,9 +297,16 @@ it("normalizes repository declarations, config-relative paths and identical cros
   const config = parseEnvironmentConfiguration(
     {
       sourceDirectory: "./sources",
-      agentRepositories: ["Owner/Repo:release"],
+      agentRepositories: [
+        { provider: "github", repository: "Owner/Repo", ref: "release" },
+      ],
       skillRepositories: [
-        { repository: "owner/repo", ref: "release", path: "skills" },
+        {
+          provider: "github",
+          repository: "owner/repo",
+          ref: "release",
+          path: "skills",
+        },
       ],
       kaeno: "owner/repo:kaeno",
     },
@@ -307,9 +314,16 @@ it("normalizes repository declarations, config-relative paths and identical cros
   );
   expect(config.sourceDirectory).toBe("/tmp/example/sources");
   expect(config.repositories).toEqual([
-    { kind: "agents", repository: "owner/repo", ref: "release", path: "" },
+    {
+      kind: "agents",
+      provider: "github",
+      repository: "owner/repo",
+      ref: "release",
+      path: "",
+    },
     {
       kind: "skills",
+      provider: "github",
       repository: "owner/repo",
       ref: "release",
       path: "skills",
@@ -318,12 +332,32 @@ it("normalizes repository declarations, config-relative paths and identical cros
 });
 it.each([
   {
-    agentRepositories: ["owner/repo:one"],
-    skillRepositories: ["owner/repo:two"],
+    agentRepositories: [
+      { provider: "github", repository: "owner/repo", ref: "one" },
+    ],
+    skillRepositories: [
+      { provider: "github", repository: "owner/repo", ref: "two" },
+    ],
   },
-  { agentRepositories: ["owner/repo", "OWNER/REPO"] },
-  { agentRepositories: [{ repository: "owner/repo", path: "../escape" }] },
-  { agentRepositories: ["owner/repo:-x"] },
+  { agentRepositories: ["owner/repo:main"] },
+  { agentRepositories: [{ repository: "owner/repo" }] },
+  { agentRepositories: [{ provider: "", repository: "owner/repo" }] },
+  {
+    agentRepositories: [
+      { provider: "github", repository: "owner/repo" },
+      { provider: "other", repository: "OWNER/REPO" },
+    ],
+  },
+  {
+    agentRepositories: [
+      { provider: "github", repository: "owner/repo", path: "../escape" },
+    ],
+  },
+  {
+    agentRepositories: [
+      { provider: "github", repository: "owner/repo", ref: "-x" },
+    ],
+  },
   { workers: ["local:swe", "local:swe"] },
   { kaeno: "bare-name" },
   { extraSkills: [] },

@@ -9,7 +9,10 @@ import { z } from "zod";
 import { openKaeno } from "../core/application/index.ts";
 import { DEFAULT_AUTH_FILE, FileCredentialStore } from "./auth/index.ts";
 import { loadEnvironment, loadExecution } from "./composition/index.ts";
-import { loadGitHubConfiguration } from "../extensions/github/index.ts";
+import {
+  githubExtension,
+  loadGitHubConfiguration,
+} from "../extensions/github/index.ts";
 import { parseModelRef } from "../extensions/agents/index.ts";
 import { ApiServer } from "../extensions/api/index.ts";
 
@@ -19,12 +22,12 @@ import { kubernetesExecutionProvider } from "../extensions/kubernetes/index.ts";
 import { microsandboxExecutionProvider } from "../extensions/microsandbox/index.ts";
 
 const browser = await browserExtension();
-const github = process.env.KAENO_GITHUB_CONFIG
-  ? await loadGitHubConfiguration(process.env.KAENO_GITHUB_CONFIG)
-  : undefined;
-const githubExtensions = github ? [github.extension] : [];
+const githubExtensions = [
+  process.env.KAENO_GITHUB_CONFIG
+    ? await loadGitHubConfiguration(process.env.KAENO_GITHUB_CONFIG)
+    : githubExtension(),
+];
 const configuration = await loadEnvironment({
-  repositoryReader: github?.repositoryReader,
   extensions: [...githubExtensions, browser],
   policy: (base) => ({
     assistant: {

@@ -50,30 +50,13 @@ const subtree = z
     "expected a safe relative discovery path",
   );
 const repositoryDeclaration = z
-  .union([
-    z.string().transform((value) => {
-      const separator = value.indexOf(":");
-      return {
-        repository: separator < 0 ? value : value.slice(0, separator),
-        ref: separator < 0 ? "HEAD" : value.slice(separator + 1),
-        path: "",
-      };
-    }),
-    z
-      .object({
-        repository: z.string(),
-        ref: z.string().default("HEAD"),
-        path: z.string().default(""),
-      })
-      .strict(),
-  ])
-  .pipe(
-    z.object({
-      repository: repositoryName.transform((value) => value.toLowerCase()),
-      ref: reference,
-      path: subtree,
-    }),
-  );
+  .object({
+    provider: z.string().min(1),
+    repository: repositoryName.transform((value) => value.toLowerCase()),
+    ref: reference.default("HEAD"),
+    path: subtree.default(""),
+  })
+  .strict();
 const directoryDeclaration = z
   .object({
     alias: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
@@ -149,13 +132,14 @@ export function parseEnvironmentConfiguration(
           `Configuration: duplicate ${kind} repository ${item.repository}`,
         );
       }
-      if (refs.has(item.repository) && refs.get(item.repository) !== item.ref) {
+      const identity = JSON.stringify([item.provider, item.repository]);
+      if (refs.has(identity) && refs.get(identity) !== item.ref) {
         throw new Error(
           `Configuration: conflicting refs for ${item.repository}`,
         );
       }
       aliases.add(item.repository);
-      refs.set(item.repository, item.ref);
+      refs.set(identity, item.ref);
       repositories.push({ kind, ...item });
     }
     for (const item of config.localDefinitions[kind]) {

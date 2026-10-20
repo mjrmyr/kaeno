@@ -1,17 +1,17 @@
-# Agent extension boundary
+# Extension boundary
 
-An extension offers **tools and skills** to agents and owns its implementation: configuration, clients, business rules, authorization and private durable state. A small runtime projection supplies native durable definitions, binding validation and optional lifecycle integration. Core consumes resolved conversation setups and runtime projections, not skill catalogs or extension-specific configuration.
+An extension owns its integration: configuration, clients, business rules, authorization and private durable state. It can offer **tools and skills** to agents, **definition readers** to startup composition, or both. A native runtime projection supplies durable definitions, binding validation and optional lifecycle integration when needed. Core consumes resolved conversation setups and runtime projections, not readers, skill catalogs or extension-specific configuration.
 
 ## Install, permit, select
 
 These are separate decisions:
 
-| Term      | Meaning                                                                           |
-| --------- | --------------------------------------------------------------------------------- |
-| Installed | Native definitions and skill packages exist for composition and recovery          |
-| Available | Application policy permits a role or agent to select a contribution               |
-| Default   | Selected only when the corresponding agent profile field is omitted               |
-| Assigned  | The exact resolved tools and skills saved with a conversation or WORK participant |
+| Term      | Meaning                                                                              |
+| --------- | ------------------------------------------------------------------------------------ |
+| Installed | The integration's capabilities exist for their consumers; no agent access is implied |
+| Available | Application policy permits a role or agent to select a contribution                  |
+| Default   | Selected only when the corresponding agent profile field is omitted                  |
+| Assigned  | The exact resolved tools and skills saved with a conversation or WORK participant    |
 
 `loadEnvironment` is the high-level composition entry point. For example:
 
@@ -20,20 +20,21 @@ import { loadEnvironment } from "../src/host/composition/index.ts";
 import { loadGitHubConfiguration } from "../src/extensions/github/index.ts";
 import { browserExtension } from "../src/extensions/browser/index.ts";
 
-const github = await loadGitHubConfiguration("./.kaeno/github.json");
+const githubExtensions = [
+  await loadGitHubConfiguration("./.kaeno/github.json"),
+];
 const browser = await browserExtension();
 const configuration = await loadEnvironment({
   configFile: "./.kaeno/config.json",
-  repositoryReader: github.repositoryReader,
-  extensions: [github.extension, browser],
+  extensions: [...githubExtensions, browser],
   policy: (base) => ({
     assistant: {
-      available: [...base.assistant.available, github.extension],
-      defaults: [...base.assistant.defaults, github.extension],
+      available: [...base.assistant.available, ...githubExtensions],
+      defaults: [...base.assistant.defaults, ...githubExtensions],
     },
     worker: {
-      available: [...base.worker.available, github.extension, browser],
-      defaults: [...base.worker.defaults, github.extension, browser],
+      available: [...base.worker.available, ...githubExtensions, browser],
+      defaults: [...base.worker.defaults, ...githubExtensions, browser],
     },
   }),
 });
@@ -43,7 +44,7 @@ Without policy additions, these extensions are installed but contribute nothing 
 
 `available` and `defaults` accept:
 
-- An installed `AgentExtension` object: all of its native tools and catalog skills.
+- An installed extension object: all of its native tools and catalog skills. A reader-only entry contributes neither.
 - `{ tools: ["github_list_repositories"] }`: exact native tool names.
 - `{ skills: ["guides:review", "local:*"] }`: catalog references, with existing qualified-name/wildcard rules.
 
@@ -68,6 +69,7 @@ An optional `forAgent(target, rolePolicy)` on the returned policy can narrow rol
 
 - `runtime`: the existing `KaenoExtension` runtime integration.
 - `skills?`: an immutable `SkillCatalog` produced by the extension.
+- `definitionReaders?`: named startup readers, independent of agent permissions.
 - `bind?`: a pure private-context snapshot factory receiving only this owner's selected tool/skill IDs. A binding producer must provide `runtime.validateBinding`.
 
 There is no separate `tools` inventory. Native `runtime.durable.tools` is authoritative for definitions, execution and composition. Dynamic discovery, such as Browser's MCP schemas, completes before composition.
@@ -78,12 +80,48 @@ Private binding producers return only `{ version, value }`, or `undefined`. Comp
 
 The runtime projection can contain native tasks, sections, hooks and wrappers needed to implement the feature. These retain their native durable identities; there is no second plugin framework. `start` runs only after recovery checks and before scheduling resumes. Close aborts services, waits for durable invocations to stop, then disposes resources in reverse order. Extensions must clean up partial initialization if their own start throws before returning cleanup.
 
+## Definition readers
+
+`InstalledExtension` accepts either an `AgentExtension` or a source-only `{ definitionReaders }` entry, with no runtime, skills or binder. `loadEnvironment` extracts all readers from this single installation list; only native runtime projections go to core. A whole-extension policy selector never grants or selects a reader.
+
+Each reader implements `DefinitionReader` from `src/extensions/definitions/index.ts`: a nonempty `name` and `read({ repository, ref }, destination, signal?)`, returning `{ commit }`. It exports credential-free regular files into the supplied private directory. The existing cache owns bounded tree validation, content hashes, locking, atomic publication and immutable snapshots. This is a Git-shaped definition export contract, not a universal research-library or ingestion API.
+
+Every repository declaration explicitly selects its reader:
+
+```json
+{
+  "agentRepositories": [
+    {
+      "provider": "github",
+      "repository": "owner/profiles",
+      "ref": "main",
+      "path": "agents"
+    }
+  ],
+  "skillRepositories": [
+    {
+      "provider": "github-app-123",
+      "repository": "owner/private",
+      "path": "skills"
+    }
+  ]
+}
+```
+
+`ref` defaults to `HEAD`, `path` to the repository root. The CLI installs `githubExtension()` without an App for public definition access only. A configured GitHub integration includes both the anonymous `github` reader and the `github-app-<installationId>` reader, plus its native agent capabilities. All are wired through `extensions: [...githubExtensions, browser]`; there is no separate reader argument or implicit GitHub construction in `loadEnvironment`.
+
+Duplicate names (including unused readers) and unknown providers fail before acquisition, including offline loads. Selection is exact and case-sensitive; installation order and URL matching do not decide authority. Failures and cancellation never fall back to another reader. Public versus App access remains an explicit source choice even when an App is configured.
+
+Repository/ref export keys, complete-load recipes and new provenance include the provider. Reader names identify stable, nonsecret source/authorization namespaces; use a different name when that namespace changes. Credential rotation within one namespace need not invalidate snapshots. The same repository/ref deduplicates across agents and skills only within one provider. Agent and skill aliases remain repository names; duplicate aliases within either kind fail rather than silently changing existing IDs. Different providers may supply the same alias across kinds; conflicting refs for one provider/repository still fail.
+
+**Migration:** replace old `"owner/repo:ref"` shorthand and provider-less objects with explicit `{ "provider", "repository", "ref" }` declarations. Replace `repositoryReader`/paired GitHub loader results with the installed extension object. Refresh once after changing repository declarations: pre-provider remote cache recipes cannot satisfy the new offline recipe. Local-only caches and saved conversation/WORK snapshots remain valid; historical repository provenance may omit a provider.
+
 ## Recovery and infrastructure
 
 Core stores opaque owner/version/value bindings and validates them through installed owners. Saved skill documents, assets, hashes and provenance are immutable snapshots; recovery does not reload producer catalogs or source files. A skills-only producer can disappear while old knowledge remains readable through the installed catalog-free skills runtime. Native definitions or private binding owners required by saved work cannot disappear silently.
 
 New policies govern newly composed profiles. Pending CHAT and frozen WORK retain their saved assignments; narrowing the worker-role ceiling can fail saved WORK recovery. This is not a new per-agent historical revocation system. Extension authorization, such as GitHub's installation access, is still checked by its operations.
 
-Execution environments and delivery are separate runtime capabilities, not tool/skill bundles. GitHub's repository reader is a separate startup capability. Explicit execution-provider installation and the Docker/`./docker.json` default are unchanged. See [execution](execution.md) and [GitHub](github.md).
+Execution environments and delivery are separate runtime capabilities, not tool/skill bundles. Definition readers are startup capabilities of installed integrations, not agent tools. Explicit execution-provider installation and the Docker/`./docker.json` default are unchanged. See [execution](execution.md) and [GitHub](github.md).
 
 Native extensions are trusted process code. This boundary controls agent composition; it does not sandbox extension implementations or permit executable plugins from Markdown.

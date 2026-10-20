@@ -99,7 +99,7 @@ configured installation for all agents
   -> authenticated host Git <-> credential-free bundle <-> worker api.env
 ```
 
-The loader returns one agent extension and a separate startup repository reader. The application assigns contributions through the common [extension policy](extensions.md), without maintaining tool inventories or constructing GitHub bindings. The private binder receives only actually selected contributions; composition supplies its canonical owner. Native definitions remain the single tool inventory. Core owns only resolved setups, opaque bindings and runtime registration; it parses no GitHub configuration.
+The loader returns one installed GitHub integration containing its agent capabilities and startup definition readers. The application assigns contributions through the common [extension policy](extensions.md), without maintaining tool inventories or constructing GitHub bindings. The private binder receives only actually selected contributions; composition supplies its canonical owner. Native definitions remain the single tool inventory. Core owns only resolved setups, opaque bindings and runtime registration; it parses no GitHub configuration.
 
 A binding records only the installation ID. GitHub enforces repository access and permissions on every operation. A binding never selects tools. Every child worker selecting GitHub contributions receives the same configured installation in its own frozen setup. Private keys, App JWTs, and installation tokens are never written to bindings, prompts, results, Git remote URLs, or worker files.
 
@@ -133,25 +133,28 @@ The extension requires supported, patched host/worker Git versions. Git bundles 
 import { loadGitHubConfiguration } from "../src/extensions/github/index.ts";
 import { loadEnvironment } from "../src/host/composition/index.ts";
 
-const github = await loadGitHubConfiguration("./.kaeno/github.json");
+const githubExtensions = [
+  await loadGitHubConfiguration("./.kaeno/github.json"),
+];
 const configuration = await loadEnvironment({
   configFile: "./.kaeno/config.json",
-  repositoryReader: github.repositoryReader,
-  extensions: [github.extension],
+  extensions: [...githubExtensions],
   policy: (base) => ({
     assistant: {
-      available: [...base.assistant.available, github.extension],
-      defaults: [...base.assistant.defaults, github.extension],
+      available: [...base.assistant.available, ...githubExtensions],
+      defaults: [...base.assistant.defaults, ...githubExtensions],
     },
     worker: {
-      available: [...base.worker.available, github.extension],
-      defaults: [...base.worker.defaults, github.extension],
+      available: [...base.worker.available, ...githubExtensions],
+      defaults: [...base.worker.defaults, ...githubExtensions],
     },
   }),
 });
 ```
 
-Pass the returned configuration to `openKaeno` with storage/models and the chosen WORK environment, as usual. When the App configuration is enabled, the same host-only reader can fetch private agent/skill repositories as well as the existing GitHub tools; repository installation permissions remain the authorization boundary. Public repositories use the isolated anonymous reader without an App key.
+Pass the returned configuration to `openKaeno` with storage/models and the chosen WORK environment, as usual. Each `agentRepositories`/`skillRepositories` declaration requires an explicit `provider`: `github` uses isolated anonymous access; `github-app-<installationId>` uses the configured App's host-only credentials for private definitions. Both readers live inside the configured GitHub integration, with no separate host reader argument. An App reader never falls back to public access on failure. Changing installations changes the reader name, so source configuration and cache identity cannot silently redirect.
+
+Without App configuration, install `githubExtension()` (no arguments) in the same `githubExtensions` list. It provides only the `github` definition reader: no dummy runtime, private binding or agent tools. See [definition-reader selection and migration](extensions.md#definition-readers).
 
 ## Verification
 

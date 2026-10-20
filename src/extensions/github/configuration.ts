@@ -1,9 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { z } from "zod";
-import type { AgentExtension } from "../contributions/index.ts";
-import type { RepositoryReader } from "../definitions/index.ts";
-import { githubRepositoryReader } from "./definitions.ts";
 import { githubExtension } from "./extension.ts";
 
 const configSchema = z
@@ -15,10 +12,9 @@ const configSchema = z
   .strict();
 
 /** Optional owner-controlled CLI composition. No core or Markdown GitHub configuration. */
-export async function loadGitHubConfiguration(path: string): Promise<{
-  extension: AgentExtension;
-  repositoryReader: RepositoryReader;
-}> {
+export async function loadGitHubConfiguration(
+  path: string,
+): Promise<ReturnType<typeof githubExtension>> {
   const absolute = resolve(path);
   const config = configSchema.parse(
     JSON.parse(await readFile(absolute, "utf8")),
@@ -27,18 +23,9 @@ export async function loadGitHubConfiguration(path: string): Promise<{
     resolve(dirname(absolute), config.privateKeyFile),
     "utf8",
   );
-  return {
-    extension: githubExtension({
-      appId: config.appId,
-      privateKey,
-      installationId: config.installationId,
-    }),
-    repositoryReader: githubRepositoryReader({
-      app: {
-        appId: config.appId,
-        privateKey,
-        installationId: config.installationId,
-      },
-    }),
-  };
+  return githubExtension({
+    appId: config.appId,
+    privateKey,
+    installationId: config.installationId,
+  });
 }

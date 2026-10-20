@@ -12,7 +12,11 @@ import { getOrThrow } from "@earendil-works/pi-durable/env";
 import type { Context } from "@earendil-works/chord";
 import { z } from "zod";
 import { readBinding } from "../../core/application/index.ts";
-import type { AgentExtension } from "../contributions/index.ts";
+import type {
+  AgentExtension,
+  InstalledExtension,
+} from "../contributions/index.ts";
+import { githubRepositoryReader } from "./definitions.ts";
 import {
   GITHUB_EXTENSION,
   GITHUB_TOOLS,
@@ -93,10 +97,19 @@ function text(value: unknown): { content: [{ type: "text"; text: string }] } {
   return { content: [{ type: "text", text: JSON.stringify(value) }] };
 }
 
-/** Native GitHub tools, extension-owned bindings and a truthful contextual prompt section. */
+/** Public definitions need no App, native runtime, or agent permissions. */
+export function githubExtension(): InstalledExtension;
+/** An App adds authenticated definitions and native tools with private assignment bindings. */
 export function githubExtension(
   options: GitHubExtensionOptions,
-): AgentExtension {
+): AgentExtension;
+export function githubExtension(
+  options?: GitHubExtensionOptions,
+): InstalledExtension {
+  const publicReader = { name: "github", ...githubRepositoryReader() };
+  if (!options) {
+    return { definitionReaders: [publicReader] };
+  }
   const installationId = z
     .number()
     .int()
@@ -352,6 +365,20 @@ export function githubExtension(
     },
   });
   return {
+    definitionReaders: [
+      publicReader,
+      {
+        name: `github-app-${installationId}`,
+        ...githubRepositoryReader({
+          app: {
+            appId: options.appId,
+            privateKey: options.privateKey,
+            installationId,
+          },
+          host: { fetch: options.fetch },
+        }),
+      },
+    ],
     runtime: {
       durable: defineExtension({
         name: GITHUB_EXTENSION,
