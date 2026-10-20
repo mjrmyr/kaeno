@@ -36,24 +36,33 @@ export function capacity(
   resources: Resources,
   overhead: Overhead = {},
 ): number {
-  const parse = (text: string, what: string): bigint => {
-    const value = quantity(text);
-    if (value === undefined) {
-      throw new Error(`Invalid Kubernetes ${what}`);
-    }
-    return value;
-  };
-  const charge = (name: keyof Overhead, value: string): bigint =>
-    parse(value, `sandbox ${name}`) +
-    parse(overhead[name] ?? "0", `RuntimeClass overhead for ${name}`);
+  // ResourceQuota charges every sandbox pod its container resources PLUS the
+  // RuntimeClass overhead (e.g. the Kata VM). Without a RuntimeClass the overhead is 0.
+  const overheadCpu = requiredQuantity(
+    overhead.cpu ?? "0",
+    "RuntimeClass overhead cpu",
+  );
+  const overheadMemory = requiredQuantity(
+    overhead.memory ?? "0",
+    "RuntimeClass overhead memory",
+  );
+  const requestsCpu =
+    requiredQuantity(resources.requests.cpu, "requests.cpu") + overheadCpu;
+  const requestsMemory =
+    requiredQuantity(resources.requests.memory, "requests.memory") +
+    overheadMemory;
+  const limitsCpu =
+    requiredQuantity(resources.limits.cpu, "limits.cpu") + overheadCpu;
+  const limitsMemory =
+    requiredQuantity(resources.limits.memory, "limits.memory") + overheadMemory;
   const charges: Record<string, bigint> = {
-    pods: parse("1", "pod count"),
-    cpu: charge("cpu", resources.requests.cpu),
-    memory: charge("memory", resources.requests.memory),
-    "requests.cpu": charge("cpu", resources.requests.cpu),
-    "requests.memory": charge("memory", resources.requests.memory),
-    "limits.cpu": charge("cpu", resources.limits.cpu),
-    "limits.memory": charge("memory", resources.limits.memory),
+    pods: requiredQuantity("1", "pod count"),
+    cpu: requestsCpu,
+    memory: requestsMemory,
+    "requests.cpu": requestsCpu,
+    "requests.memory": requestsMemory,
+    "limits.cpu": limitsCpu,
+    "limits.memory": limitsMemory,
   };
   let slots: number | undefined;
   for (const [key, value] of Object.entries(hard)) {
@@ -82,6 +91,14 @@ export function capacity(
     );
   }
   return slots;
+}
+
+function requiredQuantity(text: string, what: string): bigint {
+  const value = quantity(text);
+  if (value === undefined) {
+    throw new Error(`Invalid Kubernetes quantity for ${what}`);
+  }
+  return value;
 }
 
 function quantity(text: string): bigint | undefined {
