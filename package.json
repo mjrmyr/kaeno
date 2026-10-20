@@ -16,7 +16,6 @@
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
     "browser:smoke": "node scripts/browser-runtime-smoke.ts",
-    "smoke:kubernetes": "scripts/kubernetes-smoke.sh",
     "verify": "npm run check && npm test"
   },
   "devDependencies": {
