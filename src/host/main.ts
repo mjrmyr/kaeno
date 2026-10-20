@@ -19,16 +19,23 @@ import { kubernetesExecutionProvider } from "../extensions/kubernetes/index.ts";
 import { microsandboxExecutionProvider } from "../extensions/microsandbox/index.ts";
 
 const browser = await browserExtension();
-const browserTools = browser.durable.tools?.map((tool) => tool.name) ?? [];
-const github: Partial<Awaited<ReturnType<typeof loadGitHubConfiguration>>> =
-  process.env.KAENO_GITHUB_CONFIG
-    ? await loadGitHubConfiguration(process.env.KAENO_GITHUB_CONFIG)
-    : {};
+const github = process.env.KAENO_GITHUB_CONFIG
+  ? await loadGitHubConfiguration(process.env.KAENO_GITHUB_CONFIG)
+  : undefined;
+const githubExtensions = github ? [github.extension] : [];
 const configuration = await loadEnvironment({
-  ...github,
-  extensions: [...(github.extensions ?? []), browser],
-  tools: github.tools,
-  workerTools: browserTools,
+  repositoryReader: github?.repositoryReader,
+  extensions: [...githubExtensions, browser],
+  policy: (base) => ({
+    assistant: {
+      available: [...base.assistant.available, ...githubExtensions],
+      defaults: [...base.assistant.defaults, ...githubExtensions],
+    },
+    worker: {
+      available: [...base.worker.available, ...githubExtensions, browser],
+      defaults: [...base.worker.defaults, ...githubExtensions, browser],
+    },
+  }),
   configFile: process.env.KAENO_CONFIG ?? ".kaeno/config.json",
   sourceMode: z
     .enum(["refresh", "offline"])

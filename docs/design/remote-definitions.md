@@ -1,5 +1,7 @@
 # Repository-backed agent and skill definitions
 
+> Historical design: the native contribution hooks and host composition API below are superseded by [extension contributions](extension-contributions.md). Source acquisition, immutable snapshots and provenance remain in place.
+
 **Status: implemented in the current working tree and homelab PR #11.** This replaces the init-container-centric approach. Local Kaeno, Docker hosts, and Kubernetes use the same loader. The source runtime remains local/unpublished; the homelab PR stays suspended and pinned to the legacy image until a compatible image is deliberately published.
 
 ## Problem
