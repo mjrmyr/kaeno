@@ -1,21 +1,46 @@
-// Module map (src/extensions/mcp/, 5 files, everything else private to the feature):
+// src/extensions/mcp: Kaeno's tool plane. Module map (only this file is importable):
 //
-//   index.ts          public surface: three functions + two types. Nothing else is importable.
-//   configuration.ts  mcp.json + mcp.lock.json: zod at the file boundary -> domain types; pure
-//                     reconcile(config, lock) that fails closed on any disagreement.
-//   remote.ts         the only code that speaks Streamable HTTP: connect-per-call client, header
-//                     files, response cap; builds one AgentExtension per configured server.
-//   tools.ts          the shared MCP -> durable tool adapter: projection, CallToolResult parsing,
-//                     bounding, redaction, untrusted-output note, toolError. Used by remote.ts
-//                     AND by browser.
-//   lock.ts           owner-run discovery: lists upstream tools, pins allowlisted contracts,
-//                     carries tombstones forward, guards origin changes (--repoint).
+//   server.ts         McpServer / Placement / HostCredentials / ToolPolicy and `mcpTools`, the
+//                     single MCP -> durable projection. The only branch on placement.
+//   contract.ts       the one lock format; pure `reconcile` (allowlist x lock -> live | retired).
+//   results.ts        untrusted-output bounding, redaction, failure taxonomy.
+//   remote.ts         host placement: Streamable HTTP, connect-per-call, per-call credentials.
+//   work.ts           work placement: WorkMcpHost, composed into envd (runs in the sandbox).
+//   configuration.ts  mcp.json -> one `kaeno-mcp-<id>` extension per owner-declared server,
+//                     plus the derived role policy (McpInstallation).
+//   lock.ts           owner/dev commands: `lock` and OAuth `login`.
 //
-// Call chain for a model tool call (3 files): tools.ts registration.execute -> remote.ts call ->
-// SDK. For the browser: tools.ts registration.execute -> browser call -> envd (unchanged).
+// Call chains:
+//   host:  server.ts execute -> remote.ts callRemote -> SDK
+//   work:  server.ts execute -> RemoteExecutionEnv.mcp -> envd /mcp -> work.ts WorkMcpHost -> SDK
 //
-// Startup never touches the network: loadMcpConfiguration reads two local files.
+// Consumers: host/main.ts (loadMcpConfiguration), host/envd.ts (WorkMcpHost), browser
+// (mcpTools + its own McpServer value), scripts/mcp.ts and scripts/auth.ts.
 
-export { loadMcpConfiguration, type McpServerExtension } from "./remote.ts";
-export { lockMcpConfiguration, type LockReport } from "./lock.ts";
-export { mcpToolRegistration, type McpToolContract } from "./tools.ts";
+export {
+  mcpTools,
+  serverIdSchema,
+  type McpServer,
+  type McpToolSet,
+  type Placement,
+  type HostCredentials,
+  type ToolPolicy,
+  type ServerId,
+} from "./server.ts";
+export {
+  readLock,
+  contractDigest,
+  type PinnedServer,
+  type PinnedTool,
+} from "./contract.ts";
+export {
+  loadMcpConfiguration,
+  lockFileFor,
+  type McpInstallation,
+} from "./configuration.ts";
+export {
+  WorkMcpHost,
+  type WorkServerRecipe,
+  type SessionProbe,
+} from "./work.ts";
+export { lockMcp, loginMcp, type LockTarget, type LockReport } from "./lock.ts";

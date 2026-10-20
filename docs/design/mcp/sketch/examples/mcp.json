@@ -2,7 +2,7 @@
   "servers": {
     "linear": {
       "url": "https://mcp.linear.app/mcp",
-      "headerFiles": { "Authorization": "linear.authorization" },
+      "auth": { "oauth": true },
       "tools": {
         "read": ["list_issues", "get_issue", "list_projects"],
         "write": ["create_comment"]
@@ -10,13 +10,8 @@
     },
     "sentry": {
       "url": "https://mcp.example-sentry.internal/mcp",
-      "headerFiles": { "Authorization": "sentry.authorization" },
-      "tools": {
-        "read": ["search_issues", "get_issue_details"],
-        "write": [],
-        "retired": ["list_events"]
-      }
-    },
-    "notion": { "retired": true }
+      "auth": { "headerFiles": { "Authorization": "sentry.authorization" } },
+      "tools": { "read": ["search_issues", "get_issue_details"] }
+    }
   }
 }

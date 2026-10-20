@@ -1,132 +1,100 @@
+// Host placement: the only Streamable HTTP code in Kaeno. Used by tool calls and by `lock`.
+
 import type { Context } from "@earendil-works/chord";
-import { defineExtension, type JsonObject } from "@earendil-works/pi-durable";
+import type { JsonObject, ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import type { AgentExtension } from "../contributions/index.ts";
-import {
-  lockFileFor,
-  readIntents,
-  reconcile,
-  type RemoteServer,
-} from "./configuration.ts";
-import { mcpToolRegistration, toolError } from "./tools.ts";
+import type { HostCredentials, Placement, ServerId } from "./server.ts";
+import { toolError } from "./results.ts";
 
 /**
- * One configured server. The object itself is the whole-server selector and belongs in role
- * `available` (it includes tombstones, which frozen WORK plans need inside the ceiling).
- * `live` is derived from the same registrations, minus tombstones, and belongs in `defaults`.
+ * Connect, initialize, call one tool, DELETE the session, close.
+ *
+ * Invariant: no host MCP session outlives one tool call. Session state lives where the WORK
+ * lives (work placement), never on the host. Consequences, all intended:
+ *   - host restart / durable replay loses nothing (a replayed `read` simply reconnects);
+ *   - no pool, no idle reaper, no `start` hook, no per-conversation session doc;
+ *   - credentials are resolved per call, so rotation never needs a restart.
+ * Servers whose tools only work inside one long session are unsupported on the host; if they
+ * are worth having, they are a work recipe. A per-conversation session POOL may come later as a
+ * measured handshake optimization only: it must never be relied on for state, because restart,
+ * eviction and idle expiry would drop that state silently.
+ *
+ * Drift check (the lock pins what the model is TOLD; this checks what the server DOES): the
+ * first call per server per process also runs `tools/list` (all pages) on the same connection
+ * and caches, per tool, whether the live {description, inputSchema} still equals the pin. A
+ * drifted tool fails closed with toolError("drift", "contract changed upstream; review with
+ * `npm run mcp -- lock`"). Undrifted tools keep working. The cache is process-local and never
+ * durable; a restart re-checks.
+ *
+ * Client capabilities `{}`: no sampling (a server never spends Kaeno's model), no elicitation
+ * (never asks a human mid-WORK), no roots. Server->client requests get method-not-found.
+ * `initialize.instructions`, logging, progress and listChanged are ignored.
+ * Redirects: same-origin only (credentials never follow to another origin). Response bodies
+ * capped at 4 MB. Deadlines: connect 15 s, call 60 s; `context.abortSignal` -> notifications/cancelled.
  */
-export type McpServerExtension = AgentExtension & {
-  /** Structurally a `{ tools }` ContributionSelector; extensions may not import host types. */
-  readonly live: { readonly tools: readonly string[] };
-};
-
-/**
- * Install every server in mcp.json as its own extension, offline: reads mcp.json and
- * mcp.lock.json, reconciles them, builds tools. No connection is made.
- *
- * One AgentExtension per server, because each server is independently:
- *   - a policy unit: `worker.available: [linear]` vs `{ tools: ["linear_get_issue"] }`;
- *   - a recovery unit: removing `notion` from config fails closed only if saved work uses notion tools;
- *   - a readOnlyTools owner (core requires readOnly names to be owned by the declaring extension).
- *
- * Durable extension name: `kaeno-mcp-<server>`, forever (recovery requires it; retire, never
- * rename). No `bind`, no `start`, no cleanup: there is no per-conversation state, no long-lived
- * connection, nothing to reconcile after restart. Origin stability is enforced by `lock`.
- */
-export async function loadMcpConfiguration(
-  configFile: string,
-): Promise<McpServerExtension[]> {
-  // TODO:
-  // const servers = reconcile(await readIntents(configFile), lockSchema.parse(JSON.parse(await readFile(lockFileFor(configFile)))));
-  // return servers.map(serverExtension);
-  void [readIntents, reconcile, lockFileFor];
-  void configFile;
-  throw new Error("not implemented");
-}
-
-function serverExtension(server: RemoteServer): McpServerExtension {
-  // TODO:
-  // const tools = server.tools.map((tool) => mcpToolRegistration({
-  //   name: tool.name,
-  //   contract: tool.contract,
-  //   replay: tool.kind === "read" ? "safe" : "unsafe",
-  //   // Writes keep their round sequential so the model's ordering is the execution order.
-  //   executionMode: tool.kind === "read" ? undefined : "sequential",
-  //   source: `the ${server.name} MCP server`,
-  //   call: tool.kind === "retired" || !server.url
-  //     ? () => { throw toolError(server.name, "retired", `${tool.name} was retired by the owner`); }
-  //     : (args, _api, context) => callOnce(server, tool.upstream, args, context),
-  // }));
-  // return {
-  //   runtime: {
-  //     durable: defineExtension({ name: `kaeno-mcp-${server.name}`, tools }),
-  //     readOnlyTools: server.tools.filter((t) => t.kind === "read").map((t) => t.name),
-  //   },
-  //   live: { tools: server.tools.filter((t) => t.kind !== "retired").map((t) => t.name) },
-  // };
-  void [defineExtension, mcpToolRegistration, toolError];
-  void server;
-  throw new Error("not implemented");
-}
-
-/**
- * Connect, initialize, call one tool, terminate. Placement: the Kaeno host process, for CHAT and
- * WORK alike (`api.env` is ignored). Credentials therefore never enter a WORK sandbox.
- *
- * Invariant: no MCP session outlives one tool call. Consequences, all intentional:
- *   - no state is shared between conversations, WORKs or sibling workers;
- *   - a restart loses nothing (a durable replay would have broken session continuity anyway);
- *   - concurrent calls are independent; no locks, no pool, no idle reaper.
- * Servers whose tools only make sense inside a long session are unsupported in v1.
- *
- * Cancellation: `context.abortSignal` is passed to connect and callTool (the SDK sends
- * notifications/cancelled). Deadlines: connect 15 s, call 60 s.
- */
-async function callOnce(
-  server: RemoteServer,
-  upstream: string,
-  args: JsonObject,
-  context: Context,
-): Promise<unknown> {
-  // TODO:
-  // const { client, secrets } = await openRemote(server, context.abortSignal);
-  // try {
-  //   const raw = await client.callTool({ name: upstream, arguments: args }, undefined,
-  //     { signal: context.abortSignal, timeout: 60_000 });
-  //   return { raw, redact: redactor(secrets) };  // tools.ts bounds, then redacts every secret value
-  // } catch (error) {
-  //   // kind (timeout|cancelled|unavailable|protocol) + <=500 chars of body text, never headers,
-  //   // secret values replaced with [redacted].
-  //   throw toolError(server.name, classify(error), detail(error), redactor(secrets));
-  // } finally {
-  //   await client.transport?.terminateSession?.().catch(() => {}); // best-effort DELETE
-  //   await client.close();
-  // }
-  void [server, upstream, args, context];
-  throw new Error("not implemented");
-}
-
-/**
- * The single Streamable HTTP connector, shared by tool calls and `lock`.
- *
- * - Client capabilities: `{}`. Advertising no sampling/elicitation/roots means a compliant
- *   server never asks Kaeno for model access or human input. Any server->client request is
- *   answered with method-not-found by the SDK default.
- * - No `authProvider`: a 401 is an error, never an OAuth redirect flow.
- * - SDK default `redirectPolicy: "same-origin"`: header secrets are not sent to another origin.
- * - `fetch` wrapper caps each response body at 4 MB (stream aborted beyond it).
- * - Header values are read from `headerFiles` on every call and returned as `secrets` so results
- *   and errors can be redacted against exactly the values sent.
- * - Server notifications (listChanged, logging, progress) are ignored.
- */
-export async function openRemote(
-  server: {
+export async function callRemote(
+  server: ServerId,
+  placement: Extract<Placement, { kind: "host" }>,
+  call: {
     readonly name: string;
-    readonly url: URL;
-    readonly headerFiles: ReadonlyMap<string, string>;
+    readonly tool: string;
+    readonly arguments: JsonObject;
   },
+  api: ToolExecutionApi,
+  context: Context,
+): Promise<{ result: unknown; redact: (text: string) => string }> {
+  // TODO:
+  // const { headers, secrets } = await resolveCredentials(server, placement.credentials, call, api, context);
+  // const redact = redactor(secrets);
+  // const client = await connect(placement.url, headers, context.abortSignal);
+  // try {
+  //   return { result: await client.callTool({ name: call.tool, arguments: call.arguments }, undefined,
+  //     { signal: context.abortSignal, timeout: 60_000 }), redact };
+  // } catch (error) {
+  //   throw toolError(server, classify(error), detail(error), redact);   // never headers/bodies
+  // } finally {
+  //   await terminateQuietly(client); // best-effort DELETE + close
+  // }
+  void [server, placement, call, api, context, toolError];
+  throw new Error("not implemented");
+}
+
+/**
+ * Per-call credential resolution. One switch, three sources: none | (see HostCredentials):
+ *   headerFiles -> read every file now (rotation without restart)
+ *   oauth       -> store.modify(providerId, refreshIfNeeded): refresh under the store's
+ *                  cross-process lock when expiring within 60 s, so two concurrent calls never
+ *                  both spend a rotating refresh token. Kaeno OWNS refresh: the SDK transport
+ *                  gets a static Authorization header for this one connection and NO
+ *                  authProvider, so the SDK's reactive 401 path can never call saveTokens
+ *                  outside `modify`. A 401 -> one forced refresh under `modify`, one reconnect;
+ *                  still 401 or refresh fails -> toolError("auth_required"). Never redirects to
+ *                  an authorization page at runtime.
+ */
+async function resolveCredentials(
+  server: ServerId,
+  credentials: HostCredentials,
+  call: {
+    readonly name: string;
+    readonly tool: string;
+    readonly arguments: JsonObject;
+  },
+  api: ToolExecutionApi,
+  context: Context,
+): Promise<{
+  headers: Readonly<Record<string, string>>;
+  secrets: readonly string[];
+}> {
+  void [server, credentials, call, api, context];
+  throw new Error("not implemented");
+}
+
+/** Shared with lock.ts: list tools (all pages) through the same connector and credentials. */
+export async function connect(
+  url: URL,
+  headers: Readonly<Record<string, string>>,
   signal: AbortSignal,
-): Promise<{ client: Client; secrets: readonly string[] }> {
-  void [server, signal];
+): Promise<Client> {
+  void [url, headers, signal, resolveCredentials];
   throw new Error("not implemented");
 }

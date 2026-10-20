@@ -2,19 +2,15 @@
   "version": 1,
   "servers": {
     "linear": {
-      "url": "https://mcp.linear.app/mcp",
+      "origin": "https://mcp.linear.app",
       "tools": {
         "create_comment": {
           "description": "Create a comment on a Linear issue.",
           "inputSchema": {
             "type": "object",
             "properties": {
-              "issueId": {
-                "type": "string"
-              },
-              "body": {
-                "type": "string"
-              }
+              "issueId": { "type": "string" },
+              "body": { "type": "string" }
             },
             "required": ["issueId", "body"]
           }
@@ -23,59 +19,43 @@
           "description": "Retrieve a Linear issue by id.",
           "inputSchema": {
             "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              }
-            },
+            "properties": { "id": { "type": "string" } },
             "required": ["id"]
           }
         },
         "list_issues": {
           "description": "…",
-          "inputSchema": {
-            "type": "object"
-          }
+          "inputSchema": { "type": "object" }
         },
         "list_projects": {
           "description": "…",
-          "inputSchema": {
-            "type": "object"
-          }
+          "inputSchema": { "type": "object" }
         }
       }
     },
     "sentry": {
-      "url": "https://mcp.example-sentry.internal/mcp",
+      "origin": "https://mcp.example-sentry.internal",
       "tools": {
         "get_issue_details": {
           "description": "…",
-          "inputSchema": {
-            "type": "object"
-          }
+          "inputSchema": { "type": "object" }
         },
         "search_issues": {
           "description": "…",
-          "inputSchema": {
-            "type": "object"
-          }
+          "inputSchema": { "type": "object" }
         },
         "list_events": {
-          "description": "(retired; pin carried forward unchanged)",
-          "inputSchema": {
-            "type": "object"
-          }
+          "description": "Pinned earlier; no longer in mcp.json -> derived tombstone (sentry_list_events stays registered, every call fails without I/O).",
+          "inputSchema": { "type": "object" }
         }
       }
     },
     "notion": {
-      "url": "https://mcp.notion.com/mcp",
+      "origin": "https://mcp.notion.com",
       "tools": {
         "search": {
-          "description": "(retired server; pins carried forward unchanged)",
-          "inputSchema": {
-            "type": "object"
-          }
+          "description": "Whole server removed from mcp.json -> kaeno-notion stays installed, all tools retired.",
+          "inputSchema": { "type": "object" }
         }
       }
     }

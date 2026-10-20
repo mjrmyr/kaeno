@@ -1,81 +1,97 @@
-import {
-  lockFileFor,
-  readIntents,
-  type ServerIntent,
-} from "./configuration.ts";
-import { openRemote } from "./remote.ts";
-import type { McpToolContract } from "./tools.ts";
+// Owner/developer commands. The only code paths that discover tools or perform OAuth login.
 
-/** What changed relative to the previous lock, per server, for the owner to review. */
+import type { CredentialStore } from "@earendil-works/pi-ai";
+import type { PinnedTool } from "./contract.ts";
+import type { McpServer } from "./server.ts";
+
+/**
+ * How `lock` lists a server's tools. Host servers: through remote.ts `connect` with the same
+ * credential resolution as calls. Work servers: the declaring feature
+ * supplies an in-process discovery (Browser: @playwright/mcp createConnection + InMemoryTransport,
+ * exactly today's discoverBrowserTools, which never launches Chromium).
+ */
+/** A server as declared, before its pins exist (lock produces `pinned`). */
+export type LockTarget =
+  | { readonly server: Omit<McpServer, "pinned">; readonly discover?: never }
+  | {
+      readonly server: Omit<McpServer, "pinned">;
+      readonly discover: (
+        signal: AbortSignal,
+      ) => Promise<ReadonlyMap<string, PinnedTool>>;
+    };
+
 export interface LockReport {
   readonly lockFile: string;
   readonly servers: readonly {
-    readonly name: string;
+    readonly id: string;
     readonly added: readonly string[];
-    /** Description or inputSchema differs from the previous pin: review before restarting. */
+    /** description or schema changed since the previous pin: the review point ("rug pull"). */
     readonly changed: readonly string[];
-    readonly removed: readonly string[];
-    /** Upstream tools that exist but are not allowlisted (to help write the allowlist). */
-    readonly unlisted: readonly string[];
-    /** Pins carried forward unchanged because the owner retired them (never re-fetched). */
+    /** previously allowlisted, now not: kept as tombstones, NOT dropped. */
     readonly retired: readonly string[];
-    /**
-     * Owner classification vs upstream annotations, e.g. "get_x listed as read but upstream
-     * says destructiveHint". Advisory only: annotations are server claims and never decide policy.
-     */
+    /** upstream has them, allowlist does not (helps write the allowlist). */
+    readonly unlisted: readonly string[];
+    /** e.g. "create_comment listed read; upstream readOnlyHint=false". Advisory only. */
     readonly warnings: readonly string[];
   }[];
 }
 
 /**
- * Owner-run, never at startup. For every server in mcp.json: connect, page through tools/list,
- * select the allowlisted tools, pin `{ description, inputSchema }`, write mcp.lock.json.
+ * `npm run mcp -- lock [--config mcp.json | --builtin] [--repoint <id>] [--forget <id>/<tool>]`
  *
- * Tombstones: retired tools (and every tool of a retired server) keep their previous pin without
- * contacting upstream; a retired server is never connected to.
+ * For every target: list tools (all pages), pin allowlisted ones, CARRY FORWARD every previous
+ * pin that is no longer allowlisted (tombstone), write atomically (temp + rename), sorted keys.
+ * All-or-nothing: any failure writes nothing.
  *
- * All-or-nothing: any failure writes nothing and leaves the previous lock in force. Failures:
- * - unreachable server; allowlisted tool missing upstream;
- * - oversize description > 4 KiB or schema > 32 KiB JSON; schema not `type: "object"`;
- * - a previously pinned tool that is neither allowlisted nor retired ("retire it; saved
- *   conversations may reference it" — recovery walks every conversation);
- * - a retired tool with no previous pin (nothing to keep registered);
- * - a server whose url origin differs from its previous pin, unless `repoint` names it
- *   (the owner states that saved work under this name will follow the new origin). Idempotent: unchanged upstreams produce byte-identical output
- * (sorted keys), written atomically (temp file + rename).
+ * Fails on: unreachable server; allowlisted tool missing upstream (a tombstoned previous pin
+ * does not satisfy an allowlist entry); description > 4 KiB or schema > 32 KiB or not an object;
+ * origin change without `--repoint <id>`.
  *
- * The lock is the defence against tool-description drift ("rug pull"): a server can change what
- * it advertises, but Kaeno's model only sees it after the owner re-locks and restarts.
+ * `--builtin` regenerates the committed locks of code-declared servers (browser) and is
+ * a developer action reviewed in a PR; owners only ever lock mcp.json.
+ * `--forget <id>/<tool>` drops a tombstone. It opens the database read-only (KAENO_DATABASE) and
+ * refuses while any conversation's `pi.agent.tools` or any saved WORK plan still names the tool;
+ * the owner's word is not enough, because recovery is what breaks if they are wrong.
  */
-export async function lockMcpConfiguration(
-  configFile: string,
+export async function lockMcp(
+  lockFile: string,
+  targets: readonly LockTarget[],
   options: {
-    readonly repoint?: readonly string[];
+    readonly repoint: readonly string[];
+    readonly forget: readonly string[];
     readonly signal: AbortSignal;
   },
 ): Promise<LockReport> {
-  // TODO:
-  // const intents = await readIntents(configFile);
-  // const pinned = {};
-  // const previous = await readPreviousLock(lockFileFor(configFile));   // may be absent
-  // for (const intent of intents) {
-  //   if (intent.retired) { pinned[intent.name] = previous.servers[intent.name] ?? fail(); continue; }
-  //   guardOrigin(intent, previous, options.repoint);
-  //   pinned[intent.name] = { url: intent.url.href,
-  //     tools: { ...carryRetired(intent, previous), ...(await pin(intent, options.signal)) } };
-  //   assertNothingDropped(intent, previous);   // pure; the tombstone rule
-  // }
-  // diff against previous lock if present (for the report only)
-  // atomic write lockFileFor(configFile)
-  void [readIntents, lockFileFor, openRemote, configFile, options];
+  void [lockFile, targets, options];
   throw new Error("not implemented");
 }
 
-async function pin(
-  intent: Extract<ServerIntent, { retired: false }>,
+/**
+ * `npm run auth -- login mcp <id>`: MCP authorization for one configured server.
+ * Protected-resource metadata discovery -> authorization server metadata -> dynamic client
+ * registration (or a preconfigured client id) -> PKCE authorization code with a loopback
+ * redirect or a paste-the-code fallback for a headless host -> tokens bound to the server URL
+ * (resource indicator). Stored in the host CredentialStore under `mcp:<id>` as
+ * `{ type: "oauth", access, refresh, expires, client, resource }` (the oauth variant already
+ * passes extra fields through). The only place Kaeno opens an authorization URL.
+ *
+ * Schema gap (host/auth/credentials.ts): the oauth variant requires `refresh: min(1)` and a
+ * finite `expires`. Servers that issue no refresh token cannot be stored today. Implementation
+ * step: relax `refresh` to optional for `mcp:*` entries (re-login on expiry) in the host schema;
+ * do not smuggle them into `api_key`, which is not passthrough.
+ *
+ * Kubernetes: `--output <file>` writes a seed, but `importSeed` REPLACES the whole document
+ * (credentials.ts importSeed), resetting model providers' rotated refresh tokens to stale seed
+ * copies. Before MCP logins ship through KAENO_AUTH_SEED_FILE, importSeed must merge by
+ * provider id (seeded entries win only when the seed entry changed).
+ */
+export async function loginMcp(
+  configFile: string,
+  id: string,
+  credentials: CredentialStore,
+  prompt: (url: URL) => Promise<string>,
   signal: AbortSignal,
-): Promise<Record<string, McpToolContract>> {
-  // TODO: listTools with cursor pagination; `description ?? name`; reject missing allowlisted names.
-  void [intent, signal];
+): Promise<void> {
+  void [configFile, id, credentials, prompt, signal];
   throw new Error("not implemented");
 }
