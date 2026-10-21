@@ -348,6 +348,34 @@ it("counts foreign physical pods but only sweeps its own orphans", async () => {
   expect([...rig.server.pods.keys()]).toEqual(["foreign"]);
 });
 
+it.each(["Running", "Succeeded", "Failed"])(
+  "reconciles by durable task liveness, not pod phase (%s)",
+  async (phase) => {
+    const rig = await fixture();
+    const work = await rig.work();
+    await rig.environment.ensure(work, rig.harness, context);
+    rig.server.status(phase);
+
+    // An unfinished task (including one waiting for a reply) keeps its sandbox,
+    // even if envd has exited. Also recheck tasks missing from an earlier scan.
+    await rig.environment.reconcile([work], rig.harness);
+    await rig.environment.reconcile([], rig.harness);
+    expect(rig.server.pods.has(`owner-work-${work.workId}`)).toBe(true);
+    expect(
+      rig.server.requests.filter((request) => request.method === "DELETE"),
+    ).toHaveLength(0);
+
+    rig.harness.resume();
+    await rig.harness.waitForTask(work.workId, context);
+    await rig.environment.reconcile([], rig.harness);
+    await rig.environment.reconcile([], rig.harness);
+    expect(rig.server.pods.size).toBe(0);
+    expect(
+      rig.server.requests.filter((request) => request.method === "DELETE"),
+    ).toHaveLength(1);
+  },
+);
+
 it.each([400, 404, 500])(
   "propagates POST %i immediately without readiness polling or credential disclosure",
   async (status) => {

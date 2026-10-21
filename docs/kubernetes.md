@@ -86,12 +86,65 @@ Behavior and caveats:
 - WORK reads the environment's optional generic `capacity()` at admission. The lesser of that limit and `KAENO_WORK_MAX_CONCURRENT` bounds unfinished work. Admission is serialized in WORK's existing transaction, preventing parents from holding every slot while waiting for children. Quota edits apply to new admissions without restart; successful tool-call replay does not reread capacity.
 - The extension also maintains a durable FIFO reservation queue, counts physical foreign sandbox pods, and reserves slots before POSTing. Kubernetes remains the authority if another workload consumes quota.
 - Quota-related POST rejection gets at most five attempts with four one-second waits. Other errors, including POST 404, fail immediately. Failed WORK cleanup releases reservations; persistent quota rejection also releases its uncreated reservation immediately.
-- Pods must become Ready within four minutes by default. Image/configuration failures, failed/completed pods, terminating pods, and disappeared pods fail promptly. Waiting and API calls respect cancellation.
+- On entry to WORK supervision, pods must become Ready within four minutes by default. During this readiness check, image/configuration failures, failed/completed pods, terminating pods, and disappeared pods fail promptly. This is not continuous health monitoring while WORK waits for replies or children. Waiting and API calls respect cancellation.
 - Retries adopt only matching owner/work/conversation/token-hash/image identities. A POST conflict is followed by identity validation, not blindly treated as success. A saved image is retained across restarts even if the configured image changes for new work.
 - Release is repeatable. It requests deletion, waits up to ten seconds, and only frees capacity once the pod is absent. Slow deletion retains the reservation for later reconciliation.
 - Startup and the existing periodic WORK reconciler remove terminal reservations and owner-scoped orphan pods, while retaining live work. Task liveness is rechecked to avoid sweeping work admitted after the original live-work scan.
 
 Pods run non-root with a read-only root filesystem, dropped capabilities, no privilege escalation, runtime-default seccomp, bounded writable workspace/home/tmp volumes, no service-account token, and a four-hour lifetime backstop. Only the per-work environment token enters the pod; cluster and GitHub App credentials stay on the host.
+
+## Investigating retained or stopped worker pods
+
+**Pod phase is not WORK status.** These are directly created `v1/Pod` objects, not Jobs. They have `restartPolicy: Never`, a four-hour `activeDeadlineSeconds`, no Kubernetes `ownerReferences`, and no TTL controller. The `kaeno.io/owner` label is application ownership, not a garbage-collection owner reference. The deadline stops execution; it does not delete the object. Adding `ttlSecondsAfterFinished` to a Pod is not a fix: that setting belongs to Jobs.
+
+Kaeno calls `release` on final reporting and cancellation. It also reconciles once at startup (before resuming tasks), then every five minutes. Reconciliation uses **durable task liveness**, not container phase: it retains a sandbox for every unfinished task, including `awaiting-reply` and `waiting-for-children`, even when the Pod is `Succeeded` or `Failed`. It rechecks tasks absent from the initial scan before treating them as orphans. Retained terminal Pods alone therefore do not prove the reaper stopped. Reservations for these tasks also remain held, reducing available admission capacity.
+
+The worker container runs an execution server, not the assistant orchestration. `Completed` in `kubectl get pods` describes container termination, not a delivered assistant report. A reply to a paused WORK can reach its still-running supervision loop without another readiness check; calls to a stopped execution server can then fail. Supervision does not continuously detect sandbox loss while waiting. At a fresh supervision entry, an existing terminal Pod fails readiness instead of being replaced. A missing Pod can be recreated, but its `emptyDir` workspace is lost. A host restart is neither guaranteed repair nor a reason to delete unfinished work's Pods.
+
+Check the work's authorized `list_work` / `inspect_work` view as well as the Pod. If an earlier work was awaiting a reply, distinguish forwarding that reply from receiving its final report. Work-result turns intentionally cannot start/message/cancel work; forwarding may need a real user turn. Do not interpret this assistant permission restriction as a Kubernetes error.
+
+### Collect evidence before recovery
+
+The following are read-only examples; adapt namespace, host label, owner and names to the deployment. Do not dump full Pod manifests: the sandbox spec contains its environment bearer token. Container logs and assistant reports may also contain sensitive task data; redact before sharing.
+
+```sh
+NS=kaeno
+kubectl -n "$NS" get deploy kaeno -o jsonpath='{.spec.template.spec.serviceAccountName}{"\\n"}{.spec.template.spec.containers[*].image}{"\\n"}'
+kubectl -n "$NS" get pods -l app.kubernetes.io/name=kaeno \
+  -o custom-columns='NAME:.metadata.name,START:.status.startTime,RESTARTS:.status.containerStatuses[*].restartCount,IMAGEID:.status.containerStatuses[*].imageID'
+
+for POD in kaeno-work-291 kaeno-work-312 kaeno-work-344; do
+  kubectl -n "$NS" get pod "$POD" -o jsonpath='{.metadata.name}{"\\n"}{.metadata.uid}{"\\n"}{.metadata.creationTimestamp}{"\\n"}{.metadata.deletionTimestamp}{"\\n"}{.metadata.ownerReferences}{"\\n"}{.metadata.labels.kaeno\\.io/owner}{"\\n"}{.spec.runtimeClassName}{"\\n"}{.spec.activeDeadlineSeconds}{"\\n"}{.status}{"\\n"}'
+  kubectl -n "$NS" get events --field-selector "involvedObject.name=$POD" --sort-by=.metadata.creationTimestamp
+  kubectl -n "$NS" logs "$POD" -c envd --timestamps --tail=100
+ done
+
+kubectl -n "$NS" logs deploy/kaeno --since=12h --timestamps \
+  | grep -E 'harness:|kaeno.work #(291|312|344):|environment unavailable|identity mismatch|still terminating|Kubernetes .*failed|task_failed|fetch failed'
+kubectl -n "$NS" get resourcequota kaeno-sandbox
+```
+
+Record container `terminated.reason`, `exitCode`, `startedAt` and `finishedAt`, Pod reason/message, UID and events. `AGE` is object age, not time since completion. A later `Failed` observation must not be substituted for an earlier `Completed` observation: compare UIDs, timestamps and attempt history. Deadline expiry normally produces `Failed` / `DeadlineExceeded`; it is not established by `Completed`. `envd` explicitly exits zero on SIGTERM, but code alone does not identify what stopped a particular Pod. Events may already have expired. For a restarted host, also collect `kubectl logs <host-pod> --previous` if available.
+
+Verify actual host RBAC (an operator needs impersonation permission for `--as`; a forbidden impersonation response does not establish the host's permissions):
+
+```sh
+SA=$(kubectl -n "$NS" get deploy kaeno -o jsonpath='{.spec.template.spec.serviceAccountName}')
+for VERB in get list create delete; do
+  kubectl auth can-i "$VERB" pods -n "$NS" --as="system:serviceaccount:$NS:$SA"
+done
+kubectl auth can-i get resourcequotas -n "$NS" --as="system:serviceaccount:$NS:$SA"
+# If runtimeClassName is configured:
+kubectl auth can-i get runtimeclasses.node.k8s.io/kata-qemu --as="system:serviceaccount:$NS:$SA"
+```
+
+### Reports and cleanup errors
+
+The final report phase stops children, aborts the worker conversation, and **awaits environment release before delivering the report**. A failed GET/DELETE, identity mismatch, target mismatch, or Pod still present after the ten-second deletion wait can therefore leave a final report undelivered. Inspect the durable work phase and `harness:` / task-failure logs rather than assuming the report was sent because the model produced text. Delivery to a parent conversation or the chat outbox is another boundary after release.
+
+The reconciliation pass also stops at its first error. Periodic errors are reported through `onReport` (`harness:` in the host); the timer remains scheduled, but later items can be starved by the same failing item on every pass. Startup reconciliation errors prevent task resumption. Host shutdown closes durable invocations and the timer; it does not delete all unfinished workers. Saved backend/target/binding incompatibilities can prevent startup before reconciliation. Restore the original configuration rather than bypassing identity checks.
+
+For recovery, first preserve needed evidence and inspect the durable works. If no longer needed, cancel them through the authorized WORK interface and verify release/report delivery. Cancellation deletes ephemeral workspace data; obtain the user's authorization. Do not add a phase-only sweeper, delete Pods wholesale, mutate SQLite, or switch RuntimeClass/backend to clear the symptom: these can lose active work or strand its report. A policy for expiring paused work and handling dead sandboxes needs to settle/report the durable task as well as clean its resources.
 
 ## Embedding
 
