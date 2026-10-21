@@ -57,6 +57,16 @@ export interface WorkEnvironment {
     runtime: WorkEnvironmentRuntime,
     context: Context,
   ): Promise<void>;
+  /**
+   * Optional supervision health check. Return a diagnostic only for confirmed loss of
+   * an admitted sandbox; throw transport/auth errors so they can be reported and retried.
+   * Never recreate a lost workspace behind a running participant.
+   */
+  check?(
+    work: WorkInstance,
+    runtime: WorkEnvironmentRuntime,
+    context: Context,
+  ): Promise<string | undefined>;
   release(work: WorkInstance, runtime: WorkEnvironmentRuntime): Promise<void>;
   /** Remove resources no longer backing one of the given live works. */
   reconcile(

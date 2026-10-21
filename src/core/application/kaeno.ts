@@ -205,6 +205,7 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
         {
           agents,
           environment: workOptions.environment,
+          onReport: options.onReport,
           surface: () => {
             if (!workerSurface) {
               throw new Error("WORK used before Kaeno was composed");
@@ -446,7 +447,13 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
     await threads.refreshIdleConversations();
 
     if (work && workEnvironment) {
-      await work.reconcileEnvironment(BACKGROUND_CONTEXT);
+      // Cleanup is retried by the timer. An unavailable API or one stale resource
+      // must not prevent durable work from resuming and delivering its reports.
+      await work
+        .reconcileEnvironment(BACKGROUND_CONTEXT)
+        .catch((error: unknown) => {
+          options.onReport?.(error);
+        });
       const timer = setInterval(() => {
         void work
           .reconcileEnvironment(BACKGROUND_CONTEXT)

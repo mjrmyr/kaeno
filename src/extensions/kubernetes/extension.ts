@@ -210,6 +210,12 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
       );
       if (existing) {
         assertIdentity(existing, reservation, this.config);
+      } else if (reservation.phase === "held") {
+        // A saved admitted sandbox may have contained work. Never silently replace
+        // its emptyDir after pod loss, including recovery after a host restart.
+        throw new Error(
+          `Kubernetes sandbox ${reservation.pod} disappeared; its workspace cannot be restored`,
+        );
       }
       const granted = await runtime.commit(async (tx) => {
         const state = await tx.doc(Sandboxes);
@@ -305,6 +311,32 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
     );
   }
 
+  async check(
+    work: WorkInstance,
+    runtime: WorkEnvironmentRuntime,
+    context: Context,
+  ): Promise<string | undefined> {
+    const state = await runtime.snapshot(Sandboxes, context);
+    if (state) {
+      this.assertTarget(state);
+    }
+    const reservation = state?.reservations.find(
+      (entry) => entry.workId === Number(work.workId),
+    );
+    if (!reservation || reservation.phase !== "held") {
+      return `Kubernetes sandbox reservation for work #${work.workId} is missing`;
+    }
+    const pod = await this.client.pod(reservation.pod, context.abortSignal);
+    if (!pod) {
+      return `Kubernetes sandbox ${reservation.pod} disappeared; its workspace cannot be restored`;
+    }
+    assertIdentity(pod, reservation, this.config);
+    const reason = failure(pod);
+    return reason
+      ? `Kubernetes sandbox ${reservation.pod} unavailable: ${reason}${pod.status.reason ? ` (${pod.status.reason})` : ""}`
+      : undefined;
+  }
+
   async release(
     work: WorkInstance,
     runtime: WorkEnvironmentRuntime,
@@ -362,33 +394,71 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
       );
       return task !== undefined && task.state.status !== "terminal";
     }
+    const errors: unknown[] = [];
+    const reserved = new Set(
+      state?.reservations.map((reservation) => reservation.pod),
+    );
     for (const reservation of state?.reservations ?? []) {
-      if (!(await unfinished(reservation.workId))) {
-        await this.release(
-          {
-            workId: parseTaskId(reservation.workId),
-            conversationId: parseConversationId(reservation.conversationId),
-          },
-          runtime,
+      try {
+        if (!(await unfinished(reservation.workId))) {
+          await this.release(
+            {
+              workId: parseTaskId(reservation.workId),
+              conversationId: parseConversationId(reservation.conversationId),
+            },
+            runtime,
+          );
+        }
+      } catch (error) {
+        errors.push(
+          new Error(`Kubernetes cleanup failed for ${reservation.pod}`, {
+            cause: error,
+          }),
         );
       }
     }
-    for (const pod of await this.client.pods(
-      `${SANDBOX_LABEL},${OWNER_LABEL}=${this.config.owner}`,
-    )) {
-      if (pod.metadata.labels[OWNER_LABEL] !== this.config.owner) {
-        continue;
+    try {
+      for (const pod of await this.client.pods(
+        `${SANDBOX_LABEL},${OWNER_LABEL}=${this.config.owner}`,
+      )) {
+        // A failed release must not fall through to the orphan path and bypass
+        // its reservation's identity check or deletion confirmation.
+        if (
+          reserved.has(pod.metadata.name) ||
+          pod.metadata.labels[OWNER_LABEL] !== this.config.owner
+        ) {
+          continue;
+        }
+        try {
+          const workId = Number(pod.metadata.annotations["kaeno.io/work"]);
+          if (
+            Number.isSafeInteger(workId) &&
+            workId > 0 &&
+            (await unfinished(workId))
+          ) {
+            continue;
+          }
+          // Owner-scoped orphan sweep. Never touch another installation's pods.
+          await this.client.remove(pod.metadata.name);
+        } catch (error) {
+          errors.push(
+            new Error(
+              `Kubernetes orphan cleanup failed for ${pod.metadata.name}`,
+              {
+                cause: error,
+              },
+            ),
+          );
+        }
       }
-      const workId = Number(pod.metadata.annotations["kaeno.io/work"]);
-      if (
-        Number.isSafeInteger(workId) &&
-        workId > 0 &&
-        (await unfinished(workId))
-      ) {
-        continue;
-      }
-      // Owner-scoped orphan sweep. Never touch another installation's pods.
-      await this.client.remove(pod.metadata.name);
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(
+        errors,
+        "Kubernetes sandbox reconciliation failed",
+      );
     }
   }
 
