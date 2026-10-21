@@ -73,6 +73,10 @@ const executionSchema = z
 export type ExecutionConfiguration = z.output<typeof executionSchema>;
 
 const qualified = z.string().regex(/^[^:\s]+:[^:\s*]+$/);
+/** `source:*` selects every valid agent of one source except the one Kaeno runs as. */
+const workerSelector = z
+  .string()
+  .regex(/^[^:\s*]+:(\*|[^:\s*]+)$/, "expected source:name or source:*");
 const schema = z
   .object({
     sourceDirectory: z.string().min(1),
@@ -87,7 +91,7 @@ const schema = z
       .default({ agents: [], skills: [] }),
     // The agent Kaeno runs as; its skills come from its own profile, like every worker's.
     kaeno: qualified,
-    workers: z.array(qualified).default([]),
+    workers: z.array(workerSelector).default([]),
     defaultModel: z.string().min(1).optional(),
     execution: executionSchema.prefault({
       provider: "docker",

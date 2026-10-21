@@ -518,3 +518,63 @@ it("captures absence of an unselected local agent root without consulting it off
   expect(offline.work.agents).toEqual(first.work.agents);
   expect((await loadEnvironment({ configFile })).diagnostics).toEqual([]);
 });
+
+it("expands worker wildcards in stable order, skipping Kaeno unless selected explicitly", async () => {
+  const { root, configFile } = await fixture({
+    workers: ["local:*", "local:swe"],
+  });
+  await put(join(root, "agents/reviewer.md"), agent("reviewer"));
+  const wildcard = await loadEnvironment({ configFile });
+  expect(wildcard.work.agents.map((profile) => profile.id)).toEqual([
+    "local:reviewer",
+    "local:swe",
+  ]);
+  const explicit = await fixture({
+    workers: ["local:coordinator", "local:*"],
+  });
+  expect(
+    (
+      await loadEnvironment({ configFile: explicit.configFile })
+    ).work.agents.map((profile) => profile.id),
+  ).toEqual(["local:coordinator", "local:swe"]);
+});
+it("refuses to expand a worker wildcard over invalid records or nothing", async () => {
+  const { root, configFile } = await fixture({ workers: ["local:*"] });
+  await put(join(root, "agents/broken.md"), agent("other"));
+  await expect(loadEnvironment({ configFile })).rejects.toThrow(
+    "cannot expand worker selection local:*: source local has invalid agent records",
+  );
+  // Exact selections of valid records are unaffected by a sibling's error.
+  await put(
+    configFile,
+    JSON.stringify({
+      ...JSON.parse(await readFile(configFile, "utf8")),
+      workers: ["local:swe"],
+    }),
+  );
+  expect(
+    (await loadEnvironment({ configFile })).work.agents.map(
+      (profile) => profile.id,
+    ),
+  ).toEqual(["local:swe"]);
+  const lonely = await fixture({ workers: ["local:*"] });
+  await rm(join(lonely.root, "agents/swe.md"));
+  await expect(
+    loadEnvironment({ configFile: lonely.configFile }),
+  ).rejects.toThrow("empty worker selection local:*");
+});
+it.each(["*:swe", "local:sw*", "local:**", "local", "local:*:x"])(
+  "rejects malformed worker selector %s",
+  (selector) => {
+    expect(() =>
+      parseEnvironmentConfiguration(
+        {
+          sourceDirectory: "./sources",
+          kaeno: "local:coordinator",
+          workers: [selector],
+        },
+        "/tmp/config.json",
+      ),
+    ).toThrow("expected source:name or source:*");
+  },
+);
