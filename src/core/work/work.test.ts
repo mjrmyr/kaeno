@@ -109,6 +109,8 @@ it("preserves the durable task and document identities behind the public API", (
     agent: null,
     plan: null,
     message: null,
+    question: null,
+    progress: null,
   });
   expect(work.extension.tools).toEqual([
     ...work.orchestrationTools,

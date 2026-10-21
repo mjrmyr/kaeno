@@ -3,6 +3,7 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   AssistantEntry,
+  LiveDoc,
   type ConversationId,
   type Cursor,
   type EntryRecord,
@@ -130,8 +131,43 @@ async function viewWork(
     id,
     title: input.title,
     agent: input.agent,
-    status: describeWork(record),
+    status: await refineStatus(harness, record, describeWork(record)),
   };
+}
+/**
+ * A waiting checkpoint changes only when supervision next sees an idle point. Until then, a
+ * live run is working again and an answered question is about to resume.
+ */
+async function refineStatus(
+  harness: () => WorkRuntime,
+  record: TaskRecord<JsonValue, JsonValue, unknown>,
+  status: string,
+): Promise<string> {
+  if (status !== "awaiting-reply" && status !== "waiting-for-children") {
+    return status;
+  }
+  const checkpoint = checkpointSchema.safeParse(
+    "checkpoint" in record.state ? record.state.checkpoint : undefined,
+  );
+  if (!checkpoint.success || checkpoint.data.conversation === undefined) {
+    return status;
+  }
+  const conversation = z
+    .custom<ConversationId>((value) => typeof value === "number")
+    .parse(checkpoint.data.conversation);
+  if (
+    (await harness().snapshot(LiveDoc, conversation, BACKGROUND_CONTEXT))?.run
+  ) {
+    return "running";
+  }
+  const scope = await harness().snapshot(
+    WorkScope,
+    conversation,
+    BACKGROUND_CONTEXT,
+  );
+  return status === "awaiting-reply" && scope?.question?.answered
+    ? "resuming"
+    : status;
 }
 export async function inspectWork(
   harness: () => WorkRuntime,
@@ -170,9 +206,20 @@ export async function inspectWork(
     (tx) => latestAnswer(tx, conversation.id),
     context,
   );
+  // Supervision clears the mailbox when it records the message; the question outlives that.
+  const question =
+    view.status === "awaiting-reply" && scope?.question?.answered === false
+      ? scope.question
+      : undefined;
   return {
     ...view,
-    message: scope?.message ?? undefined,
+    message: question?.text ?? scope?.message ?? undefined,
+    pendingQuestion: question && {
+      id: question.id,
+      text: question.text,
+      askedAt: question.askedAt,
+    },
+    progress: scope?.progress ?? undefined,
     latest: latest?.slice(0, 4000),
     children: await listWork(harness, conversation.id),
   };

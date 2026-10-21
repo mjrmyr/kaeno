@@ -59,7 +59,7 @@ export class Work {
     return [
       "You support delegation with start_work. Delegate substantial or parallelizable work when an agent is available.",
       "Use a complete, self-contained brief. Work runs asynchronously; continue responding instead of waiting for it.",
-      "Use list_work and inspect_work for progress, message_work for clarification, and cancel_work to stop work.",
+      "Use list_work and inspect_work for progress, message_work for clarification, and cancel_work to stop work. Progress updates from work do not pause it and need no reply; a question blocks it until you relay the user's answer with message_work.",
       "Available agents (use the ID with start_work):",
       describeAgents(this.settings.agents) ||
         "No worker agents are configured. You cannot start new work until an agent is configured; this does not remove your delegation capability or prevent managing existing work.",

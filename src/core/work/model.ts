@@ -111,6 +111,20 @@ interface WorkScopeState extends JsonObject {
   plan: JsonValue | null;
   /** commands produces; task atomically clears this while recording the message checkpoint. */
   message: string | null;
+  /**
+   * The latest blocking question, kept after delivery so inspection can show it. Steering
+   * marks it answered. Scopes stored before questions were recorded lack it; read defensively.
+   */
+  question: WorkQuestion | null;
+  /** The latest nonblocking progress note; may be missing in older scopes too. */
+  progress: string | null;
+}
+interface WorkQuestion extends JsonObject {
+  /** The message_parent invocation that asked it; replays keep the same question. */
+  id: number;
+  text: string;
+  askedAt: number;
+  answered: boolean;
 }
 /** A WORK conversation's place in its tree. CHAT conversations keep the initial value (depth 0, no work). */
 export const WorkScope = defineDoc<WorkScopeState>({
@@ -126,6 +140,8 @@ export const WorkScope = defineDoc<WorkScopeState>({
     agent: null,
     plan: null,
     message: null,
+    question: null,
+    progress: null,
   }),
 });
 export interface WorkView {
@@ -136,6 +152,8 @@ export interface WorkView {
 }
 export interface WorkDetails extends WorkView {
   message?: string;
+  pendingQuestion?: { id: number; text: string; askedAt: number };
+  progress?: string;
   latest?: string;
   children: WorkView[];
 }
