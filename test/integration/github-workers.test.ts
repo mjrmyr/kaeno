@@ -245,16 +245,15 @@ it("configures GitHub for every agent while respecting explicit tool overrides",
     );
     const options: LoadEnvironmentOptions = {
       configFile,
-      extensions: [github.extension],
-      repositoryReader: github.repositoryReader,
+      extensions: [github],
       policy: (base) => ({
         assistant: {
-          available: [...base.assistant.available, github.extension],
-          defaults: [...base.assistant.defaults, github.extension],
+          available: [...base.assistant.available, github],
+          defaults: [...base.assistant.defaults, github],
         },
         worker: {
-          available: [...base.worker.available, github.extension],
-          defaults: [...base.worker.defaults, github.extension],
+          available: [...base.worker.available, github],
+          defaults: [...base.worker.defaults, github],
         },
       }),
     };
@@ -291,11 +290,11 @@ it("configures GitHub for every agent while respecting explicit tool overrides",
     expect(config.assistant.tools).toEqual(
       expect.arrayContaining([...GITHUB_TOOLS]),
     );
+    expect(() => github.runtime.validateBinding?.(githubBinding(99))).toThrow(
+      "configured installation",
+    );
     expect(() =>
-      github.extension.runtime.validateBinding?.(githubBinding(99)),
-    ).toThrow("configured installation");
-    expect(() =>
-      github.extension.runtime.validateBinding?.({
+      github.runtime.validateBinding?.({
         ...githubBinding(installationId),
         version: 1,
       }),

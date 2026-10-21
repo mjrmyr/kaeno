@@ -24,6 +24,7 @@ import {
   withDefinitionSources,
   type DefinitionPackage,
   type DefinitionSources,
+  type DefinitionReader,
   type RepositoryDefinitionSource,
   type RepositoryReader,
 } from "../../src/extensions/definitions/index.ts";
@@ -37,12 +38,14 @@ const commitB = "b".repeat(40);
 const repositories: RepositoryDefinitionSource[] = [
   {
     kind: "agents",
+    provider: "github",
     repository: "owner/definitions",
     ref: "HEAD",
     path: "agents",
   },
   {
     kind: "skills",
+    provider: "github",
     repository: "owner/definitions",
     ref: "HEAD",
     path: "skills",
@@ -58,7 +61,13 @@ function at<T>(values: readonly T[], index: number): T {
 
 const twoRepositories: RepositoryDefinitionSource[] = [
   at(repositories, 0),
-  { kind: "skills", repository: "owner/other", ref: "trunk", path: "skills" },
+  {
+    kind: "skills",
+    provider: "github",
+    repository: "owner/other",
+    ref: "trunk",
+    path: "skills",
+  },
 ];
 const binary = Buffer.from([0, 255, 128, 13, 10, 42]);
 
@@ -100,15 +109,16 @@ function injectedReader(version = "first", commit = commitA) {
       return { commit };
     },
   );
-  return { read } satisfies RepositoryReader;
+  return { name: "github", read } satisfies DefinitionReader;
 }
 
 function forbiddenReader() {
   return {
+    name: "github",
     read: vi.fn<RepositoryReader["read"]>(async () => {
       throw new Error("offline must never call the reader");
     }),
-  } satisfies RepositoryReader;
+  } satisfies DefinitionReader;
 }
 
 async function snapshot(sources: DefinitionSources) {
@@ -183,13 +193,13 @@ function launchPausedWriter(directory: string, marker: string) {
       directory: ${JSON.stringify(directory)},
       repositories: ${JSON.stringify(twoRepositories)},
       directories: [],
-      reader: { async read(request, destination) {
+      readers: [{ name: "github", async read(request, destination) {
         const kind = request.repository === "owner/other" ? "skills" : "agents";
         const packageDirectory = join(destination, kind, "child");
         await mkdir(packageDirectory, { recursive: true });
         await writeFile(join(packageDirectory, kind === "skills" ? "SKILL.md" : "AGENT.md"), "unpublished child version");
         return { commit: ${JSON.stringify(commitB)} };
-      } },
+      } }],
     }, async (sources) => {
       for (const source of sources.agents) await source.snapshot("AGENT.md");
       for (const source of sources.skills) await source.snapshot("SKILL.md");
@@ -268,10 +278,16 @@ it("deduplicates a real Git export across kinds and preserves commit, package pr
   const realReader = githubRepositoryReader({
     host: { repositoryPath: hostPath, fetch },
   });
-  const reader: RepositoryReader = {
+  const reader: DefinitionReader = {
+    name: "github",
     read: vi.fn<RepositoryReader["read"]>(realReader.read.bind(realReader)),
   };
-  const options = { directory, repositories, directories: [], reader };
+  const options = {
+    directory,
+    repositories,
+    directories: [],
+    readers: [reader],
+  };
   const first = await withDefinitionSources(options, snapshot);
   expect(reader.read).toHaveBeenCalledTimes(1);
   expect(fetch).not.toHaveBeenCalled();
@@ -282,6 +298,7 @@ it("deduplicates a real Git export across kinds and preserves commit, package pr
   expect(agent.source).toBe("owner/definitions");
   expect(agent.origin).toEqual({
     kind: "repository",
+    provider: "github",
     repository: "owner/definitions",
     ref: "HEAD",
     commit: firstCommit,
@@ -290,6 +307,7 @@ it("deduplicates a real Git export across kinds and preserves commit, package pr
   });
   expect(skill.origin).toEqual({
     kind: "repository",
+    provider: "github",
     repository: "owner/definitions",
     ref: "HEAD",
     commit: firstCommit,
@@ -318,7 +336,7 @@ it("deduplicates a real Git export across kinds and preserves commit, package pr
   const secondCommit = await git(["rev-parse", "HEAD"]);
   const offlineReader = forbiddenReader();
   const offline = await withDefinitionSources(
-    { ...options, reader: offlineReader, mode: "offline" },
+    { ...options, readers: [offlineReader], mode: "offline" },
     snapshot,
   );
   expect(offline).toEqual(first);
@@ -342,7 +360,12 @@ it("captures local inputs once across kinds and serves captured bytes after the 
     { kind: "agents" as const, alias: "work", directory: local },
     { kind: "skills" as const, alias: "tools", directory: local },
   ];
-  const options = { directory, repositories: [], directories, reader };
+  const options = {
+    directory,
+    repositories: [],
+    directories,
+    readers: [reader],
+  };
   const captured = await withDefinitionSources(options, async (sources) => {
     await put(local, "reviewer/AGENT.md", "mutated after capture");
     return snapshot(sources);
@@ -385,7 +408,7 @@ it("requires an exact offline recipe, including kind, root path, alias and absol
     directory,
     repositories,
     directories,
-    reader: injectedReader(),
+    readers: [injectedReader()],
   };
   const original = await withDefinitionSources(options, snapshot);
   const reader = forbiddenReader();
@@ -408,14 +431,14 @@ it("requires an exact offline recipe, including kind, root path, alias and absol
   for (const variant of variants) {
     await expect(
       withDefinitionSources(
-        { ...options, ...variant, reader, mode: "offline" },
+        { ...options, ...variant, readers: [reader], mode: "offline" },
         snapshot,
       ),
     ).rejects.toThrow(/offline input set/);
   }
   expect(
     await withDefinitionSources(
-      { ...options, reader, mode: "offline" },
+      { ...options, readers: [reader], mode: "offline" },
       snapshot,
     ),
   ).toEqual(original);
@@ -423,7 +446,7 @@ it("requires an exact offline recipe, including kind, root path, alias and absol
   const otherRootOptions = {
     ...options,
     repositories: [{ ...at(repositories, 0), path: "" }],
-    reader: injectedReader("second", commitB),
+    readers: [injectedReader("second", commitB)],
   };
   const otherRoot = await withDefinitionSources(otherRootOptions, snapshot);
   expect(otherRoot.agents[0]?.origin).toMatchObject({
@@ -432,13 +455,13 @@ it("requires an exact offline recipe, including kind, root path, alias and absol
   });
   expect(
     await withDefinitionSources(
-      { ...otherRootOptions, reader, mode: "offline" },
+      { ...otherRootOptions, readers: [reader], mode: "offline" },
       snapshot,
     ),
   ).toEqual(otherRoot);
   expect(
     await withDefinitionSources(
-      { ...options, reader, mode: "offline" },
+      { ...options, readers: [reader], mode: "offline" },
       snapshot,
     ),
   ).toEqual(original);
@@ -451,7 +474,7 @@ it("does not deduplicate different refs of one repository", async () => {
     {
       directory,
       directories: [],
-      reader,
+      readers: [reader],
       repositories: [
         at(repositories, 0),
         { ...at(repositories, 1), ref: "release" },
@@ -474,7 +497,7 @@ it.each(["second repository", "selected consumer"] as const)(
       directory,
       repositories: twoRepositories,
       directories: [],
-      reader: injectedReader(),
+      readers: [injectedReader()],
     };
     const previous = await withDefinitionSources(options, snapshot);
     const read = vi.fn<RepositoryReader["read"]>(
@@ -491,7 +514,7 @@ it.each(["second repository", "selected consumer"] as const)(
     );
     await expect(
       withDefinitionSources(
-        { ...options, reader: { read } },
+        { ...options, readers: [{ name: "github", read }] },
         async (sources) => {
           const selected = await snapshot(sources);
           expect(selected.agents[0]?.manifest).toContain("unpublished");
@@ -503,7 +526,7 @@ it.each(["second repository", "selected consumer"] as const)(
     const reader = forbiddenReader();
     expect(
       await withDefinitionSources(
-        { ...options, reader, mode: "offline" },
+        { ...options, readers: [reader], mode: "offline" },
         snapshot,
       ),
     ).toEqual(previous);
@@ -522,7 +545,7 @@ it("does not create an offline cohort when the first consumer fails", async () =
     directory,
     repositories,
     directories: [],
-    reader: injectedReader(),
+    readers: [injectedReader()],
   };
   await expect(
     withDefinitionSources(options, async (sources) => {
@@ -532,7 +555,10 @@ it("does not create an offline cohort when the first consumer fails", async () =
   ).rejects.toThrow("invalid selection");
   const reader = forbiddenReader();
   await expect(
-    withDefinitionSources({ ...options, reader, mode: "offline" }, snapshot),
+    withDefinitionSources(
+      { ...options, readers: [reader], mode: "offline" },
+      snapshot,
+    ),
   ).rejects.toThrow(/offline input set/);
   expect(reader.read).not.toHaveBeenCalled();
 });
@@ -542,7 +568,12 @@ it.each(["bytes", "executable bit", "missing file"] as const)(
   async (corruption) => {
     const { directory } = await fixture();
     const reader = injectedReader();
-    const options = { directory, repositories, directories: [], reader };
+    const options = {
+      directory,
+      repositories,
+      directories: [],
+      readers: [reader],
+    };
     const previous = await withDefinitionSources(options, snapshot);
     const asset = join(at(previous.skills, 0).directory, "assets/blob.bin");
     if (corruption === "bytes") {
@@ -556,7 +587,7 @@ it.each(["bytes", "executable bit", "missing file"] as const)(
     const offlineReader = forbiddenReader();
     await expect(
       withDefinitionSources(
-        { ...options, reader: offlineReader, mode: "offline" },
+        { ...options, readers: [offlineReader], mode: "offline" },
         snapshot,
       ),
     ).rejects.toThrow(/corrupt|ENOENT/);
@@ -576,7 +607,7 @@ it.each(["bytes", "executable bit", "missing file"] as const)(
     ).toBe(0);
     expect(
       await withDefinitionSources(
-        { ...options, reader: offlineReader, mode: "offline" },
+        { ...options, readers: [offlineReader], mode: "offline" },
         snapshot,
       ),
     ).toEqual(previous);
@@ -589,7 +620,7 @@ it("refuses a corrupt completion record instead of falling back to loose trees",
     directory,
     repositories,
     directories: [],
-    reader: injectedReader(),
+    readers: [injectedReader()],
   };
   await withDefinitionSources(options, snapshot);
   // Discover the opaque recipe record on disk; no implementation internals are imported.
@@ -599,13 +630,16 @@ it("refuses a corrupt completion record instead of falling back to loose trees",
   await writeFile(join(loads, at(records, 0)), "{truncated crash record");
   const reader = forbiddenReader();
   await expect(
-    withDefinitionSources({ ...options, reader, mode: "offline" }, snapshot),
+    withDefinitionSources(
+      { ...options, readers: [reader], mode: "offline" },
+      snapshot,
+    ),
   ).rejects.toThrow(/offline input set/);
   expect(reader.read).not.toHaveBeenCalled();
   const repaired = await withDefinitionSources(options, snapshot);
   expect(
     await withDefinitionSources(
-      { ...options, reader, mode: "offline" },
+      { ...options, readers: [reader], mode: "offline" },
       snapshot,
     ),
   ).toEqual(repaired);
@@ -619,12 +653,13 @@ it.each(["symlink", "fifo", "git metadata"] as const)(
       directory,
       repositories,
       directories: [],
-      reader: injectedReader(),
+      readers: [injectedReader()],
     };
     const previous = await withDefinitionSources(options, snapshot);
     const external = join(root, "external");
     await writeFile(external, "must not be followed");
-    const reader: RepositoryReader = {
+    const reader: DefinitionReader = {
+      name: "github",
       async read(_request, destination) {
         await exportDefinitions(destination, "unsafe");
         if (unsafe === "symlink") {
@@ -639,12 +674,12 @@ it.each(["symlink", "fifo", "git metadata"] as const)(
     };
     const consume = vi.fn<typeof snapshot>(snapshot);
     await expect(
-      withDefinitionSources({ ...options, reader }, consume),
+      withDefinitionSources({ ...options, readers: [reader] }, consume),
     ).rejects.toThrow(/links\/special|Git metadata/);
     expect(consume).not.toHaveBeenCalled();
     expect(
       await withDefinitionSources(
-        { ...options, reader: forbiddenReader(), mode: "offline" },
+        { ...options, readers: [forbiddenReader()], mode: "offline" },
         snapshot,
       ),
     ).toEqual(previous);
@@ -669,7 +704,7 @@ it.each(["symlink", "fifo"] as const)(
       directories: [
         { kind: "agents" as const, alias: "local", directory: local },
       ],
-      reader,
+      readers: [reader],
     };
     const consume = vi.fn<typeof snapshot>(snapshot);
     await expect(withDefinitionSources(options, consume)).rejects.toThrow(
@@ -700,7 +735,9 @@ it.each([
       parseEnvironmentConfiguration(
         {
           sourceDirectory: "cache",
-          agentRepositories: [{ repository: "owner/definitions", path }],
+          agentRepositories: [
+            { provider: "github", repository: "owner/definitions", path },
+          ],
           kaeno: "owner/definitions:reviewer",
         },
         join(root, "config.json"),
@@ -719,7 +756,7 @@ it("does not allow direct API discovery to escape the captured repository root",
       {
         directory,
         directories: [],
-        reader: injectedReader(),
+        readers: [injectedReader()],
         repositories: [{ ...at(repositories, 0), path: "../../../outside" }],
       },
       consume,
@@ -732,7 +769,8 @@ it.each(["individual bytes", "total bytes", "file count"] as const)(
   "bounds exported %s before consumer invocation",
   async (limit) => {
     const { directory } = await fixture();
-    const reader: RepositoryReader = {
+    const reader: DefinitionReader = {
+      name: "github",
       async read(_request, destination) {
         if (limit === "file count") {
           for (let start = 0; start < 16385; start += 128) {
@@ -776,7 +814,7 @@ it.each(["individual bytes", "total bytes", "file count"] as const)(
       directory,
       repositories: [at(repositories, 0)],
       directories: [],
-      reader,
+      readers: [reader],
     };
     await expect(withDefinitionSources(options, consume)).rejects.toThrow(
       /size\/file limit/,
@@ -784,7 +822,7 @@ it.each(["individual bytes", "total bytes", "file count"] as const)(
     expect(consume).not.toHaveBeenCalled();
     await expect(
       withDefinitionSources(
-        { ...options, reader: forbiddenReader(), mode: "offline" },
+        { ...options, readers: [forbiddenReader()], mode: "offline" },
         snapshot,
       ),
     ).rejects.toThrow(/offline input set/);
@@ -797,10 +835,11 @@ it("rejects invalid resolved commits and overlapping selected packages without p
     directory,
     repositories,
     directories: [],
-    reader: injectedReader("invalid", "not-a-commit"),
+    readers: [injectedReader("invalid", "not-a-commit")],
   };
   await expect(withDefinitionSources(options, snapshot)).rejects.toThrow();
-  const reader: RepositoryReader = {
+  const reader: DefinitionReader = {
+    name: "github",
     async read(_request, destination) {
       await exportDefinitions(destination);
       await put(destination, "agents/AGENT.md", "overlapping parent");
@@ -808,11 +847,11 @@ it("rejects invalid resolved commits and overlapping selected packages without p
     },
   };
   await expect(
-    withDefinitionSources({ ...options, reader }, snapshot),
+    withDefinitionSources({ ...options, readers: [reader] }, snapshot),
   ).rejects.toThrow(/overlapping AGENT.md/);
   await expect(
     withDefinitionSources(
-      { ...options, reader: forbiddenReader(), mode: "offline" },
+      { ...options, readers: [forbiddenReader()], mode: "offline" },
       snapshot,
     ),
   ).rejects.toThrow(/offline input set/);
@@ -824,7 +863,7 @@ it("cancels before reading and during an export, retaining the prior complete co
     directory,
     repositories: twoRepositories,
     directories: [],
-    reader: injectedReader(),
+    readers: [injectedReader()],
   };
   const previous = await withDefinitionSources(options, snapshot);
   const alreadyAborted = new AbortController();
@@ -832,14 +871,15 @@ it("cancels before reading and during an export, retaining the prior complete co
   const unused = forbiddenReader();
   await expect(
     withDefinitionSources(
-      { ...options, reader: unused, signal: alreadyAborted.signal },
+      { ...options, readers: [unused], signal: alreadyAborted.signal },
       snapshot,
     ),
   ).rejects.toThrow("pre-cancelled");
   expect(unused.read).not.toHaveBeenCalled();
   const entered = Promise.withResolvers<void>();
   const controller = new AbortController();
-  const reader: RepositoryReader = {
+  const reader: DefinitionReader = {
+    name: "github",
     async read(_request, destination, signal) {
       await exportDefinitions(destination, "cancelled");
       entered.resolve();
@@ -849,7 +889,7 @@ it("cancels before reading and during an export, retaining the prior complete co
   };
   const outcome = observe(
     withDefinitionSources(
-      { ...options, reader, signal: controller.signal },
+      { ...options, readers: [reader], signal: controller.signal },
       snapshot,
     ),
   );
@@ -861,7 +901,7 @@ it("cancels before reading and during an export, retaining the prior complete co
   });
   expect(
     await withDefinitionSources(
-      { ...options, reader: unused, mode: "offline" },
+      { ...options, readers: [unused], mode: "offline" },
       snapshot,
     ),
   ).toEqual(previous);
@@ -873,7 +913,7 @@ it("does not publish if cancellation arrives after the selected consumer resolve
     directory,
     repositories,
     directories: [],
-    reader: injectedReader(),
+    readers: [injectedReader()],
   };
   const previous = await withDefinitionSources(options, snapshot);
   const controller = new AbortController();
@@ -881,7 +921,7 @@ it("does not publish if cancellation arrives after the selected consumer resolve
     withDefinitionSources(
       {
         ...options,
-        reader: injectedReader("cancelled", commitB),
+        readers: [injectedReader("cancelled", commitB)],
         signal: controller.signal,
       },
       async (sources) => {
@@ -892,7 +932,7 @@ it("does not publish if cancellation arrives after the selected consumer resolve
   ).rejects.toThrow("cancel before publication");
   expect(
     await withDefinitionSources(
-      { ...options, reader: forbiddenReader(), mode: "offline" },
+      { ...options, readers: [forbiddenReader()], mode: "offline" },
       snapshot,
     ),
   ).toEqual(previous);
@@ -906,7 +946,7 @@ it("cancels while waiting for another writer's lock without touching that writer
     directory,
     repositories,
     directories: [],
-    reader: injectedReader(),
+    readers: [injectedReader()],
   };
   const first = observe(
     withDefinitionSources(options, async (sources) => {
@@ -920,7 +960,7 @@ it("cancels while waiting for another writer's lock without touching that writer
   const reader = forbiddenReader();
   const second = observe(
     withDefinitionSources(
-      { ...options, reader, signal: controller.signal },
+      { ...options, readers: [reader], signal: controller.signal },
       snapshot,
     ),
   );
@@ -942,7 +982,7 @@ it("cancels while waiting for another writer's lock without touching that writer
   }
   expect(
     await withDefinitionSources(
-      { ...options, reader, mode: "offline" },
+      { ...options, readers: [reader], mode: "offline" },
       snapshot,
     ),
   ).toEqual(completed.value);
@@ -955,7 +995,7 @@ it("serializes concurrent writers through consumption and publishes only coheren
   const options = { directory, repositories: twoRepositories, directories: [] };
   const first = observe(
     withDefinitionSources(
-      { ...options, reader: injectedReader("writer-one") },
+      { ...options, readers: [injectedReader("writer-one")] },
       async (sources) => {
         entered.resolve();
         await finish.promise;
@@ -967,7 +1007,7 @@ it("serializes concurrent writers through consumption and publishes only coheren
   const secondReader = injectedReader("writer-two", commitB);
   const thirdReader = injectedReader("writer-three", "c".repeat(40));
   const others = [secondReader, thirdReader].map((reader) =>
-    observe(withDefinitionSources({ ...options, reader }, snapshot)),
+    observe(withDefinitionSources({ ...options, readers: [reader] }, snapshot)),
   );
   try {
     await delay(150);
@@ -997,7 +1037,7 @@ it("serializes concurrent writers through consumption and publishes only coheren
     });
   }
   const offline = await withDefinitionSources(
-    { ...options, reader: forbiddenReader(), mode: "offline" },
+    { ...options, readers: [forbiddenReader()], mode: "offline" },
     snapshot,
   );
   expect(
@@ -1018,7 +1058,7 @@ it.each([false, true])(
       directory,
       repositories: twoRepositories,
       directories: [],
-      reader: injectedReader(),
+      readers: [injectedReader()],
     };
     const previous = hasPrevious
       ? await withDefinitionSources(options, snapshot)
@@ -1035,7 +1075,11 @@ it.each([false, true])(
     const old = new Date(Date.now() - 60_000);
     await utimes(lockDirectory, old, old);
     const reader = forbiddenReader();
-    const offlineOptions = { ...options, reader, mode: "offline" as const };
+    const offlineOptions = {
+      ...options,
+      readers: [reader],
+      mode: "offline" as const,
+    };
     if (hasPrevious) {
       expect(await withDefinitionSources(offlineOptions, snapshot)).toEqual(
         previous,
@@ -1050,7 +1094,7 @@ it.each([false, true])(
       code: "ENOENT",
     });
     const refreshed = await withDefinitionSources(
-      { ...options, reader: injectedReader("recovered", commitB) },
+      { ...options, readers: [injectedReader("recovered", commitB)] },
       snapshot,
     );
     expect(refreshed.agents[0]?.manifest).toContain("recovered");

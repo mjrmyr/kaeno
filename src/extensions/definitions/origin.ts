@@ -6,6 +6,8 @@ const contentHash = z.string().regex(/^[a-f0-9]{64}$/);
 export const definitionOriginSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("repository"),
+    // Historical saved bindings predate named readers; new snapshots always include it.
+    provider: z.string().min(1).optional(),
     repository: z.string().min(1),
     ref: z.string().min(1),
     commit: z.string().regex(/^[a-f0-9]{40,64}$/),

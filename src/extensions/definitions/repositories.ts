@@ -33,8 +33,13 @@ export interface RepositoryReader {
     signal?: AbortSignal,
   ): Promise<{ commit: string }>;
 }
+/** A stable, nonsecret registration name identifies the reader's source/authorization namespace. */
+export interface DefinitionReader extends RepositoryReader {
+  readonly name: string;
+}
 export interface RepositoryDefinitionSource {
   kind: "agents" | "skills";
+  provider: string;
   repository: string;
   ref: string;
   path: string;
@@ -285,12 +290,62 @@ export async function withDefinitionSources<Result>(
     directory: string;
     repositories: readonly RepositoryDefinitionSource[];
     directories: readonly DirectoryDefinitionSource[];
-    reader: RepositoryReader;
+    readers: readonly DefinitionReader[];
     mode?: "refresh" | "offline";
     signal?: AbortSignal;
   },
   consume: (sources: DefinitionSources) => Promise<Result>,
 ): Promise<Result> {
+  const readers = new Map<string, DefinitionReader>();
+  for (const reader of options.readers) {
+    if (!reader.name) {
+      throw new Error("Definitions: reader name must not be empty");
+    }
+    if (readers.has(reader.name)) {
+      throw new Error(`Definitions: duplicate reader "${reader.name}"`);
+    }
+    readers.set(reader.name, reader);
+  }
+  const inputs = new Map<
+    string,
+    | {
+        provider: string;
+        repository: string;
+        ref: string;
+        reader: RepositoryReader;
+      }
+    | { directory: string }
+  >();
+  const repositories = options.repositories.map((source) => {
+    const reader = readers.get(source.provider);
+    if (!reader) {
+      throw new Error(`Definitions: unknown reader "${source.provider}"`);
+    }
+    if (
+      !/^[a-z0-9][a-z0-9_.-]*\/[a-z0-9][a-z0-9_.-]*$/.test(source.repository) ||
+      source.path.startsWith("/") ||
+      source.path.includes("\\") ||
+      source.path
+        .split("/")
+        .some((part) => part === ".." || part === "." || part === ".git")
+    ) {
+      throw new Error(
+        "Definitions: invalid repository identity or discovery path",
+      );
+    }
+    const input = {
+      provider: source.provider,
+      repository: source.repository,
+      ref: source.ref,
+    };
+    const key = digest(JSON.stringify(input));
+    inputs.set(key, { ...input, reader });
+    return { source, key };
+  });
+  for (const item of options.directories) {
+    const input = { directory: item.directory };
+    inputs.set(digest(JSON.stringify(input)), input);
+  }
   const root = join(options.directory, "definitions-v1");
   await mkdir(root, { recursive: true, mode: 0o700 });
   const compromised = new AbortController();
@@ -342,30 +397,6 @@ export async function withDefinitionSources<Result>(
       }),
     );
     const record = join(records, `${recipe}.json`);
-    const inputs = new Map<
-      string,
-      { repository: string; ref: string } | { directory: string }
-    >();
-    for (const item of options.repositories) {
-      if (
-        !/^[a-z0-9][a-z0-9_.-]*\/[a-z0-9][a-z0-9_.-]*$/.test(item.repository) ||
-        item.path.startsWith("/") ||
-        item.path.includes("\\") ||
-        item.path
-          .split("/")
-          .some((part) => part === ".." || part === "." || part === ".git")
-      ) {
-        throw new Error(
-          "Definitions: invalid repository identity or discovery path",
-        );
-      }
-      const input = { repository: item.repository, ref: item.ref };
-      inputs.set(digest(JSON.stringify(input)), input);
-    }
-    for (const item of options.directories) {
-      const input = { directory: item.directory };
-      inputs.set(digest(JSON.stringify(input)), input);
-    }
     const pins: Pin[] = [];
     if (options.mode === "offline") {
       let parsed: z.infer<typeof manifestSchema>;
@@ -406,7 +437,11 @@ export async function withDefinitionSources<Result>(
         await mkdir(destination);
         let commit: string | undefined;
         if ("repository" in input) {
-          const result = await options.reader.read(input, destination, signal);
+          const result = await input.reader.read(
+            { repository: input.repository, ref: input.ref },
+            destination,
+            signal,
+          );
           commit = z
             .string()
             .regex(/^[a-f0-9]{40,64}$/)
@@ -439,10 +474,7 @@ export async function withDefinitionSources<Result>(
       }
     }
     const sources: DefinitionSources = { agents: [], skills: [] };
-    for (const item of options.repositories) {
-      const key = digest(
-        JSON.stringify({ repository: item.repository, ref: item.ref }),
-      );
+    for (const { source: item, key } of repositories) {
       const pin = pins.find((candidate) => candidate.key === key);
       if (!pin?.commit) {
         throw new Error("Definitions: repository input missing");
@@ -456,6 +488,7 @@ export async function withDefinitionSources<Result>(
           recursive: true,
           origin: (path, contentHash) => ({
             kind: "repository",
+            provider: item.provider,
             repository: item.repository,
             ref: item.ref,
             commit,

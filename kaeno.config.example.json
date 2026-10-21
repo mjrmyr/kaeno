@@ -1,10 +1,18 @@
 {
   "sourceDirectory": "./sources",
   "agentRepositories": [
-    "mjrmyr/myriad:5ca19933726862aa706199159b1fe1a02fccf56f"
+    {
+      "provider": "github",
+      "repository": "mjrmyr/myriad",
+      "ref": "5ca19933726862aa706199159b1fe1a02fccf56f"
+    }
   ],
   "skillRepositories": [
-    "mjrmyr/myriad:5ca19933726862aa706199159b1fe1a02fccf56f"
+    {
+      "provider": "github",
+      "repository": "mjrmyr/myriad",
+      "ref": "5ca19933726862aa706199159b1fe1a02fccf56f"
+    }
   ],
   "kaeno": "mjrmyr/myriad:kaeno",
   "workers": ["mjrmyr/myriad:swe"],

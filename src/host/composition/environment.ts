@@ -21,16 +21,14 @@ import {
   type DefinitionPackage,
   type DefinitionSource,
   type Diagnostic,
-  type RepositoryReader,
 } from "../../extensions/definitions/index.ts";
-import { githubRepositoryReader } from "../../extensions/github/index.ts";
 import {
   loadSkills,
   skillsExtension,
   SKILL_TOOLS,
   SkillCatalog,
 } from "../../extensions/skills/index.ts";
-import type { AgentExtension } from "../../extensions/contributions/index.ts";
+import type { InstalledExtension } from "../../extensions/contributions/index.ts";
 import { resolveExtensions, type ContributionPolicy } from "./contributions.ts";
 import {
   parseEnvironmentConfiguration,
@@ -52,12 +50,7 @@ async function packagesFrom(
   const packages: DefinitionPackage[] = [];
   const diagnostics: Diagnostic[] = [];
   const invalidSources: string[] = [];
-  const aliases = new Set<string>();
   for (const source of sources) {
-    if (aliases.has(source.alias)) {
-      throw new Error(`Duplicate definition source alias "${source.alias}"`);
-    }
-    aliases.add(source.alias);
     const snapshot = await source.snapshot(manifest);
     packages.push(...snapshot.packages);
     diagnostics.push(...snapshot.diagnostics);
@@ -71,14 +64,13 @@ async function packagesFrom(
 export interface LoadEnvironmentOptions {
   configFile: string;
   sourceMode?: "refresh" | "offline";
-  repositoryReader?: RepositoryReader;
   agentSources?: readonly DefinitionSource[];
   skillSources?: readonly DefinitionSource[];
   environment?: WorkEnvironment;
   maxDepth?: number;
   maxConcurrent?: number;
   defaultModel?: ModelRef;
-  extensions?: readonly AgentExtension[];
+  extensions?: readonly InstalledExtension[];
   policy?: ContributionPolicy;
   signal?: AbortSignal;
 }
@@ -99,12 +91,36 @@ export async function loadEnvironment(
     JSON.parse(await readFile(configFile, "utf8")),
     configFile,
   );
+  // Reject collisions across configured and injected sources before any acquisition.
+  for (const kind of ["agents", "skills"] as const) {
+    const aliases = [
+      ...config.repositories
+        .filter((source) => source.kind === kind)
+        .map((source) => source.repository),
+      ...config.directories
+        .filter((source) => source.kind === kind)
+        .map((source) => source.alias),
+      ...(kind === "agents"
+        ? (options.agentSources ?? [])
+        : (options.skillSources ?? [])
+      ).map((source) => source.alias),
+    ];
+    const sourceSet = new Set<string>();
+    for (const alias of aliases) {
+      if (sourceSet.has(alias)) {
+        throw new Error(`Duplicate definition source alias "${alias}"`);
+      }
+      sourceSet.add(alias);
+    }
+  }
   return withDefinitionSources(
     {
       directory: config.sourceDirectory,
       repositories: config.repositories,
       directories: config.directories,
-      reader: options.repositoryReader ?? githubRepositoryReader(),
+      readers: (options.extensions ?? []).flatMap(
+        (extension) => extension.definitionReaders ?? [],
+      ),
       mode: options.sourceMode,
       signal: options.signal,
     },
@@ -189,7 +205,9 @@ export async function loadEnvironment(
         assistant,
         extensions: [
           ...standard,
-          ...(options.extensions ?? []).map((extension) => extension.runtime),
+          ...(options.extensions ?? []).flatMap((extension) =>
+            extension.runtime ? [extension.runtime] : [],
+          ),
         ],
         work: {
           agents,

@@ -5,12 +5,15 @@ import {
   type KaenoExtension,
 } from "../../core/application/index.ts";
 import type { AgentDefinition } from "../../extensions/agents/index.ts";
-import type { AgentExtension } from "../../extensions/contributions/index.ts";
+import type {
+  AgentExtension,
+  InstalledExtension,
+} from "../../extensions/contributions/index.ts";
 import { SkillCatalog, skillBinder } from "../../extensions/skills/index.ts";
 
 /** An extension means all its native tools and skill packages. Named selectors restrict policy. */
 export type ContributionSelector =
-  | AgentExtension
+  | InstalledExtension
   | { readonly tools: readonly string[]; readonly skills?: readonly string[] }
   | { readonly tools?: readonly string[]; readonly skills: readonly string[] };
 export interface RolePolicy {
@@ -55,15 +58,17 @@ const privateBindingSchema = bindingSchema.omit({ owner: true }).strict();
 
 /** One composition-local ownership view; it neither defines nor executes tools. */
 export function resolveExtensions(options: {
-  extensions: readonly AgentExtension[];
+  extensions: readonly InstalledExtension[];
   standard: readonly KaenoExtension[];
   sourceSkills: SkillCatalog;
   assistantTools: readonly string[];
   workerTools: readonly string[];
   policy?: ContributionPolicy;
 }): ResolvedExtensions {
-  const { extensions } = options;
-  const installed = new Set(extensions);
+  const installed = new Set(options.extensions);
+  const extensions = options.extensions.filter(
+    (extension): extension is AgentExtension => extension.runtime !== undefined,
+  );
   const names = new Set([
     WORK_EXTENSION,
     "kaeno-channels",
@@ -129,13 +134,16 @@ export function resolveExtensions(options: {
     const selectedTools = new Set<string>();
     const selectedSkills = new Set<string>();
     for (const selector of selectors) {
-      if ("runtime" in selector) {
+      if ("runtime" in selector || "definitionReaders" in selector) {
         if (!installed.has(selector)) {
+          const name =
+            selector.runtime?.durable.name ??
+            selector.definitionReaders?.map((reader) => reader.name).join(", ");
           throw new Error(
-            `Policy references an uninstalled extension: ${selector.runtime.durable.name}`,
+            `Policy references an uninstalled extension: ${name}`,
           );
         }
-        for (const tool of selector.runtime.durable.tools ?? []) {
+        for (const tool of selector.runtime?.durable.tools ?? []) {
           selectedTools.add(tool.name);
         }
         for (const { id } of selector.skills?.list() ?? []) {

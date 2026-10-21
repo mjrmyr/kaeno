@@ -11,6 +11,7 @@ export type { DefinitionOrigin } from "./origin.ts";
 export { withDefinitionSources, definitionTreeHash } from "./repositories.ts";
 export type {
   RepositoryReader,
+  DefinitionReader,
   RepositoryDefinitionSource,
   DirectoryDefinitionSource,
   DefinitionSources,
