@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, readdir, realpath } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { lstat, open, readdir } from "node:fs/promises";
+import { join } from "node:path";
 import type { Diagnostic } from "./manifest.ts";
 import type { DefinitionOrigin } from "./origin.ts";
 
@@ -182,10 +182,7 @@ export function agentSource(
       const diagnostics: Diagnostic[] = [];
       let names: string[];
       try {
-        if (
-          !(await lstat(root)).isDirectory() ||
-          (await realpath(root)) !== resolve(root)
-        ) {
+        if (!(await lstat(root)).isDirectory()) {
           throw new Error(
             `${root}: agent root must be a directory without links`,
           );

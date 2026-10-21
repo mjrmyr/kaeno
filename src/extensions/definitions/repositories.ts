@@ -9,11 +9,10 @@ import {
   open,
   readFile,
   readdir,
-  realpath,
   rename,
   rm,
 } from "node:fs/promises";
-import { join, relative, resolve, sep } from "node:path";
+import { join, relative, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { lock } from "proper-lockfile";
 import { z } from "zod";
@@ -481,13 +480,6 @@ export async function withDefinitionSources<Result>(
             absent = true;
           }
           if (!absent) {
-            if (
-              (await realpath(input.directory)) !== resolve(input.directory)
-            ) {
-              throw new Error(
-                "Definitions: linked local input ancestors are not supported",
-              );
-            }
             const before = await definitionTreeHash(input.directory, signal);
             await copyDirectory(input.directory, destination, signal);
             if (

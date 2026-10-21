@@ -731,6 +731,38 @@ it.each(["symlink", "fifo"] as const)(
   },
 );
 
+it("captures local agents below a linked ancestor but rejects a linked input root", async () => {
+  const { root, directory } = await fixture();
+  await put(
+    root,
+    "real/agents/reviewer.md",
+    "---\nname: reviewer\ndescription: Review\n---\nlocal\n",
+  );
+  // Ancestors belong to the operator (e.g. macOS /var -> /private/var).
+  await symlink(join(root, "real"), join(root, "alias"));
+  function options(local: string) {
+    return {
+      directory,
+      repositories: [],
+      directories: [
+        { kind: "agents" as const, alias: "local", directory: local },
+      ],
+      readers: [forbiddenReader()],
+    };
+  }
+  const captured = await withDefinitionSources(
+    options(join(root, "alias/agents")),
+    snapshot,
+  );
+  expect(captured.agents.map((agent) => agent.manifest)).toEqual([
+    "---\nname: reviewer\ndescription: Review\n---\nlocal\n",
+  ]);
+  await symlink(join(root, "real/agents"), join(root, "linked"));
+  await expect(
+    withDefinitionSources(options(join(root, "linked")), snapshot),
+  ).rejects.toThrow(/links\/special/);
+});
+
 it.each([
   "../escape",
   "/absolute",
