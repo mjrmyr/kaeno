@@ -2,7 +2,10 @@
 // start child WORK up to maxDepth. Communication follows parent↔child edges only: messages go down, messages and
 // reports go up. Every agent may delegate to every agent in the plan frozen at root admission.
 import { copyJson, type Context, type JsonValue } from "@earendil-works/chord";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import {
+  BACKGROUND_CONTEXT,
+  withAbortSignal,
+} from "@earendil-works/chord/context";
 import { Type } from "@earendil-works/pi-ai";
 import {
   AssistantEntry,
@@ -188,6 +191,8 @@ export interface WorkSettings {
   /** Agents WORK may start, fit-checked once when Kaeno opens. */
   agents: readonly AgentProfile[];
   environment?: WorkEnvironment;
+  /** Operational failures that do not prevent durable reporting or cleanup retries. */
+  onReport?: (error: unknown) => void;
   /** The approved worker surface: tools agents may select, and installed binding owners. */
   surface: () => SetupSurface;
   maxDepth: number;
@@ -444,10 +449,6 @@ export class Work {
           await (
             await runtime.conversation(conversation, context)
           )?.abort(context);
-          await this.settings.environment?.release(
-            { workId: task.id, conversationId: conversation },
-            this.harness(),
-          );
           const label = `Work #${task.id} (${title})`;
           await this.deliverReport(
             runtime,
@@ -467,6 +468,13 @@ export class Work {
             },
             context,
           );
+          // The report and terminal outcome are durable before best-effort
+          // deletion. A crash/hung backend cannot strand the captured report;
+          // reconciliation retries any reservation left behind.
+          await this.releaseEnvironment({
+            workId: task.id,
+            conversationId: conversation,
+          });
         },
       },
       abort: async (task, runtime, context) => {
@@ -482,10 +490,6 @@ export class Work {
           await (
             await runtime.conversation(conversation.id, context)
           )?.abort(context);
-          await this.settings.environment?.release(
-            { workId: task.id, conversationId: conversation.id },
-            this.harness(),
-          );
         }
         await runtime.commit(async (tx) => {
           if (readParent(task.input.parent).kind === "chat") {
@@ -495,6 +499,12 @@ export class Work {
           }
           return { status: "terminal", outcome: { status: "aborted" } };
         }, context);
+        if (conversation) {
+          await this.releaseEnvironment({
+            workId: task.id,
+            conversationId: conversation.id,
+          });
+        }
       },
     });
     const start = defineTool({
@@ -1152,6 +1162,79 @@ export class Work {
       );
       return;
     }
+    const check = this.settings.environment?.check;
+    if (!check) {
+      return this.watchWork(workId, brief, conversationId, runtime, context);
+    }
+    const stopping = new AbortController();
+    const signal = context.abortSignal
+      ? AbortSignal.any([context.abortSignal, stopping.signal])
+      : stopping.signal;
+    const scoped = withAbortSignal(signal, context);
+    const watching = this.watchWork(
+      workId,
+      brief,
+      conversationId,
+      runtime,
+      scoped,
+    );
+    const monitoring = (async () => {
+      for (;;) {
+        signal.throwIfAborted();
+        let reason: string | undefined;
+        try {
+          reason = await check.call(
+            this.settings.environment,
+            { workId, conversationId },
+            this.harness(),
+            scoped,
+          );
+        } catch (error) {
+          signal.throwIfAborted();
+          this.reportOperationalError(error);
+        }
+        if (reason !== undefined) {
+          return reason;
+        }
+        await runtime.sleep(runtime.now() + 5000, scoped);
+      }
+    })();
+    let lost: string | undefined;
+    try {
+      lost = await Promise.race([watching.then(() => undefined), monitoring]);
+    } finally {
+      stopping.abort();
+      // Never leave a losing wait/health request running after a phase transition,
+      // shutdown or cancellation. Scoped abort does not abort the conversation itself.
+      await Promise.allSettled([watching, monitoring]);
+    }
+    context.abortSignal?.throwIfAborted();
+    runtime.signal.throwIfAborted();
+    if (lost !== undefined) {
+      await runtime.commit((_tx, current) => {
+        // A final answer or parent message may have won the race with detection.
+        if (current.state.checkpoint.phase !== "supervise") {
+          return undefined;
+        }
+        return {
+          status: "running",
+          checkpoint: {
+            phase: "report",
+            conversation: conversationId,
+            text: `Work failed: environment unavailable: ${lost}`,
+            failed: true,
+          },
+        };
+      }, context);
+    }
+  }
+  private async watchWork(
+    workId: TaskId,
+    brief: string,
+    conversationId: ConversationId,
+    runtime: WorkTaskRuntime,
+    context: Context,
+  ): Promise<void> {
     const conversation = await requireConversation(
       runtime,
       conversationId,
@@ -1267,6 +1350,29 @@ export class Work {
         );
       }
       await runtime.sleep(runtime.now() + 250, context);
+    }
+  }
+  private reportOperationalError(error: unknown): void {
+    // An observer is not part of the durable state transition. Even a broken
+    // logger must not turn an already captured report into a failed task.
+    try {
+      this.settings.onReport?.(error);
+    } catch {
+      // Resource reservations remain durable and the reconciler will retry.
+    }
+  }
+  private async releaseEnvironment(work: WorkInstance): Promise<void> {
+    try {
+      await this.settings.environment?.release(work, this.harness());
+    } catch (error) {
+      this.reportOperationalError(
+        new Error(
+          `WORK #${work.workId} resource cleanup deferred to reconciliation`,
+          {
+            cause: error,
+          },
+        ),
+      );
     }
   }
   private async deliverReport(

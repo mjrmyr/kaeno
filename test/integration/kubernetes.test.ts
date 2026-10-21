@@ -98,6 +98,8 @@ function cluster() {
   let ready = true;
   let postStatus = 201;
   let deleting = false;
+  let rejectDelete: string | undefined;
+  let statusReason: string | undefined;
   let token = "cluster-secret";
   const runtimeClasses = new Map<string, Record<string, string>>();
   const requests: { method: string; path: string; body: string }[] = [];
@@ -136,6 +138,9 @@ function cluster() {
     }
     const name = path.split("/").at(-1) ?? "";
     if (method === "DELETE") {
+      if (name === rejectDelete) {
+        return new Response(null, { status: 403 });
+      }
       if (!deleting) {
         pods.delete(name);
       }
@@ -146,6 +151,7 @@ function cluster() {
         ...pod,
         status: {
           phase: status,
+          reason: statusReason,
           conditions: ready ? [{ type: "Ready", status: "True" }] : [],
           containerStatuses: waitingReason
             ? [{ name: "envd", state: { waiting: { reason: waitingReason } } }]
@@ -174,8 +180,12 @@ function cluster() {
     quota: (value: typeof quota) => {
       quota = value;
     },
-    status: (value: string) => {
+    status: (value: string, reason?: string) => {
       status = value;
+      statusReason = reason;
+    },
+    rejectDelete: (name?: string) => {
+      rejectDelete = name;
     },
     waiting: (reason: string) => {
       waitingReason = reason;
@@ -375,6 +385,139 @@ it.each(["Running", "Succeeded", "Failed"])(
     ).toHaveLength(1);
   },
 );
+
+it.each(["Succeeded", "Failed"])(
+  "detects an expired/stopped sandbox without recreating it (%s)",
+  async (phase) => {
+    const rig = await fixture();
+    const work = await rig.work();
+    await rig.environment.ensure(work, rig.harness, context);
+    expect(
+      await rig.environment.check?.(work, rig.harness, context),
+    ).toBeUndefined();
+    rig.server.status(
+      phase,
+      phase === "Failed" ? "DeadlineExceeded" : undefined,
+    );
+    expect(await rig.environment.check?.(work, rig.harness, context)).toContain(
+      phase === "Failed" ? "DeadlineExceeded" : "Succeeded",
+    );
+    await expect(
+      rig.environment.ensure(work, rig.harness, context),
+    ).rejects.toThrow(/failed:/);
+    expect(
+      rig.server.requests.filter((request) => request.method === "POST"),
+    ).toHaveLength(1);
+  },
+);
+
+it("fails rather than recreating a lost admitted workspace on supervision reentry", async () => {
+  const rig = await fixture();
+  const work = await rig.work();
+  await rig.environment.ensure(work, rig.harness, context);
+  rig.server.pods.clear();
+  expect(await rig.environment.check?.(work, rig.harness, context)).toContain(
+    "cannot be restored",
+  );
+  await expect(
+    rig.environment.ensure(work, rig.harness, context),
+  ).rejects.toThrow("cannot be restored");
+  expect(
+    rig.server.requests.filter((request) => request.method === "POST"),
+  ).toHaveLength(1);
+  await rig.environment.release(work, rig.harness);
+});
+
+it("does not misclassify API or identity errors as confirmed sandbox loss", async () => {
+  const rig = await fixture();
+  const work = await rig.work();
+  await rig.environment.ensure(work, rig.harness, context);
+  rig.server.api.mockRejectedValueOnce(new Error("API unavailable"));
+  await expect(
+    rig.environment.check?.(work, rig.harness, context),
+  ).rejects.toThrow("API unavailable");
+  const pod = [...rig.server.pods.values()][0];
+  pod.metadata.annotations["kaeno.io/token-sha256"] = "different";
+  await expect(
+    rig.environment.check?.(work, rig.harness, context),
+  ).rejects.toThrow("identity mismatch");
+  expect(
+    rig.server.requests.filter((request) => request.method === "DELETE"),
+  ).toHaveLength(0);
+});
+
+it.each(["api", "identity"])(
+  "continues cleanup past a failed reservation without bypassing its %s guard",
+  async (mode) => {
+    const rig = await fixture();
+    rig.server.quota({ pods: "2" });
+    const first = await rig.work();
+    const second = await rig.work();
+    await rig.environment.ensure(first, rig.harness, context);
+    await rig.environment.ensure(second, rig.harness, context);
+    const firstName = `owner-work-${first.workId}`;
+    if (mode === "api") {
+      rig.server.rejectDelete(firstName);
+    } else {
+      const pod = rig.server.pods.get(firstName);
+      if (!pod) {
+        throw new Error("Missing first sandbox");
+      }
+      pod.metadata.annotations["kaeno.io/token-sha256"] = "different";
+    }
+    rig.harness.resume();
+    await rig.harness.waitForTask(first.workId, context);
+    await rig.harness.waitForTask(second.workId, context);
+    await expect(rig.environment.reconcile([], rig.harness)).rejects.toThrow(
+      "Kubernetes sandbox reconciliation failed",
+    );
+    expect([...rig.server.pods.keys()]).toEqual([firstName]);
+    if (mode === "api") {
+      rig.server.rejectDelete();
+      await rig.environment.reconcile([], rig.harness);
+      await rig.environment.reconcile([], rig.harness);
+      expect(rig.server.pods.size).toBe(0);
+    } else {
+      // An orphan sweep must not bypass the failed reservation identity check.
+      expect(
+        rig.server.requests.filter(
+          (request) =>
+            request.method === "DELETE" && request.path.endsWith(firstName),
+        ),
+      ).toHaveLength(0);
+    }
+  },
+);
+
+it("continues orphan cleanup after one deletion fails, then retries", async () => {
+  const rig = await fixture();
+  const work = await rig.work();
+  await rig.environment.ensure(work, rig.harness, context);
+  const original = [...rig.server.pods.values()][0];
+  for (const name of ["orphan-one", "orphan-two"]) {
+    rig.server.pods.set(name, {
+      ...original,
+      metadata: {
+        ...original.metadata,
+        name,
+        annotations: {
+          ...original.metadata.annotations,
+          "kaeno.io/work": "999999",
+        },
+      },
+    });
+  }
+  rig.server.rejectDelete("orphan-one");
+  await expect(rig.environment.reconcile([work], rig.harness)).rejects.toThrow(
+    "Kubernetes sandbox reconciliation failed",
+  );
+  expect(rig.server.pods.has("orphan-one")).toBe(true);
+  expect(rig.server.pods.has("orphan-two")).toBe(false);
+  expect(rig.server.pods.has(`owner-work-${work.workId}`)).toBe(true);
+  rig.server.rejectDelete();
+  await rig.environment.reconcile([work], rig.harness);
+  expect([...rig.server.pods.keys()]).toEqual([`owner-work-${work.workId}`]);
+});
 
 it.each([400, 404, 500])(
   "propagates POST %i immediately without readiness polling or credential disclosure",
@@ -776,6 +919,16 @@ it("reopens SQLite, adopts saved pod/token/image, and rejects retargeting saved 
   await expect(
     retargeted.environment.reconcile([work], reopened),
   ).rejects.toThrow("differs");
+  rig.server.pods.clear();
+  expect(
+    await replacement.environment.check?.(work, reopened, context),
+  ).toContain("cannot be restored");
+  await expect(
+    replacement.environment.ensure(work, reopened, context),
+  ).rejects.toThrow("cannot be restored");
+  expect(
+    rig.server.requests.filter((request) => request.method === "POST"),
+  ).toHaveLength(1);
   await replacement.environment.release(work, reopened);
 });
 
@@ -829,6 +982,43 @@ it("loads explicit configuration with relative token paths and uses the real HTT
   ]);
   const rig = await fixture();
   await loaded.environment.reconcile([], rig.harness);
+});
+
+it("reports startup cleanup errors without blocking recovery and retries on the periodic sweep", async () => {
+  const error = new Error("cleanup API unavailable");
+  const reconcile = vi
+    .fn<() => Promise<void>>()
+    .mockRejectedValueOnce(error)
+    .mockResolvedValue(undefined);
+  const onReport = vi.fn<(error: unknown) => void>();
+  vi.useFakeTimers();
+  const core = await openKaeno({
+    storage: new MemoryStorage(),
+    models: createModels(),
+    assistant: {
+      model: { provider: "faux", modelId: "faux-1" },
+      instructions: "CHAT",
+    },
+    work: {
+      agents: [],
+      tools: [],
+      environment: {
+        identity: "test:cleanup",
+        cwd: "/workspace",
+        ensure: async () => {},
+        release: async () => {},
+        executionEnvironment: async () => undefined,
+        reconcile,
+      },
+    },
+    onReport,
+  });
+  cleanups.push(() => core.close());
+  expect(onReport).toHaveBeenCalledWith(error);
+  expect(reconcile).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(5 * 60_000);
+  expect(reconcile).toHaveBeenCalledTimes(2);
+  expect(onReport).toHaveBeenCalledTimes(1);
 });
 
 it("runs WORK through a pod execution environment and rejects child admission when quota is full", async () => {
