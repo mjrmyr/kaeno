@@ -38,9 +38,9 @@ async function fixture(
 ): Promise<{ root: string; configFile: string }> {
   const root = await mkdtemp(join(tmpdir(), "kaeno-environment-"));
   roots.push(root);
-  await put(join(root, "agents/coordinator/AGENT.md"), agent("coordinator"));
+  await put(join(root, "agents/coordinator.md"), agent("coordinator"));
   await put(
-    join(root, "agents/swe/AGENT.md"),
+    join(root, "agents/swe.md"),
     agent("swe", "model: openai/worker\nskills: [local:*]\n"),
   );
   await put(join(root, "skills/guide/SKILL.md"), skill("guide"));
@@ -180,7 +180,7 @@ it.each([
   async ({ skills, expected }) => {
     const { root, configFile } = await fixture();
     await put(
-      join(root, "agents/coordinator/AGENT.md"),
+      join(root, "agents/coordinator.md"),
       agent("coordinator", `model: openai/test\n${skills}`),
     );
     const config = await loadEnvironment({ configFile });
@@ -207,7 +207,7 @@ it.each(["[]", "[list_work]"])(
   async (tools) => {
     const { root, configFile } = await fixture();
     await put(
-      join(root, "agents/coordinator/AGENT.md"),
+      join(root, "agents/coordinator.md"),
       agent("coordinator", `model: openai/test\ntools: ${tools}\n`),
     );
     expect((await loadEnvironment({ configFile })).assistant.tools).toEqual(
@@ -218,7 +218,7 @@ it.each(["[]", "[list_work]"])(
 it("rejects explicit worker tools outside the approved policy before opening core", async () => {
   const { root, configFile } = await fixture();
   await put(
-    join(root, "agents/swe/AGENT.md"),
+    join(root, "agents/swe.md"),
     agent("swe", "model: openai/test\ntools: [missing_tool]\n"),
   );
   await expect(loadEnvironment({ configFile })).rejects.toThrow(
@@ -227,7 +227,7 @@ it("rejects explicit worker tools outside the approved policy before opening cor
 });
 it("does not inherit a worker model from the assistant", async () => {
   const { root, configFile } = await fixture();
-  await put(join(root, "agents/swe/AGENT.md"), agent("swe", ""));
+  await put(join(root, "agents/swe.md"), agent("swe", ""));
   await expect(loadEnvironment({ configFile })).rejects.toThrow(
     "Agent local:swe is unavailable: no model",
   );
@@ -241,7 +241,7 @@ it("does not inherit a worker model from the assistant", async () => {
 });
 it("reports unused malformed definitions but refuses selecting them or wildcard-dropping malformed skills", async () => {
   const { root, configFile } = await fixture({ workers: [] });
-  await put(join(root, "agents/invalid/AGENT.md"), "invalid");
+  await put(join(root, "agents/invalid.md"), "invalid");
   await put(join(root, "skills/invalid/SKILL.md"), "invalid");
   const config = await loadEnvironment({ configFile });
   expect(config.diagnostics).toHaveLength(2);
@@ -257,7 +257,7 @@ it("reports unused malformed definitions but refuses selecting them or wildcard-
     }),
   );
   await put(
-    join(root, "agents/coordinator/AGENT.md"),
+    join(root, "agents/coordinator.md"),
     agent("coordinator", "model: openai/test\nskills: [local:*]\n"),
   );
   await expect(loadEnvironment({ configFile })).rejects.toThrow(
@@ -319,7 +319,7 @@ it("normalizes repository declarations, config-relative paths and identical cros
       provider: "github",
       repository: "owner/repo",
       ref: "release",
-      path: "",
+      path: "agents",
     },
     {
       kind: "skills",
@@ -401,7 +401,7 @@ it.each([
   async ({ tools, expected }) => {
     const { root, configFile } = await fixture();
     await put(
-      join(root, "agents/swe/AGENT.md"),
+      join(root, "agents/swe.md"),
       agent("swe", `model: openai/worker\n${tools}`),
     );
     const config = await loadEnvironment({
@@ -419,3 +419,102 @@ it.each([
     expect(config.assistant.tools).not.toContain("browser_snapshot");
   },
 );
+
+it("diagnoses legacy agents without loading them, and freezes prior resolved setups across refresh/removal", async () => {
+  const { root, configFile } = await fixture();
+  const first = await loadEnvironment({ configFile });
+  const frozen = structuredClone(first.work.agents);
+  await put(join(root, "agents/swe/AGENT.md"), agent("swe"));
+  const mixed = await loadEnvironment({ configFile });
+  expect(mixed.work.agents[0].id).toBe("local:swe");
+  expect(mixed.diagnostics.map((item) => item.message).join("\n")).toContain(
+    "legacy agent package",
+  );
+  await put(
+    join(root, "agents/swe.md"),
+    agent("swe", "model: openai/changed\ntools: []\nskills: []\n"),
+  );
+  const changed = await loadEnvironment({ configFile });
+  expect(changed.work.agents[0].setup.model).toEqual({
+    provider: "openai",
+    modelId: "changed",
+  });
+  expect(first.work.agents).toEqual(frozen);
+  await rm(join(root, "agents/swe.md"));
+  await expect(loadEnvironment({ configFile })).rejects.toThrow(
+    /local:swe.*legacy agent package/,
+  );
+  // Failed refresh cannot replace the last complete set or resurrect the deleted live agent.
+  const offline = await loadEnvironment({ configFile, sourceMode: "offline" });
+  expect(offline.work.agents).toEqual(changed.work.agents);
+});
+it("validates injected agent file/name agreement with no filesystem lookup", async () => {
+  const { configFile } = await fixture({ workers: ["native:scout"] });
+  await expect(
+    loadEnvironment({
+      configFile,
+      agentSources: [
+        {
+          alias: "native",
+          async snapshot() {
+            return {
+              documents: [
+                {
+                  source: "native",
+                  manifestPath: "/not/read/reviewer.md",
+                  manifest: agent("scout"),
+                },
+              ],
+              diagnostics: [],
+            };
+          },
+        },
+      ],
+    }),
+  ).rejects.toThrow(/expected filename "scout.md"/);
+});
+it.each([undefined, "", "custom/flat"])(
+  "keeps omitted agent roots distinct from explicit roots (%s)",
+  (path) => {
+    const config = parseEnvironmentConfiguration(
+      {
+        sourceDirectory: "./sources",
+        agentRepositories: [
+          {
+            provider: "github",
+            repository: "owner/repo",
+            ...(path === undefined ? {} : { path }),
+          },
+        ],
+        skillRepositories: [{ provider: "github", repository: "owner/repo" }],
+        kaeno: "owner/repo:kaeno",
+      },
+      "/tmp/config.json",
+    );
+    expect(config.repositories.map((item) => item.path)).toEqual([
+      path ?? "agents",
+      "",
+    ]);
+  },
+);
+
+it("captures absence of an unselected local agent root without consulting it offline", async () => {
+  const { root, configFile } = await fixture({
+    localDefinitions: {
+      agents: [
+        { alias: "local", directory: "./agents" },
+        { alias: "optional", directory: "./missing" },
+      ],
+      skills: [{ alias: "local", directory: "./skills" }],
+    },
+  });
+  const first = await loadEnvironment({ configFile });
+  expect(first.diagnostics).toEqual([
+    { location: join(root, "missing"), message: "Agent root is missing" },
+  ]);
+  await put(join(root, "missing/new.md"), agent("new"));
+  const offline = await loadEnvironment({ configFile, sourceMode: "offline" });
+  expect(offline.diagnostics).toEqual(first.diagnostics);
+  expect(offline.work.agents).toEqual(first.work.agents);
+  expect((await loadEnvironment({ configFile })).diagnostics).toEqual([]);
+});

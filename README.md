@@ -78,3 +78,39 @@ No browser proxy service or opt-in environment variable is required. See
 [browser MCP prerequisites and lifecycle](docs/browser-mcp.md) for the existing WORK network
 boundary, its limitations, and sandboxed Chromium runtime requirements. No deployment security
 settings are relaxed automatically.
+
+## Flat agent records and rollout
+
+Agent sources contain immediate `agents/<name>.md` records, not
+`agents/<name>/AGENT.md` packages. The filename stem must exactly match the parsed
+frontmatter `name`; IDs stay `<source>:<name>`. Keep README material outside the
+agent root. Legacy packages are diagnosed but never loaded. Skills keep their
+existing `SKILL.md` directory-package discovery and assets.
+
+For agent repositories, omitted `path` defaults to `agents`; an explicit path
+(including `""` for the repository root) is the exact, nonrecursive root. Local
+agent directories are already exact roots. Injected agent sources now return
+`AgentDocument` records (`manifestPath`, `manifest`, `source`) from `snapshot()`.
+New agent origins use the actual file path and SHA-256 of exact file bytes; old
+saved origins remain valid audit records with their original directory/tree-hash
+meaning. Saved WORK definitions, children and skill bytes are not re-resolved.
+
+This is the strict-reader implementation of [PR36](https://github.com/mjrmyr/kaeno/pull/36).
+Roll out only as a coordinated release:
+
+1. Build a compatible runtime and validate Myriad's flattened agent commit.
+2. Before either incompatible `main` change can reach a live consumer, verify and
+   gate the actual deployment state. Homelab currently follows Myriad `main` in
+   both lists; do not rely on its README's suspension claim as a verified gate.
+3. In a separately authorized Homelab change, pin **both** `agentRepositories`
+   and `skillRepositories` to that same flattened Myriad commit, together with the
+   compatible real image digest in both host and sandbox image settings.
+4. Refresh successfully before using offline mode. Legacy completed cache loads
+   require refresh under the new flat discovery policy; old immutable trees and
+   completed records are retained, never silently reinterpreted or purged.
+5. Verify selected IDs, concrete skills, file origins, offline reload and saved
+   WORK recovery before deployment. Rollback restores the old runtime **and**
+   old Myriad pin/config together; no database migration is required.
+
+These changes do not merge, deploy or alter Homelab pins. CI image-build checks
+are not a production rollout.

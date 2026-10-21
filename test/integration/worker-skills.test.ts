@@ -24,15 +24,15 @@ it.each([false, true])(
     }
     try {
       await put(
-        ".agents/agents/kaeno/AGENT.md",
+        ".agents/agents/kaeno.md",
         "---\nname: kaeno\ndescription: Assistant\nmodel: faux/faux-1\n---\nCHAT",
       );
       await put(
-        ".agents/agents/parent/AGENT.md",
+        ".agents/agents/parent.md",
         "---\nname: parent\ndescription: Coordinator\n---\nPARENT",
       );
       await put(
-        ".agents/agents/leaf/AGENT.md",
+        ".agents/agents/leaf.md",
         `---\nname: leaf\ndescription: Leaf\nskills: [${assigned ? "guide, hidden" : ""}]\n---\nLEAF`,
       );
       await put(

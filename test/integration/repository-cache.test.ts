@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import {
   chmod,
@@ -85,7 +86,7 @@ async function put(root: string, path: string, content: string | Uint8Array) {
 async function exportDefinitions(destination: string, version = "first") {
   await put(
     destination,
-    "agents/reviewer/AGENT.md",
+    "agents/reviewer.md",
     `---\nname: reviewer\ndescription: Review\n---\n${version}\n`,
   );
   await put(
@@ -122,19 +123,25 @@ function forbiddenReader() {
 }
 
 async function snapshot(sources: DefinitionSources) {
-  async function kind(name: "agents" | "skills", manifest: string) {
-    const packages: DefinitionPackage[] = [];
-    for (const source of sources[name]) {
-      const result = await source.snapshot(manifest);
-      expect(result.diagnostics).toEqual([]);
-      packages.push(...result.packages);
-    }
-    return packages;
+  const agents = [];
+  const skills: DefinitionPackage[] = [];
+  for (const source of sources.agents) {
+    const result = await source.snapshot();
+    expect(result.diagnostics).toEqual([]);
+    agents.push(...result.documents);
   }
-  return {
-    agents: await kind("agents", "AGENT.md"),
-    skills: await kind("skills", "SKILL.md"),
-  };
+  for (const source of sources.skills) {
+    const result = await source.snapshot("SKILL.md");
+    expect(result.diagnostics).toEqual([]);
+    skills.push(...result.packages);
+  }
+  return { agents, skills };
+}
+
+async function fileHash(path: string) {
+  return createHash("sha256")
+    .update(await readFile(path))
+    .digest("hex");
 }
 
 async function localGit(root: string) {
@@ -195,13 +202,13 @@ function launchPausedWriter(directory: string, marker: string) {
       directories: [],
       readers: [{ name: "github", async read(request, destination) {
         const kind = request.repository === "owner/other" ? "skills" : "agents";
-        const packageDirectory = join(destination, kind, "child");
+        const packageDirectory = join(destination, kind, ...(kind === "skills" ? ["child"] : []));
         await mkdir(packageDirectory, { recursive: true });
-        await writeFile(join(packageDirectory, kind === "skills" ? "SKILL.md" : "AGENT.md"), "unpublished child version");
+        await writeFile(join(packageDirectory, kind === "skills" ? "SKILL.md" : "child.md"), "unpublished child version");
         return { commit: ${JSON.stringify(commitB)} };
       } }],
     }, async (sources) => {
-      for (const source of sources.agents) await source.snapshot("AGENT.md");
+      for (const source of sources.agents) await source.snapshot();
       for (const source of sources.skills) await source.snapshot("SKILL.md");
       await writeFile(${JSON.stringify(marker)}, "ready");
       await new Promise(() => { setInterval(() => {}, 1000); });
@@ -302,8 +309,8 @@ it("deduplicates a real Git export across kinds and preserves commit, package pr
     repository: "owner/definitions",
     ref: "HEAD",
     commit: firstCommit,
-    path: "agents/reviewer",
-    contentHash: await definitionTreeHash(agent.directory),
+    path: "agents/reviewer.md",
+    contentHash: await fileHash(agent.manifestPath),
   });
   expect(skill.origin).toEqual({
     kind: "repository",
@@ -327,10 +334,10 @@ it("deduplicates a real Git export across kinds and preserves commit, package pr
     (await lstat(join(skill.directory, "assets/blob.bin"))).mode & 0o222,
   ).toBe(0);
   await expect(
-    lstat(join(dirname(dirname(agent.directory)), ".git")),
+    lstat(join(dirname(dirname(agent.manifestPath)), ".git")),
   ).rejects.toMatchObject({ code: "ENOENT" });
 
-  await put(repository, "agents/reviewer/AGENT.md", "second commit\n");
+  await put(repository, "agents/reviewer.md", "second commit\n");
   await git(["add", "."]);
   await git(["commit", "-m", "second"]);
   const secondCommit = await git(["rev-parse", "HEAD"]);
@@ -351,7 +358,7 @@ it("deduplicates a real Git export across kinds and preserves commit, package pr
 it("captures local inputs once across kinds and serves captured bytes after the live input disappears", async () => {
   const { root, directory } = await fixture();
   const local = join(root, "local");
-  await put(local, "reviewer/AGENT.md", "local agent");
+  await put(local, "reviewer.md", "local agent");
   await put(local, "reviewer/SKILL.md", "local skill");
   await put(local, "reviewer/blob.bin", binary);
   await chmod(join(local, "reviewer/blob.bin"), 0o700);
@@ -367,26 +374,31 @@ it("captures local inputs once across kinds and serves captured bytes after the 
     readers: [reader],
   };
   const captured = await withDefinitionSources(options, async (sources) => {
-    await put(local, "reviewer/AGENT.md", "mutated after capture");
+    await put(local, "reviewer.md", "mutated after capture");
     return snapshot(sources);
   });
   const agent = at(captured.agents, 0);
   expect(agent.manifest).toBe("local agent");
-  expect(agent.directory).not.toBe(join(local, "reviewer"));
-  expect(agent.directory).toBe(captured.skills[0]?.directory);
+  expect(agent.manifestPath).not.toBe(join(local, "reviewer.md"));
+  expect(dirname(agent.manifestPath)).toBe(
+    dirname(at(captured.skills, 0).directory),
+  );
   expect(agent.origin).toEqual({
     kind: "directory",
     source: "work",
-    path: join(local, "reviewer"),
-    contentHash: await definitionTreeHash(agent.directory),
+    path: join(local, "reviewer.md"),
+    contentHash: await fileHash(agent.manifestPath),
   });
   expect(captured.skills[0]?.origin).toMatchObject({
     kind: "directory",
     source: "tools",
   });
-  expect(await readFile(join(agent.directory, "blob.bin"))).toEqual(binary);
   expect(
-    (await lstat(join(agent.directory, "blob.bin"))).mode & 0o111,
+    await readFile(join(at(captured.skills, 0).directory, "blob.bin")),
+  ).toEqual(binary);
+  expect(
+    (await lstat(join(at(captured.skills, 0).directory, "blob.bin"))).mode &
+      0o111,
   ).not.toBe(0);
   await rm(local, { recursive: true });
   expect(
@@ -399,8 +411,8 @@ it("requires an exact offline recipe, including kind, root path, alias and absol
   const { root, directory } = await fixture();
   const local = join(root, "local");
   const otherLocal = join(root, "other-local");
-  await put(local, "reviewer/AGENT.md", "same bytes");
-  await put(otherLocal, "reviewer/AGENT.md", "same bytes");
+  await put(local, "reviewer.md", "same bytes");
+  await put(otherLocal, "reviewer.md", "same bytes");
   const directories = [
     { kind: "agents" as const, alias: "local", directory: local },
   ];
@@ -449,10 +461,9 @@ it("requires an exact offline recipe, including kind, root path, alias and absol
     readers: [injectedReader("second", commitB)],
   };
   const otherRoot = await withDefinitionSources(otherRootOptions, snapshot);
-  expect(otherRoot.agents[0]?.origin).toMatchObject({
-    path: "agents/reviewer",
-    commit: commitB,
-  });
+  // Explicit repository root is exact: nested agents/reviewer.md is not discovered.
+  expect(otherRoot.agents).toHaveLength(1);
+  expect(otherRoot.agents[0]?.origin).toMatchObject({ kind: "directory" });
   expect(
     await withDefinitionSources(
       { ...otherRootOptions, readers: [reader], mode: "offline" },
@@ -691,10 +702,12 @@ it.each(["symlink", "fifo"] as const)(
   async (unsafe) => {
     const { root, directory } = await fixture();
     const local = join(root, "local");
-    await put(local, "reviewer/AGENT.md", "local");
+    await put(local, "reviewer.md", "local");
     if (unsafe === "symlink") {
-      await symlink("AGENT.md", join(local, "reviewer/link"));
+      await mkdir(join(local, "reviewer"));
+      await symlink("../reviewer.md", join(local, "reviewer/link"));
     } else {
+      await mkdir(join(local, "reviewer"));
       await execute("mkfifo", [join(local, "reviewer/pipe")]);
     }
     const reader = forbiddenReader();
@@ -717,6 +730,38 @@ it.each(["symlink", "fifo"] as const)(
     expect(reader.read).not.toHaveBeenCalled();
   },
 );
+
+it("captures local agents below a linked ancestor but rejects a linked input root", async () => {
+  const { root, directory } = await fixture();
+  await put(
+    root,
+    "real/agents/reviewer.md",
+    "---\nname: reviewer\ndescription: Review\n---\nlocal\n",
+  );
+  // Ancestors belong to the operator (e.g. macOS /var -> /private/var).
+  await symlink(join(root, "real"), join(root, "alias"));
+  function options(local: string) {
+    return {
+      directory,
+      repositories: [],
+      directories: [
+        { kind: "agents" as const, alias: "local", directory: local },
+      ],
+      readers: [forbiddenReader()],
+    };
+  }
+  const captured = await withDefinitionSources(
+    options(join(root, "alias/agents")),
+    snapshot,
+  );
+  expect(captured.agents.map((agent) => agent.manifest)).toEqual([
+    "---\nname: reviewer\ndescription: Review\n---\nlocal\n",
+  ]);
+  await symlink(join(root, "real/agents"), join(root, "linked"));
+  await expect(
+    withDefinitionSources(options(join(root, "linked")), snapshot),
+  ).rejects.toThrow(/links\/special/);
+});
 
 it.each([
   "../escape",
@@ -842,13 +887,13 @@ it("rejects invalid resolved commits and overlapping selected packages without p
     name: "github",
     async read(_request, destination) {
       await exportDefinitions(destination);
-      await put(destination, "agents/AGENT.md", "overlapping parent");
+      await put(destination, "skills/SKILL.md", "overlapping parent");
       return { commit: commitA };
     },
   };
   await expect(
     withDefinitionSources({ ...options, readers: [reader] }, snapshot),
-  ).rejects.toThrow(/overlapping AGENT.md/);
+  ).rejects.toThrow(/overlapping SKILL.md/);
   await expect(
     withDefinitionSources(
       { ...options, readers: [forbiddenReader()], mode: "offline" },
@@ -1105,3 +1150,76 @@ it.each([false, true])(
   },
   20_000,
 );
+
+it("does not reinterpret a legacy completed cohort as flat discovery offline", async () => {
+  const { directory } = await fixture();
+  const options = {
+    directory,
+    repositories,
+    directories: [],
+    readers: [injectedReader()],
+  };
+  await withDefinitionSources(options, snapshot);
+  const loads = join(directory, "definitions-v1", "loads");
+  const [record] = await readdir(loads);
+  if (!record) {
+    throw new Error("Missing completed load");
+  }
+  const current = JSON.parse(await readFile(join(loads, record), "utf8"));
+  const legacyRecipe = createHash("sha256")
+    .update(JSON.stringify({ version: 1, repositories, directories: [] }))
+    .digest("hex");
+  const legacyRecord = join(loads, `${legacyRecipe}.json`);
+  const legacy = JSON.stringify({
+    version: 1,
+    recipe: legacyRecipe,
+    pins: current.pins,
+  });
+  await writeFile(legacyRecord, legacy);
+  await rm(join(loads, record));
+  const reader = forbiddenReader();
+  await expect(
+    withDefinitionSources(
+      { ...options, readers: [reader], mode: "offline" },
+      snapshot,
+    ),
+  ).rejects.toThrow(/refresh required for flat agent discovery/);
+  expect(reader.read).not.toHaveBeenCalled();
+  const refreshed = await withDefinitionSources(options, snapshot);
+  expect(await readFile(legacyRecord, "utf8")).toBe(legacy);
+  expect(
+    await withDefinitionSources(
+      { ...options, readers: [reader], mode: "offline" },
+      snapshot,
+    ),
+  ).toEqual(refreshed);
+  // The version is validated in the record too, not only in its recipe filename.
+  await writeFile(
+    join(loads, record),
+    JSON.stringify({ ...current, version: 1 }),
+  );
+  await expect(
+    withDefinitionSources(
+      { ...options, readers: [reader], mode: "offline" },
+      snapshot,
+    ),
+  ).rejects.toThrow(/no verified complete offline input set/);
+});
+it("only blames flat agent discovery when a legacy record exists", async () => {
+  const { directory } = await fixture();
+  const reader = forbiddenReader();
+  const offline = withDefinitionSources(
+    {
+      directory,
+      repositories,
+      directories: [],
+      readers: [reader],
+      mode: "offline",
+    },
+    snapshot,
+  );
+  await expect(offline).rejects.toThrow(
+    /no verified complete offline input set/,
+  );
+  await expect(offline).rejects.not.toThrow(/flat agent discovery/);
+});

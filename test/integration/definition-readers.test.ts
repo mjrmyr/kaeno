@@ -9,7 +9,7 @@ import type { InstalledExtension } from "../../src/extensions/contributions/inde
 import {
   definitionOriginSchema,
   type DefinitionReader,
-  type DefinitionSource,
+  type AgentSource,
 } from "../../src/extensions/definitions/index.ts";
 import {
   githubExtension,
@@ -31,7 +31,7 @@ function agent(body: string, fields = "") {
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "kaeno-definition-readers-"));
   roots.push(root);
-  await put(root, "agents/coordinator/AGENT.md", agent("LOCAL"));
+  await put(root, "agents/coordinator.md", agent("LOCAL"));
   const configFile = join(root, "config.json");
   async function configure(fields: Record<string, unknown> = {}) {
     await writeFile(
@@ -58,7 +58,7 @@ function reader(
     read: vi.fn<DefinitionReader["read"]>(async (_request, destination) => {
       await put(
         destination,
-        "agents/coordinator/AGENT.md",
+        "agents/coordinator.md",
         agent(body, "skills: [owner/shared:literature]\n"),
       );
       await put(
@@ -122,8 +122,8 @@ it("composes custom source capabilities without importing GitHub implementations
     const configuration = await loadEnvironment({
       configFile: process.argv[1],
       extensions: [{ definitionReaders: [{ name: "custom", async read(_request, destination) {
-        await mkdir(join(destination, "coordinator"));
-        await writeFile(join(destination, "coordinator/AGENT.md"), ${JSON.stringify(agent("CUSTOM"))});
+        await mkdir(join(destination, "agents"));
+        await writeFile(join(destination, "agents/coordinator.md"), ${JSON.stringify(agent("CUSTOM"))});
         return { commit: "a".repeat(40) };
       } }] }],
     });
@@ -397,8 +397,8 @@ it("rejects injected aliases colliding with configured repositories before fetch
   const campus = reader("campus");
   const injected = {
     alias: "owner/shared",
-    snapshot: vi.fn<DefinitionSource["snapshot"]>(async () => ({
-      packages: [],
+    snapshot: vi.fn<AgentSource["snapshot"]>(async () => ({
+      documents: [],
       diagnostics: [],
     })),
   };

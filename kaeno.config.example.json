@@ -4,14 +4,14 @@
     {
       "provider": "github",
       "repository": "mjrmyr/myriad",
-      "ref": "5ca19933726862aa706199159b1fe1a02fccf56f"
+      "ref": "b3d78365965045383510abd0b3de28cdc3ff1fd3"
     }
   ],
   "skillRepositories": [
     {
       "provider": "github",
       "repository": "mjrmyr/myriad",
-      "ref": "5ca19933726862aa706199159b1fe1a02fccf56f"
+      "ref": "b3d78365965045383510abd0b3de28cdc3ff1fd3"
     }
   ],
   "kaeno": "mjrmyr/myriad:kaeno",

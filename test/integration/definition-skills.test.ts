@@ -78,7 +78,7 @@ it.each([{ tools: [] }, { tools: ["read_skill"] }])(
     const agent = parseAgent(
       `---\nname: assistant\ndescription: Assistant\nskills: []\ntools: ${JSON.stringify(tools)}\n---\nAnswer`,
       "local",
-      "AGENT.md",
+      "assistant.md",
     );
     const setup = resolveAgentSetup(
       agent,
@@ -147,7 +147,7 @@ it("resolves worker-specific native contributions without leaking skills between
     parseAgent(
       `---\nname: ${name}\ndescription: Worker\ntools: []\n---\nInstructions`,
       "local",
-      "AGENT.md",
+      `${name}.md`,
     ),
   );
   const [first, second] = resolveAgents({
@@ -166,7 +166,7 @@ it("resolves worker-specific native contributions without leaking skills between
 it("does not create an empty skills binding without native contributions", () => {
   const binder = skillBinder(new SkillCatalog([]));
   expect(binder([])).toBeUndefined();
-  const agent = parseAgent(manifest("assistant"), "local", "AGENT.md");
+  const agent = parseAgent(manifest("assistant"), "local", "assistant.md");
   expect(
     resolveAgentSetup(agent, { model, tools: [] }, binder).bindings,
   ).toEqual([]);
@@ -280,7 +280,14 @@ it.each([repositoryOrigin, directoryOrigin])(
         manifest: manifest("guide"),
         origin,
       };
-      const agents = parseAgents([definition]);
+      const agents = parseAgents([
+        {
+          source: definition.source,
+          manifestPath: join(root, "guide.md"),
+          manifest: definition.manifest,
+          origin,
+        },
+      ]);
       expect(agents.diagnostics).toEqual([]);
       expect(agents.agents[0].origin).toEqual(origin);
       const loaded = await loadSkills([definition]);
@@ -315,7 +322,11 @@ it.each([repositoryOrigin, directoryOrigin])(
       ).toThrow();
       expect(
         parseAgents([
-          { source: "legacy", directory: root, manifest: manifest("guide") },
+          {
+            source: "legacy",
+            manifestPath: join(root, "guide.md"),
+            manifest: manifest("guide"),
+          },
         ]).agents[0],
       ).not.toHaveProperty("origin");
     } finally {

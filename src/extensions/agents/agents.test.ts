@@ -16,7 +16,7 @@ it("requires only name and description and preserves body and future metadata", 
       "Investigate carefully.",
     ),
     "home",
-    "/agents/scout/AGENT.md",
+    "/agents/scout.md",
   );
   expect(agent.id).toBe("home:scout");
   expect(agent.prompt).toBe("Investigate carefully.");
@@ -29,7 +29,7 @@ it("keeps legacy or future delegation metadata inert; core uses all-to-all deleg
   const agent = parseAgent(
     manifest("name: scout\ndescription: Investigates\ndelegates: []"),
     "home",
-    "x",
+    "scout.md",
   );
   expect(agent.metadata).toEqual({ delegates: [] });
   expect(
@@ -42,7 +42,7 @@ it("keeps legacy or future delegation metadata inert; core uses all-to-all deleg
 it("reports duplicate IDs but preserves same names from distinct source aliases", () => {
   const packages = ["home", "local"].map((source) => ({
     source,
-    directory: source,
+    manifestPath: `${source}/reviewer.md`,
     manifest: manifest("name: reviewer\ndescription: Reviews"),
   }));
   expect(parseAgents(packages).agents.map((agent) => agent.id)).toEqual([
@@ -55,7 +55,7 @@ it("fails to resolve an agent without a model and resolves it when a default exi
   const agent = parseAgent(
     manifest("name: scout\ndescription: Investigates"),
     "local",
-    "x",
+    "scout.md",
   );
   expect(() =>
     resolveAgents({ agents: [agent], defaults: { tools: [] } }),
@@ -74,7 +74,7 @@ it.each(["", "\nskills: []"])(
     const agent = parseAgent(
       manifest(`name: scout\ndescription: Investigates${skills}`),
       "local",
-      "x",
+      "scout.md",
     );
     const setup = resolveAgentSetup(
       agent,
@@ -95,7 +95,7 @@ it("freezes trusted extension bindings without changing explicit tool selection"
       "name: coder\ndescription: Codes\ntools: []\ngithub: self-granted",
     ),
     "local",
-    "x",
+    "coder.md",
   );
   const binding = { owner: "external", version: 1, value: { scope: [123] } };
   const [profile] = resolveAgents({
@@ -124,7 +124,7 @@ it("keeps explicit empty tool/skill lists and never maps a tool name to a grant"
   const agent = parseAgent(
     manifest("name: scout\ndescription: Investigates\ntools: []\nskills: []"),
     "local",
-    "x",
+    "scout.md",
   );
   const setup = resolveAgentSetup(
     agent,
@@ -136,4 +136,42 @@ it("keeps explicit empty tool/skill lists and never maps a tool name to a grant"
   );
   expect(setup.tools).toEqual([]);
   expect(setup.bindings).toEqual([]);
+});
+
+it.each(["reviewer.md", "Scout.md", "scout.MD", "AGENT.md", "scout/AGENT.md"])(
+  "rejects filename/name disagreement at the public parser (%s)",
+  (location) => {
+    expect(() =>
+      parseAgent(
+        manifest("name: scout\ndescription: Investigates"),
+        "home",
+        location,
+      ),
+    ).toThrow(/expected filename "scout.md"/);
+  },
+);
+it("compares the parsed trimmed name exactly and keeps namespace identity", () => {
+  const text = manifest('name: " scout "\ndescription: Investigates');
+  expect(parseAgent(text, "home", "/other/root/scout.md").id).toBe(
+    "home:scout",
+  );
+  expect(parseAgent(text, "away", "/agents/scout.md").id).toBe("away:scout");
+});
+it("invalidates every duplicate and lists all locations in sorted order", () => {
+  const documents = ["/z/scout.md", "/a/scout.md", "/m/scout.md"].map(
+    (manifestPath) => ({
+      source: "home",
+      manifestPath,
+      manifest: manifest("name: scout\ndescription: Investigates"),
+    }),
+  );
+  const result = parseAgents(documents);
+  expect(result.agents).toEqual([]);
+  expect(result.diagnostics).toEqual([
+    {
+      location: "/a/scout.md",
+      message:
+        "Duplicate agent home:scout: /a/scout.md, /m/scout.md, /z/scout.md",
+    },
+  ]);
 });

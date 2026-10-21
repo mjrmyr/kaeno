@@ -1,6 +1,7 @@
-// Markdown agent definitions: `<root>/<directory>/AGENT.md` with YAML frontmatter (name and description
+// Markdown agent definitions: `<root>/<name>.md` with YAML frontmatter (name and description
 // required; model, skills and tools optional) and the system prompt as body. Pure resolution: this module
 // has no durable definitions and performs no I/O beyond what its caller already loaded.
+import { basename } from "node:path";
 import type { JsonValue } from "@earendil-works/chord";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ModelRef } from "@earendil-works/pi-durable";
@@ -15,11 +16,9 @@ import {
   discoveryMetadata,
   parseManifest,
   type DefinitionOrigin,
-  type DefinitionPackage,
+  type AgentDocument,
   type Diagnostic,
 } from "../definitions/index.ts";
-
-export const AGENT_MANIFEST = "AGENT.md";
 
 export interface AgentDefinition {
   /** `<source alias>:<name>`; the ID used with start_work. */
@@ -67,7 +66,7 @@ const optionalFields = z.object({
   tools: z.array(z.string().trim().min(1)).optional(),
 });
 
-/** Parse one `AGENT.md`. Throws an actionable error for invalid known fields. */
+/** Parse one flat agent record. Throws an actionable error for invalid known fields. */
 export function parseAgent(
   text: string,
   source: string,
@@ -75,6 +74,11 @@ export function parseAgent(
 ): AgentDefinition {
   const manifest = parseManifest(text, location);
   const { name, description } = discoveryMetadata(manifest, location);
+  if (basename(location) !== `${name}.md`) {
+    throw new Error(
+      `${location}: expected filename "${name}.md" for declared name "${name}"; rename the file or correct name`,
+    );
+  }
   const fields = optionalFields.safeParse(manifest.metadata);
   if (!fields.success) {
     throw new Error(
@@ -94,28 +98,22 @@ export function parseAgent(
   };
 }
 
-/** Parse packages from definition sources; invalid packages become diagnostics. */
-export function parseAgents(packages: readonly DefinitionPackage[]): {
+/** Parse flat documents from agent sources; invalid records become diagnostics. */
+export function parseAgents(documents: readonly AgentDocument[]): {
   agents: AgentDefinition[];
   diagnostics: Diagnostic[];
 } {
   const agents: AgentDefinition[] = [];
   const duplicates = new Set<string>();
   const diagnostics: Diagnostic[] = [];
-  for (const definition of packages) {
-    const location = `${definition.directory}/${AGENT_MANIFEST}`;
+  for (const definition of documents) {
+    const location = definition.manifestPath;
     try {
       const agent = parseAgent(
         definition.manifest,
         definition.source,
         location,
       );
-      if (agents.some((existing) => existing.id === agent.id)) {
-        duplicates.add(agent.id);
-        throw new Error(
-          `${location}: duplicate agent name "${agent.name}" in source ${definition.source}`,
-        );
-      }
       agents.push({
         ...agent,
         ...(definition.origin
@@ -126,6 +124,19 @@ export function parseAgents(packages: readonly DefinitionPackage[]): {
       diagnostics.push({
         location,
         message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  for (const agent of agents) {
+    const locations = agents
+      .filter((other) => other.id === agent.id)
+      .map((other) => other.location)
+      .sort();
+    if (locations.length > 1 && !duplicates.has(agent.id)) {
+      duplicates.add(agent.id);
+      diagnostics.push({
+        location: locations[0],
+        message: `Duplicate agent ${agent.id}: ${locations.join(", ")}`,
       });
     }
   }
