@@ -79,9 +79,9 @@ export function createWorkTask(
     }
     const canMessageParent =
       agent.setup.tools?.includes(MESSAGE_PARENT) ?? false;
-    let instructions = `${agent.setup.instructions}\n\nYou are Kaeno WORK, responsible for one task. Do the work yourself with the tools you have and verify it. Messages from whoever started you may arrive while you work.${canMessageParent ? " If you cannot proceed without a decision or input, call message_parent and stop." : " If you need information, state the limitation in your report."} Your final answer is your report: concise, verified and complete.`;
+    let instructions = `${agent.setup.instructions}\n\nYou are Kaeno WORK, responsible for one task. Do the work yourself with the tools you have and verify it. Messages from whoever started you may arrive while you work.${canMessageParent ? " For a nonblocking update, call message_parent with kind=progress and keep working. Only if you cannot proceed without a decision or input, call message_parent with kind=question and stop." : " If you need information, state the limitation in your report."} Your final answer is your report: concise, verified and complete.`;
     if (orchestrate && agent.setup.tools?.includes(START_WORK)) {
-      instructions += `\n\nYou may hand independent parts to child WORK with start_work; each sees only its brief. Child messages and reports arrive later as messages: reply with message_work. While children run, end your turn; their messages wake you. Do not give your final report while children are still running.\n\nAgents you can start (use the ID):\n${describeAgents(Object.values(plan.agents))}`;
+      instructions += `\n\nYou may hand independent parts to child WORK with start_work; each sees only its brief. Child progress updates need no reply. Child questions and reports arrive later as messages: answer questions with message_work. While children run, end your turn; their messages wake you. Do not give your final report while children are still running.\n\nAgents you can start (use the ID):\n${describeAgents(Object.values(plan.agents))}`;
     }
     await applySetup(tx, id, {
       setup: agent.setup,
