@@ -1,5 +1,7 @@
-import { lstat, readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { constants } from "node:fs";
+import { lstat, open, readdir, realpath } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import type { Diagnostic } from "./manifest.ts";
 import type { DefinitionOrigin } from "./origin.ts";
 
@@ -33,9 +35,7 @@ function missing(error: unknown): boolean {
  * Read the manifest file of one package without following links. Returns undefined when the
  * file does not exist.
  */
-export async function readManifestFile(
-  path: string,
-): Promise<string | undefined> {
+async function readManifestBytes(path: string): Promise<Buffer | undefined> {
   let info;
   try {
     info = await lstat(path);
@@ -51,11 +51,42 @@ export async function readManifestFile(
   if (info.size > MAX_MANIFEST_BYTES) {
     throw new Error(`${path}: manifest exceeds ${MAX_MANIFEST_BYTES} bytes`);
   }
-  const bytes = await readFile(path);
-  if (bytes.length > MAX_MANIFEST_BYTES) {
-    throw new Error(`${path}: manifest exceeds ${MAX_MANIFEST_BYTES} bytes`);
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const before = await handle.stat();
+    const bytes = await handle.readFile();
+    const after = await handle.stat();
+    if (
+      !before.isFile() ||
+      before.dev !== info.dev ||
+      before.ino !== info.ino ||
+      before.size !== info.size ||
+      before.mtimeMs !== info.mtimeMs ||
+      before.ctimeMs !== info.ctimeMs ||
+      before.size !== after.size ||
+      before.mtimeMs !== after.mtimeMs ||
+      before.ctimeMs !== after.ctimeMs ||
+      bytes.length !== before.size
+    ) {
+      throw new Error(`${path}: manifest changed during capture`);
+    }
+    if (bytes.length > MAX_MANIFEST_BYTES) {
+      throw new Error(`${path}: manifest exceeds ${MAX_MANIFEST_BYTES} bytes`);
+    }
+    return bytes;
+  } finally {
+    await handle.close();
   }
-  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+}
+
+/** Decode a captured manifest, preserving the existing UTF-8/BOM semantics. */
+export async function readManifestFile(
+  path: string,
+): Promise<string | undefined> {
+  const bytes = await readManifestBytes(path);
+  return bytes === undefined
+    ? undefined
+    : new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
 /**
@@ -119,6 +150,126 @@ export function directorySource(alias: string, root: string): DefinitionSource {
         }
       }
       return { packages, diagnostics };
+    },
+  };
+}
+
+/** A flat agent record, not a skill directory package. */
+export interface AgentDocument {
+  readonly source: string;
+  readonly manifestPath: string;
+  readonly manifest: string;
+  readonly origin?: DefinitionOrigin;
+}
+export interface AgentSource {
+  readonly alias: string;
+  snapshot(): Promise<{
+    documents: readonly AgentDocument[];
+    diagnostics: readonly Diagnostic[];
+  }>;
+}
+
+/** Immediate flat records only. Legacy packages are diagnosed, never loaded. */
+export function agentSource(
+  alias: string,
+  root: string,
+  origin?: (path: string, contentHash: string) => DefinitionOrigin,
+): AgentSource {
+  return {
+    alias,
+    async snapshot() {
+      const documents: AgentDocument[] = [];
+      const diagnostics: Diagnostic[] = [];
+      let names: string[];
+      try {
+        if (
+          !(await lstat(root)).isDirectory() ||
+          (await realpath(root)) !== resolve(root)
+        ) {
+          throw new Error(
+            `${root}: agent root must be a directory without links`,
+          );
+        }
+        names = (await readdir(root)).sort();
+      } catch (error) {
+        if (!missing(error)) {
+          throw error;
+        }
+        return {
+          documents,
+          diagnostics: [{ location: root, message: "Agent root is missing" }],
+        };
+      }
+      let candidates = 0;
+      for (const name of names) {
+        if (name.startsWith(".")) {
+          continue;
+        }
+        const path = join(root, name);
+        const info = await lstat(path);
+        const markdown = /\.md$/i.test(name);
+        if (markdown && ++candidates > MAX_PACKAGES) {
+          diagnostics.push({
+            location: root,
+            message: `More than ${MAX_PACKAGES} agent candidates`,
+          });
+          break;
+        }
+        try {
+          if (
+            info.isSymbolicLink() ||
+            (!info.isDirectory() && !info.isFile())
+          ) {
+            throw new Error(
+              `${path}: linked or special agent entries are not supported`,
+            );
+          }
+          if (info.isDirectory()) {
+            if (markdown) {
+              throw new Error(
+                `${path}: agent candidate must be a regular file`,
+              );
+            }
+            if (
+              (await readManifestFile(join(path, "AGENT.md"))) !== undefined
+            ) {
+              throw new Error(
+                `${path}/AGENT.md: legacy agent package; move to ${join(root, name + ".md")} and match the declared name`,
+              );
+            }
+          } else if (markdown) {
+            if (!name.endsWith(".md")) {
+              throw new Error(`${path}: agent filename must use lowercase .md`);
+            }
+            const bytes = await readManifestBytes(path);
+            if (bytes === undefined) {
+              throw new Error(`${path}: agent disappeared during capture`);
+            }
+            documents.push({
+              source: alias,
+              manifestPath: path,
+              manifest: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+              ...(origin
+                ? {
+                    origin: origin(
+                      path,
+                      createHash("sha256").update(bytes).digest("hex"),
+                    ),
+                  }
+                : {}),
+            });
+          }
+        } catch (error) {
+          diagnostics.push({
+            location: path,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+        if (diagnostics.length >= MAX_PACKAGES) {
+          break;
+        }
+      }
+      return { documents, diagnostics };
     },
   };
 }

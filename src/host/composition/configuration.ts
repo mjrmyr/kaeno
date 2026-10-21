@@ -54,7 +54,7 @@ const repositoryDeclaration = z
     provider: z.string().min(1),
     repository: repositoryName.transform((value) => value.toLowerCase()),
     ref: reference.default("HEAD"),
-    path: subtree.default(""),
+    path: subtree.optional(),
   })
   .strict();
 const directoryDeclaration = z
@@ -140,7 +140,11 @@ export function parseEnvironmentConfiguration(
       }
       aliases.add(item.repository);
       refs.set(identity, item.ref);
-      repositories.push({ kind, ...item });
+      repositories.push({
+        kind,
+        ...item,
+        path: item.path ?? (kind === "agents" ? "agents" : ""),
+      });
     }
     for (const item of config.localDefinitions[kind]) {
       if (aliases.has(item.alias)) {

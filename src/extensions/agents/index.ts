@@ -1,5 +1,4 @@
 export {
-  AGENT_MANIFEST,
   resolveAgents,
   parseAgent,
   parseAgents,

@@ -44,11 +44,11 @@ async function fixture(assistantFields = "", workerFields = "") {
   roots.push(root);
   await put(
     root,
-    "agents/assistant/AGENT.md",
+    "agents/assistant.md",
     manifest("assistant", assistantFields),
   );
-  await put(root, "agents/worker/AGENT.md", manifest("worker", workerFields));
-  await put(root, "agents/other/AGENT.md", manifest("other"));
+  await put(root, "agents/worker.md", manifest("worker", workerFields));
+  await put(root, "agents/other.md", manifest("other"));
   await put(
     root,
     "skills/source/SKILL.md",
@@ -344,7 +344,7 @@ it("does not silently filter forbidden wildcard members or ambiguous aliases", a
   const other = feature("other").extension;
   await put(
     root,
-    "agents/assistant/AGENT.md",
+    "agents/assistant.md",
     manifest("assistant", "skills: [guide]\n"),
   );
   await expect(
@@ -511,11 +511,7 @@ it("limits assigned skill snapshots rather than the available source catalog", a
       value: { skills: [expect.objectContaining({ id: "local:source" })] },
     }),
   );
-  await put(
-    root,
-    "agents/assistant/AGENT.md",
-    manifest("assistant", "skills: []\n"),
-  );
+  await put(root, "agents/assistant.md", manifest("assistant", "skills: []\n"));
   expect(
     (await loadEnvironment({ configFile })).assistant.bindings?.some(
       (binding) => binding.owner === "kaeno-skills",
@@ -523,7 +519,7 @@ it("limits assigned skill snapshots rather than the available source catalog", a
   ).toBe(false);
   await put(
     root,
-    "agents/assistant/AGENT.md",
+    "agents/assistant.md",
     manifest("assistant", "skills: [local:large1, local:large2]\n"),
   );
   await expect(loadEnvironment({ configFile })).rejects.toThrow(
@@ -665,7 +661,7 @@ it("derives real discovered Browser worker contributions and rejects an assistan
   expect(config.assistant.tools).not.toContain("browser_snapshot");
   await put(
     root,
-    "agents/assistant/AGENT.md",
+    "agents/assistant.md",
     manifest("assistant", "tools: [browser_snapshot]\n"),
   );
   await expect(loadEnvironment(options)).rejects.toThrow(

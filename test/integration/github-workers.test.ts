@@ -37,15 +37,15 @@ it("gives the assistant, root worker, and nested worker GitHub discovery by defa
   }
   try {
     await put(
-      ".agents/agents/kaeno/AGENT.md",
+      ".agents/agents/kaeno.md",
       "---\nname: kaeno\ndescription: Assistant\nmodel: faux/faux-1\n---\nCHAT",
     );
     await put(
-      ".agents/agents/coder/AGENT.md",
+      ".agents/agents/coder.md",
       "---\nname: coder\ndescription: Codes in authorized repositories\nskills: [engineering]\n---\nCODER",
     );
     await put(
-      ".agents/agents/reviewer/AGENT.md",
+      ".agents/agents/reviewer.md",
       "---\nname: reviewer\ndescription: Reviews\n---\nREVIEWER",
     );
     await put(
@@ -213,12 +213,12 @@ it("configures GitHub for every agent while respecting explicit tool overrides",
   try {
     await mkdir(join(directory, ".agents/agents/kaeno"), { recursive: true });
     await writeFile(
-      join(directory, ".agents/agents/kaeno/AGENT.md"),
+      join(directory, ".agents/agents/kaeno.md"),
       "---\nname: kaeno\ndescription: Assistant\nmodel: faux/faux-1\n---\nCHAT",
     );
     await mkdir(join(directory, ".agents/agents/coder"), { recursive: true });
     await writeFile(
-      join(directory, ".agents/agents/coder/AGENT.md"),
+      join(directory, ".agents/agents/coder.md"),
       "---\nname: coder\ndescription: Codes\n---\nCODER",
     );
     await writeFile(join(directory, "app.pem"), privateKey, { mode: 0o600 });
@@ -300,11 +300,11 @@ it("configures GitHub for every agent while respecting explicit tool overrides",
       }),
     ).toThrow("unsupported binding");
     await writeFile(
-      join(directory, ".agents/agents/coder/AGENT.md"),
+      join(directory, ".agents/agents/coder.md"),
       "---\nname: coder\ndescription: Codes\ntools: []\n---\nCODER",
     );
     await writeFile(
-      join(directory, ".agents/agents/kaeno/AGENT.md"),
+      join(directory, ".agents/agents/kaeno.md"),
       "---\nname: kaeno\ndescription: Assistant\nmodel: faux/faux-1\ntools: [github_list_repositories]\n---\nCHAT",
     );
     const overridden = await loadEnvironment(options);
@@ -322,7 +322,7 @@ it("configures GitHub for every agent while respecting explicit tool overrides",
       'tool "github_list_repositories" is outside policy availability',
     );
     await writeFile(
-      join(directory, ".agents/agents/kaeno/AGENT.md"),
+      join(directory, ".agents/agents/kaeno.md"),
       "---\nname: kaeno\ndescription: Assistant\nmodel: faux/faux-1\n---\nCHAT",
     );
     const disabled = await loadEnvironment({ configFile });

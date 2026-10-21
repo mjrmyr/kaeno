@@ -19,7 +19,7 @@ it("boots the actual core entrypoint and shuts down cleanly", async () => {
   await mkdir(join(root, ".kaeno"));
   await mkdir(join(root, "agents/kaeno"), { recursive: true });
   await writeFile(
-    join(root, "agents/kaeno/AGENT.md"),
+    join(root, "agents/kaeno.md"),
     "---\nname: kaeno\ndescription: Test assistant\nmodel: openai/gpt-4.1\n---\nAnswer clearly.\n",
   );
   const configFile = join(root, "config.json");

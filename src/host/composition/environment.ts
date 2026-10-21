@@ -18,7 +18,7 @@ import {
 import {
   definitionOriginsExtension,
   withDefinitionSources,
-  type DefinitionPackage,
+  type AgentSource,
   type DefinitionSource,
   type Diagnostic,
 } from "../../extensions/definitions/index.ts";
@@ -39,19 +39,22 @@ const ORCHESTRATION = WORK_TOOLS.orchestration;
 const CODING = (CodingTools.tools ?? []).map((tool) => tool.name);
 const WORKER_TOOLS = [...CODING, ...ORCHESTRATION, ...WORK_TOOLS.parent];
 
-async function packagesFrom(
-  sources: readonly DefinitionSource[],
-  manifest: string,
+async function packagesFrom<Source extends { alias: string }, Item>(
+  sources: readonly Source[],
+  snapshotSource: (source: Source) => Promise<{
+    packages: readonly Item[];
+    diagnostics: readonly Diagnostic[];
+  }>,
 ): Promise<{
-  packages: DefinitionPackage[];
+  packages: Item[];
   diagnostics: Diagnostic[];
   invalidSources: string[];
 }> {
-  const packages: DefinitionPackage[] = [];
+  const packages: Item[] = [];
   const diagnostics: Diagnostic[] = [];
   const invalidSources: string[] = [];
   for (const source of sources) {
-    const snapshot = await source.snapshot(manifest);
+    const snapshot = await snapshotSource(source);
     packages.push(...snapshot.packages);
     diagnostics.push(...snapshot.diagnostics);
     if (snapshot.diagnostics.length) {
@@ -64,7 +67,7 @@ async function packagesFrom(
 export interface LoadEnvironmentOptions {
   configFile: string;
   sourceMode?: "refresh" | "offline";
-  agentSources?: readonly DefinitionSource[];
+  agentSources?: readonly AgentSource[];
   skillSources?: readonly DefinitionSource[];
   environment?: WorkEnvironment;
   maxDepth?: number;
@@ -127,11 +130,14 @@ export async function loadEnvironment(
     async (sources) => {
       const agentPackages = await packagesFrom(
         [...sources.agents, ...(options.agentSources ?? [])],
-        "AGENT.md",
+        async (source) => {
+          const { documents, diagnostics } = await source.snapshot();
+          return { packages: documents, diagnostics };
+        },
       );
       const skillPackages = await packagesFrom(
         [...sources.skills, ...(options.skillSources ?? [])],
-        "SKILL.md",
+        (source) => source.snapshot("SKILL.md"),
       );
       const parsed = parseAgents(agentPackages.packages);
       const loaded = await loadSkills(skillPackages.packages);

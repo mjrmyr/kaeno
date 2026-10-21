@@ -31,7 +31,7 @@ it("offers and launches every configured worker even when none delegate to each 
       parseAgent(
         `---\nname: ${name}\ndescription: ${name} independent worker\nmodel: openai/faux-1\n---\nComplete work as ${name}.`,
         "local",
-        name,
+        `${name}.md`,
       ),
     ),
     defaults: { tools: [] },

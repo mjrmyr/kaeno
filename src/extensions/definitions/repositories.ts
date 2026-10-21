@@ -9,16 +9,19 @@ import {
   open,
   readFile,
   readdir,
+  realpath,
   rename,
   rm,
 } from "node:fs/promises";
-import { join, relative, sep } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { lock } from "proper-lockfile";
 import { z } from "zod";
 import {
+  agentSource,
   directorySource,
   readManifestFile,
+  type AgentSource,
   type DefinitionPackage,
   type DefinitionSource,
 } from "./directory.ts";
@@ -50,14 +53,16 @@ export interface DirectoryDefinitionSource {
   directory: string;
 }
 export interface DefinitionSources {
-  agents: DefinitionSource[];
+  agents: AgentSource[];
   skills: DefinitionSource[];
 }
+const AGENT_LAYOUT = "flat-v1";
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const pinSchema = z
   .object({
     key: hashSchema,
     hash: hashSchema,
+    absent: z.literal(true).optional(),
     commit: z
       .string()
       .regex(/^[a-f0-9]{40,64}$/)
@@ -67,6 +72,7 @@ const pinSchema = z
 const manifestSchema = z
   .object({
     version: z.literal(1),
+    agentLayout: z.literal(AGENT_LAYOUT),
     recipe: hashSchema,
     pins: z.array(pinSchema),
   })
@@ -213,7 +219,7 @@ function sourceView(options: {
   return {
     alias: options.alias,
     async snapshot(manifestName) {
-      if (manifestName !== "AGENT.md" && manifestName !== "SKILL.md") {
+      if (manifestName !== "SKILL.md") {
         throw new Error("Definitions: unsupported manifest");
       }
       if (!options.recursive) {
@@ -392,6 +398,7 @@ export async function withDefinitionSources<Result>(
     const recipe = digest(
       JSON.stringify({
         version: 1,
+        agentLayout: AGENT_LAYOUT,
         repositories: options.repositories,
         directories: options.directories,
       }),
@@ -406,7 +413,7 @@ export async function withDefinitionSources<Result>(
         );
       } catch {
         throw new Error(
-          "Definitions: no verified complete offline input set for this source configuration",
+          "Definitions: no verified complete offline input set for this source configuration; refresh required for flat agent discovery",
         );
       }
       if (
@@ -419,7 +426,7 @@ export async function withDefinitionSources<Result>(
       }
       for (const pin of parsed.pins) {
         const input = inputs.get(pin.key);
-        if (input && "repository" in input && !pin.commit) {
+        if (input && "repository" in input && (!pin.commit || pin.absent)) {
           throw new Error("Definitions: offline input has no commit");
         }
         if (
@@ -436,6 +443,7 @@ export async function withDefinitionSources<Result>(
         const destination = join(staging, key);
         await mkdir(destination);
         let commit: string | undefined;
+        let absent = false;
         if ("repository" in input) {
           const result = await input.reader.read(
             { repository: input.repository, ref: input.ref },
@@ -447,13 +455,42 @@ export async function withDefinitionSources<Result>(
             .regex(/^[a-f0-9]{40,64}$/)
             .parse(result.commit);
         } else {
-          const before = await definitionTreeHash(input.directory, signal);
-          await copyDirectory(input.directory, destination, signal);
-          if (
-            (await definitionTreeHash(input.directory, signal)) !== before ||
-            (await definitionTreeHash(destination, signal)) !== before
-          ) {
-            throw new Error("Definitions: local input changed during capture");
+          try {
+            await lstat(input.directory);
+          } catch (error) {
+            if (
+              !(
+                error instanceof Error &&
+                "code" in error &&
+                error.code === "ENOENT"
+              ) ||
+              options.directories.some(
+                (item) =>
+                  item.directory === input.directory && item.kind !== "agents",
+              )
+            ) {
+              throw error;
+            }
+            absent = true;
+          }
+          if (!absent) {
+            if (
+              (await realpath(input.directory)) !== resolve(input.directory)
+            ) {
+              throw new Error(
+                "Definitions: linked local input ancestors are not supported",
+              );
+            }
+            const before = await definitionTreeHash(input.directory, signal);
+            await copyDirectory(input.directory, destination, signal);
+            if (
+              (await definitionTreeHash(input.directory, signal)) !== before ||
+              (await definitionTreeHash(destination, signal)) !== before
+            ) {
+              throw new Error(
+                "Definitions: local input changed during capture",
+              );
+            }
           }
         }
         signal.throwIfAborted();
@@ -470,7 +507,12 @@ export async function withDefinitionSources<Result>(
           await rename(destination, published);
           await syncDirectory(trees);
         }
-        pins.push({ key, hash, ...(commit ? { commit } : {}) });
+        pins.push({
+          key,
+          hash,
+          ...(absent ? { absent: true } : {}),
+          ...(commit ? { commit } : {}),
+        });
       }
     }
     const sources: DefinitionSources = { agents: [], skills: [] };
@@ -481,20 +523,29 @@ export async function withDefinitionSources<Result>(
       }
       const exportRoot = join(trees, pin.hash);
       const commit = pin.commit;
-      sources[item.kind].push(
+      function origin(path: string, contentHash: string): DefinitionOrigin {
+        return {
+          kind: "repository",
+          provider: item.provider,
+          repository: item.repository,
+          ref: item.ref,
+          commit,
+          path: relative(exportRoot, path).split(sep).join("/"),
+          contentHash,
+        };
+      }
+      if (item.kind === "agents") {
+        sources.agents.push(
+          agentSource(item.repository, join(exportRoot, item.path), origin),
+        );
+        continue;
+      }
+      sources.skills.push(
         sourceView({
           alias: item.repository,
           root: join(exportRoot, item.path),
           recursive: true,
-          origin: (path, contentHash) => ({
-            kind: "repository",
-            provider: item.provider,
-            repository: item.repository,
-            ref: item.ref,
-            commit,
-            path: relative(exportRoot, path).split(sep).join("/"),
-            contentHash,
-          }),
+          origin,
         }),
       );
     }
@@ -507,18 +558,39 @@ export async function withDefinitionSources<Result>(
       if (!pin) {
         throw new Error("Definitions: directory input missing");
       }
+      if (pin.absent && item.kind === "agents") {
+        sources.agents.push({
+          alias: item.alias,
+          async snapshot() {
+            return {
+              documents: [],
+              diagnostics: [
+                { location: item.directory, message: "Agent root is missing" },
+              ],
+            };
+          },
+        });
+        continue;
+      }
       const exportRoot = join(trees, pin.hash);
-      sources[item.kind].push(
+      function origin(path: string, contentHash: string): DefinitionOrigin {
+        return {
+          kind: "directory",
+          source: item.alias,
+          path: join(item.directory, relative(exportRoot, path)),
+          contentHash,
+        };
+      }
+      if (item.kind === "agents") {
+        sources.agents.push(agentSource(item.alias, exportRoot, origin));
+        continue;
+      }
+      sources.skills.push(
         sourceView({
           alias: item.alias,
           root: exportRoot,
           recursive: false,
-          origin: (path, contentHash) => ({
-            kind: "directory",
-            source: item.alias,
-            path: join(item.directory, relative(exportRoot, path)),
-            contentHash,
-          }),
+          origin,
         }),
       );
     }
@@ -528,7 +600,14 @@ export async function withDefinitionSources<Result>(
       const temporary = join(staging ?? root, `load-${randomUUID()}.json`);
       const handle = await open(temporary, "wx", 0o600);
       try {
-        await handle.writeFile(JSON.stringify({ version: 1, recipe, pins }));
+        await handle.writeFile(
+          JSON.stringify({
+            version: 1,
+            agentLayout: AGENT_LAYOUT,
+            recipe,
+            pins,
+          }),
+        );
         await handle.sync();
       } finally {
         await handle.close();
