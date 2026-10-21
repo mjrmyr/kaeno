@@ -28,7 +28,7 @@ const packageJson = createRequire(import.meta.url).resolve(
 export const browserRecipe: WorkServerRecipe = {
   id: "browser",
   tools: BROWSER_TOOLS,
-  // TODO: `@playwright/mcp@${version from packageJson}`; an npm bump changes the lock origin, so
+  // TODO: `@playwright/mcp@${version from packageJson}`; an npm bump changes the lock endpoint, so
   // reconcile fails (in unit tests first) until `npm run mcp -- lock --builtin` re-pins.
   version: "@playwright/mcp@0.0.83",
   // TODO: contractDigest of ./mcp.lock.json as baked into THIS image (read once at envd start).

@@ -6,7 +6,7 @@
 
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
-import type { McpServer, ServerId } from "./server.ts";
+import type { McpServer, ServerId, ToolPolicy } from "./server.ts";
 
 /** A reviewed upstream tool contract. A domain type: annotations/title/outputSchema/_meta dropped. */
 export interface PinnedTool {
@@ -18,12 +18,14 @@ export interface PinnedTool {
 }
 
 /**
- * One server's lock entry. `origin` ties the pins to an endpoint: an https origin for host
- * servers, `work:<recipe>@<package version>` for work servers. Reconcile fails when the declared
- * placement's origin differs (a re-pointed server never silently reuses old pins).
+ * One server's lock entry. `endpoint` pins the complete credential-free HTTP URL (including
+ * path and resource-selecting query), or `work:<recipe>@<package version>`. Reconcile rejects
+ * any change, including paths on the same origin; re-pointing needs explicit owner review.
+ * Reject URL userinfo, fragments and secret-bearing query parameters at config/lock boundaries;
+ * credentials belong only in HostCredentials, never locks, reports or errors.
  */
 export interface PinnedServer {
-  readonly origin: string;
+  readonly endpoint: string;
   /** Keyed by upstream name. Superset of the allowlist: extra entries are tombstones. */
   readonly tools: ReadonlyMap<string, PinnedTool>;
 }
@@ -43,7 +45,7 @@ export const lockFileSchema = z
       z.string(),
       z
         .object({
-          origin: z.string(),
+          endpoint: z.string(),
           tools: z.record(z.string(), pinnedToolSchema),
         })
         .strict(),
@@ -61,14 +63,14 @@ export async function readLock(
 }
 
 /** One tool after reconciling the allowlist with the lock. */
-export interface ResolvedTool {
+export type ResolvedTool = {
   readonly name: string;
   readonly upstream: string;
   readonly pinned: PinnedTool;
-  readonly status: "live" | "retired";
-  /** Live tools only; a tombstone has no class (it is never readOnly, never replayed as safe). */
-  readonly class?: "read" | "write";
-}
+} & (
+  | { readonly status: "live"; readonly policy: ToolPolicy }
+  | { readonly status: "retired" } // never readOnly, replay unsafe, sequential
+);
 
 /**
  * Pure. allowlist x lock -> resolved tools. Derivation, not sync:
@@ -77,7 +79,7 @@ export interface ResolvedTool {
  *   retired = pinned AND NOT allowlisted       (tombstone; registered for recovery only)
  *   error   = allowlisted AND NOT pinned       ("run `npm run mcp -- lock`")
  *
- * Also fails (listing every problem at once) on: origin mismatch; a joined name outside
+ * Also fails (listing every problem at once) on: endpoint mismatch; a joined name outside
  * `^[A-Za-z0-9_-]{1,64}$`; two upstream tools mapping to one Kaeno name.
  *
  * Why tombstones are derived: recovery (core/durable/recovery.ts) walks every conversation,
@@ -92,11 +94,14 @@ export function reconcile(server: McpServer): readonly ResolvedTool[] {
 }
 
 /**
- * Lock key of a placement; reconcile compares it with PinnedServer.origin.
- *   host -> the URL's origin (`https://mcp.linear.app`)
+ * Lock key of a placement; reconcile compares it with PinnedServer.endpoint.
+ *   host -> complete normalized, credential-free URL (`https://mcp.linear.app/mcp`),
+ *           including path and resource-selecting query, NOT URL.origin
  *   work -> `work:<recipe>@<package version>`
+ * Boundary validation rejects userinfo, fragments and credential-bearing queries rather than
+ * stripping them (which could alias endpoints). Secrets must use HostCredentials.
  */
-export function originOf(server: Pick<McpServer, "placement">): string {
+export function endpointOf(server: Pick<McpServer, "placement">): string {
   void server;
   throw new Error("not implemented");
 }
@@ -106,7 +111,7 @@ export function originOf(server: Pick<McpServer, "placement">): string {
  * The host sends it with every `/mcp` call; envd's WorkMcpHost compares it with the digest of
  * the lock baked into ITS image and refuses a mismatch as `image_skew`. This covers sandboxes
  * adopted from an older image after a host upgrade (#42 adoption): the model is never told one
- * contract while the sandbox runs another. A package bump changes the origin AND, if the
+ * contract while the sandbox runs another. A package bump changes the endpoint AND, if the
  * contract moved, the digest.
  */
 export function contractDigest(

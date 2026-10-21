@@ -2,7 +2,7 @@
   "version": 1,
   "servers": {
     "browser": {
-      "origin": "work:browser@@playwright/mcp@0.0.83",
+      "endpoint": "work:browser@@playwright/mcp@0.0.83",
       "tools": {
         "browser_click": {
           "description": "Perform click on a web page",

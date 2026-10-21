@@ -14,7 +14,7 @@ import { mcpTools, serverIdSchema, type McpServer } from "./server.ts";
  *     "linear": {
  *       "url": "https://mcp.linear.app/mcp",
  *       "auth": { "oauth": true },                      // or { "headerFiles": {...} } or omitted
- *       "tools": { "read": ["list_issues", "get_issue"], "write": ["create_comment"] }
+ *       "tools": [{ "upstream": "get_issue", "readOnly": true }, { "upstream": "create_comment" }]
  *     }
  *   }
  * }
@@ -23,7 +23,7 @@ import { mcpTools, serverIdSchema, type McpServer } from "./server.ts";
  *   into a tombstone automatically (contract.ts reconcile). A removed server whose pins remain
  *   in mcp.lock.json stays installed as `kaeno-mcp-<id>` with every tool retired.
  * - No `placement`, no `command`: owner config cannot run binaries anywhere.
- * - No `roles`: role policy is DERIVED below from `class` and placement, never hand-written.
+ * - No `roles`: role policy is DERIVED below from `readOnly` and placement, never hand-written.
  */
 const configurationSchema = z
   .object({
@@ -31,6 +31,8 @@ const configurationSchema = z
       serverIdSchema,
       z
         .object({
+          // Additionally validate https (loopback http only), no userinfo/fragment or secrets
+          // in query; keep the complete endpoint identity (contract.ts endpointOf).
           url: z.string().url(),
           auth: z
             .union([
@@ -42,12 +44,18 @@ const configurationSchema = z
                 .strict(),
             ])
             .optional(),
-          tools: z
-            .object({
-              read: z.array(z.string().min(1)).default([]),
-              write: z.array(z.string().min(1)).default([]),
-            })
-            .strict(),
+          tools: z.array(
+            z
+              .object({
+                upstream: z.string().min(1),
+                readOnly: z.boolean().default(false),
+                replay: z.enum(["safe", "unsafe"]).default("unsafe"),
+                executionMode: z
+                  .enum(["parallel", "sequential"])
+                  .default("sequential"),
+              })
+              .strict(),
+          ),
         })
         .strict(),
     ),
@@ -63,7 +71,7 @@ type Selector = AgentExtension | { readonly tools: readonly string[] };
  *
  *   worker.available    every server extension (tombstones included: frozen WORK plans must fit)
  *   worker.defaults     live tools only (tombstones never reach a new agent)
- *   assistant.available live READ tools only (CHAT: no write tools, no tombstones; a profile
+ *   assistant.available live readOnly tools only (CHAT: no write tools, no tombstones; a profile
  *                       may still select them explicitly)
  *   assistant.defaults  none (context budget: a default would put every server's tools in
  *                       every CHAT prompt)
@@ -85,6 +93,8 @@ export interface McpInstallation {
 /**
  * Offline. Reads mcp.json and its sibling mcp.lock.json, builds one `kaeno-mcp-<id>` extension per
  * server in EITHER file (config-only -> fail "run lock"; lock-only -> fully retired server).
+ * A lock-only entry must remain installed even with zero pinned tools: saved positive
+ * extension references still require it. Final entry deletion is guarded by lockMcp.
  * No bind, no start, no cleanup: there is no per-conversation or per-process MCP state.
  */
 export async function loadMcpConfiguration(
@@ -97,7 +107,7 @@ export async function loadMcpConfiguration(
   // for each id in union(config.servers, lock): build McpServer {
   //   placement: { kind: "host", url, credentials: oauth ? { kind: "oauth", providerId: `mcp:${id}`, store }
   //                 : headerFiles ? { kind: "headerFiles", files: resolved relative to configFile } : { kind: "none" } },
-  //   tools: [...read.map(class read), ...write.map(class write)],   // a name in both -> fail
+  //   tools: parsed.tools,   // duplicate upstream names -> fail
   //   pinned: lock.get(id), source: `the ${id} MCP server` }
   // const set = mcpTools(server);
   // extension = { runtime: { durable: defineExtension({ name: `kaeno-mcp-${id}`, tools: set.tools }),

@@ -29,7 +29,7 @@ export interface WorkServerRecipe {
    * ToolPolicy list (single source; envd re-checks because the host is not trusted to have).
    */
   readonly tools: readonly string[];
-  /** `<package>@<version>` resolved from the installed package; part of the lock origin. */
+  /** `<package>@<version>` resolved from the installed package; part of the lock endpoint. */
   readonly version: string;
   /** contractDigest of this feature's committed lock, computed from the file in THIS image. */
   readonly digest: string;
@@ -104,13 +104,18 @@ export class WorkMcpHost {
   /** envd `/mcp` route body. Validates server + allowlist before anything is spawned. */
   async call(input: unknown, signal?: AbortSignal): Promise<CallToolResult> {
     // TODO:
-    // const { server, name, arguments: args } = workCallSchema.parse(input);
+    // const { server, digest, name, arguments: args } = workCallSchema.parse(input);
     // const recipe = this.recipes.get(server) ?? throw "unknown work server";
     // if (digest !== recipe.digest) throw toolError(server, "image_skew", "sandbox image differs from host; start a new WORK");
     // if (!recipe.tools.includes(name)) throw "tool not allowed";
     // single-flight check; deadline = AbortSignal.any([signal, timeout(overallMs)])
     // if (recipe.intercept?.(name) === "close") { await this.closeOne(server); return { content: [] }; }
     // session = existing ?? spawn(recipe)   (StdioClientTransport, stderr ignored, maxBufferSize)
+    // On EVERY freshly spawned connection, listTools (all pages); hash the allowlisted
+    // description/inputSchema contracts with contractDigest's canonicalization and compare
+    // with recipe.digest (this image's committed lock). Do not hash unlisted tools.
+    // Missing/changed -> drift, close session; equality is NOT a semantic safety guarantee.
+    // Remember equality only for this session (no process-wide cache).
     // result = client.callTool(...callMs); size check; if (!isError) await recipe.afterCall?.(probe, result)
     // catch -> closeOne(server); rethrow.  finally -> busy=false, lastUsed=now
     void [workCallSchema, input, signal];

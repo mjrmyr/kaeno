@@ -25,13 +25,13 @@ export interface LockReport {
   readonly servers: readonly {
     readonly id: string;
     readonly added: readonly string[];
-    /** description or schema changed since the previous pin: the review point ("rug pull"). */
+    /** Advertised description/schema changed: a review point, not a semantic safety proof. */
     readonly changed: readonly string[];
     /** previously allowlisted, now not: kept as tombstones, NOT dropped. */
     readonly retired: readonly string[];
     /** upstream has them, allowlist does not (helps write the allowlist). */
     readonly unlisted: readonly string[];
-    /** e.g. "create_comment listed read; upstream readOnlyHint=false". Advisory only. */
+    /** Upstream annotation differences are advisory only; never derive policy from hints. */
     readonly warnings: readonly string[];
   }[];
 }
@@ -45,13 +45,18 @@ export interface LockReport {
  *
  * Fails on: unreachable server; allowlisted tool missing upstream (a tombstoned previous pin
  * does not satisfy an allowlist entry); description > 4 KiB or schema > 32 KiB or not an object;
- * origin change without `--repoint <id>`.
+ * complete endpoint change (including path/resource on the same origin) without `--repoint <id>`.
  *
  * `--builtin` regenerates the committed locks of code-declared servers (browser) and is
  * a developer action reviewed in a PR; owners only ever lock mcp.json.
  * `--forget <id>/<tool>` drops a tombstone. It opens the database read-only (KAENO_DATABASE) and
  * refuses while any conversation's `pi.agent.tools` or any saved WORK plan still names the tool;
  * the owner's word is not enough, because recovery is what breaks if they are wrong.
+ * If forgetting the last pin would remove a server entry/extension, also refuse while ANY saved
+ * positive extension reference remains: pi.agent.extensions arrays, or add minus remove, even
+ * when pi.agent.tools is [] (core/durable/recovery.ts:69-79), and saved WORK plans. A lock-only
+ * empty server entry remains installed until this check passes. Apply the same guard to any
+ * whole-server removal. Do not add a new extension tombstone framework.
  */
 export async function lockMcp(
   lockFile: string,

@@ -2,6 +2,7 @@
 
 import type { Context } from "@earendil-works/chord";
 import type { JsonObject, ToolExecutionApi } from "@earendil-works/pi-durable";
+import type { PinnedServer } from "./contract.ts";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { HostCredentials, Placement, ServerId } from "./server.ts";
 import { toolError } from "./results.ts";
@@ -11,7 +12,7 @@ import { toolError } from "./results.ts";
  *
  * Invariant: no host MCP session outlives one tool call. Session state lives where the WORK
  * lives (work placement), never on the host. Consequences, all intended:
- *   - host restart / durable replay loses nothing (a replayed `read` simply reconnects);
+ *   - host restart / durable replay loses nothing (an explicitly replay-safe call simply reconnects);
  *   - no pool, no idle reaper, no `start` hook, no per-conversation session doc;
  *   - credentials are resolved per call, so rotation never needs a restart.
  * Servers whose tools only work inside one long session are unsupported on the host; if they
@@ -19,12 +20,11 @@ import { toolError } from "./results.ts";
  * measured handshake optimization only: it must never be relied on for state, because restart,
  * eviction and idle expiry would drop that state silently.
  *
- * Drift check (the lock pins what the model is TOLD; this checks what the server DOES): the
- * first call per server per process also runs `tools/list` (all pages) on the same connection
- * and caches, per tool, whether the live {description, inputSchema} still equals the pin. A
- * drifted tool fails closed with toolError("drift", "contract changed upstream; review with
- * `npm run mcp -- lock`"). Undrifted tools keep working. The cache is process-local and never
- * durable; a restart re-checks.
+ * Interface check: on EVERY new connection (including a reconnect after refresh), run
+ * `tools/list` (all pages) before dispatch and compare the called tool's advertised
+ * {description, inputSchema} with its pin. Missing or changed -> fail closed with "drift" and
+ * ask for reviewed re-locking. No process cache. Equality only checks the advertised interface,
+ * NOT implementation semantics, safety or honesty. No live semantic verification is attempted.
  *
  * Client capabilities `{}`: no sampling (a server never spends Kaeno's model), no elicitation
  * (never asks a human mid-WORK), no roots. Server->client requests get method-not-found.
@@ -35,6 +35,7 @@ import { toolError } from "./results.ts";
 export async function callRemote(
   server: ServerId,
   placement: Extract<Placement, { kind: "host" }>,
+  pinned: PinnedServer,
   call: {
     readonly name: string;
     readonly tool: string;
@@ -48,6 +49,7 @@ export async function callRemote(
   // const redact = redactor(secrets);
   // const client = await connect(placement.url, headers, context.abortSignal);
   // try {
+  //   await checkAdvertisedInterface(client, call.tool, pinned); // all pages, every connection
   //   return { result: await client.callTool({ name: call.tool, arguments: call.arguments }, undefined,
   //     { signal: context.abortSignal, timeout: 60_000 }), redact };
   // } catch (error) {
@@ -55,7 +57,7 @@ export async function callRemote(
   // } finally {
   //   await terminateQuietly(client); // best-effort DELETE + close
   // }
-  void [server, placement, call, api, context, toolError];
+  void [server, placement, pinned, call, api, context, toolError];
   throw new Error("not implemented");
 }
 
