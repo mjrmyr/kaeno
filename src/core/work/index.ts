@@ -14,7 +14,8 @@ export type {
   WorkInstance,
   WorkPlan,
 } from "./plan.ts";
-export { WorkIndex, WorkScope, Work } from "./work.ts";
+export { Work } from "./work.ts";
+export { WorkIndex, WorkScope } from "./model.ts";
 export type {
   WorkParent,
   WorkRuntime,
@@ -24,7 +25,7 @@ export type {
   WorkReport,
   WorkSettings,
   WorkTurns,
-} from "./work.ts";
+} from "./model.ts";
 export {
   CANCEL_WORK,
   INSPECT_WORK,
