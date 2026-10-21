@@ -56,7 +56,9 @@ export interface DefinitionSources {
   agents: AgentSource[];
   skills: DefinitionSource[];
 }
-const AGENT_LAYOUT = "flat-v1";
+// Completed-load record format. Version 2 reads agents as flat `agents/<name>.md` records;
+// version 1 records hold directory packages and are never reinterpreted.
+const RECORD_VERSION = 2;
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const pinSchema = z
   .object({
@@ -71,8 +73,7 @@ const pinSchema = z
   .strict();
 const manifestSchema = z
   .object({
-    version: z.literal(1),
-    agentLayout: z.literal(AGENT_LAYOUT),
+    version: z.literal(RECORD_VERSION),
     recipe: hashSchema,
     pins: z.array(pinSchema),
   })
@@ -395,14 +396,16 @@ export async function withDefinitionSources<Result>(
     await mkdir(records, { recursive: true, mode: 0o700 });
     await syncDirectory(root);
     await syncDirectory(options.directory);
-    const recipe = digest(
-      JSON.stringify({
-        version: 1,
-        agentLayout: AGENT_LAYOUT,
-        repositories: options.repositories,
-        directories: options.directories,
-      }),
-    );
+    function recipeFor(version: number): string {
+      return digest(
+        JSON.stringify({
+          version,
+          repositories: options.repositories,
+          directories: options.directories,
+        }),
+      );
+    }
+    const recipe = recipeFor(RECORD_VERSION);
     const record = join(records, `${recipe}.json`);
     const pins: Pin[] = [];
     if (options.mode === "offline") {
@@ -412,8 +415,12 @@ export async function withDefinitionSources<Result>(
           JSON.parse(await readFile(record, "utf8")),
         );
       } catch {
+        const legacy = await lstat(join(records, `${recipeFor(1)}.json`)).then(
+          () => true,
+          () => false,
+        );
         throw new Error(
-          "Definitions: no verified complete offline input set for this source configuration; refresh required for flat agent discovery",
+          `Definitions: no verified complete offline input set for this source configuration${legacy ? "; refresh required for flat agent discovery" : ""}`,
         );
       }
       if (
@@ -602,8 +609,7 @@ export async function withDefinitionSources<Result>(
       try {
         await handle.writeFile(
           JSON.stringify({
-            version: 1,
-            agentLayout: AGENT_LAYOUT,
+            version: RECORD_VERSION,
             recipe,
             pins,
           }),

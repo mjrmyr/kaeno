@@ -1161,15 +1161,33 @@ it("does not reinterpret a legacy completed cohort as flat discovery offline", a
       snapshot,
     ),
   ).toEqual(refreshed);
-  // The policy is validated in the record too, not only in its recipe filename.
+  // The version is validated in the record too, not only in its recipe filename.
   await writeFile(
     join(loads, record),
-    JSON.stringify({ ...current, agentLayout: "legacy" }),
+    JSON.stringify({ ...current, version: 1 }),
   );
   await expect(
     withDefinitionSources(
       { ...options, readers: [reader], mode: "offline" },
       snapshot,
     ),
-  ).rejects.toThrow(/refresh required/);
+  ).rejects.toThrow(/no verified complete offline input set/);
+});
+it("only blames flat agent discovery when a legacy record exists", async () => {
+  const { directory } = await fixture();
+  const reader = forbiddenReader();
+  const offline = withDefinitionSources(
+    {
+      directory,
+      repositories,
+      directories: [],
+      readers: [reader],
+      mode: "offline",
+    },
+    snapshot,
+  );
+  await expect(offline).rejects.toThrow(
+    /no verified complete offline input set/,
+  );
+  await expect(offline).rejects.not.toThrow(/flat agent discovery/);
 });
