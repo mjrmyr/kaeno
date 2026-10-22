@@ -7,23 +7,19 @@ credential broker or change to GitHub's App/token/checkout/publish path.
 
 ## What ships, and what does not
 
-| Area                | This phase                                                                                                                                                                                             |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Host transport      | Streamable HTTP (JSON or SSE responses), fresh initialize/list/call/DELETE/close per call. No host session reuse or automatic retry.                                                                   |
-| Host authentication | None, or host-only `headerFiles`, re-read each call.                                                                                                                                                   |
-| Contracts           | All-page discovery at startup; allowlisted tools register with the advertised description and input schema. No lock file or review command.                                                            |
-| Policy              | Independent owner `readOnly`, `replay`, `executionMode`; defaults false / unsafe / sequential.                                                                                                         |
-| Removal             | Removing a tool or server unregisters it. Native recovery refuses startup while saved conversations still reference it.                                                                                |
-| Lifecycle           | Tool cancellation and harness shutdown abort/close active transports; extension cleanup joins outstanding calls. Discovery closes its connection before startup continues.                             |
-| WORK use            | Workers can select the **host HTTP tools**. Calls still run on the host; credentials never enter `api.env` or a sandbox.                                                                               |
-| **Not implemented** | Generic work/stdin transport, envd `/mcp`, image digest, Browser migration, contract pinning/drift detection, OAuth login/refresh/seed changes, tool retirement, discovery report/annotation warnings. |
+| Area                | This phase                                                                                                                                                                                     |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Host transport      | Streamable HTTP (JSON or SSE responses), fresh initialize/list/call/DELETE/close per call. No host session reuse or automatic retry.                                                           |
+| Host authentication | None, or host-only `headerFiles`, re-read each call.                                                                                                                                           |
+| Contracts           | All-page discovery at startup; allowlisted tools register with the advertised description and input schema. No lock file or review command.                                                    |
+| Policy              | Independent owner `readOnly`, `replay`, `executionMode`; defaults false / unsafe / sequential.                                                                                                 |
+| Removal             | Removing a tool or server unregisters it. Native recovery refuses startup while saved conversations still reference it.                                                                        |
+| Lifecycle           | Tool cancellation and harness shutdown abort/close active transports; extension cleanup joins outstanding calls. Discovery closes its connection before startup continues.                     |
+| WORK use            | Workers can select the **host HTTP tools**. Calls still run on the host; credentials never enter `api.env` or a sandbox. Sandbox-run servers are [WORK MCP](#work-mcp-servers-in-the-sandbox). |
+| **Not implemented** | Owner-configured WORK servers, image digest, contract pinning/drift detection, OAuth login/refresh/seed changes, tool retirement, discovery report/annotation warnings.                        |
 
-In particular, Browser **still uses its existing separate WORK-only implementation**,
-including its startup discovery and `/browser` route. This phase does not make that
-route enforce the proposed MCP image/contract digest. There is no `/mcp` attempt and
-no legacy Browser fallback in this feature. Migrating Browser requires the separate
-work recipe/transport phase and its runtime tests.
-The existing Browser smoke command is not evidence for these new host tools.
+Browser is the first [WORK MCP server](#work-mcp-servers-in-the-sandbox); the old
+`/browser` envd route is gone.
 
 Resources, prompts, audio, tasks, sampling, elicitation, roots, legacy SSE transport,
 progress/log forwarding, owner-configured executables, host stdio and work HTTP are
@@ -77,7 +73,7 @@ registered as placeholders: they keep saved conversations and profile selections
 are left out of worker defaults, and return `not_loaded` without sending a request.
 Restart Kaeno once the server is back. Tools the server advertises but the config does
 not list are never registered.
-**Other features, notably Browser/definition sources, retain their existing startup behavior.**
+**Other features, notably definition sources, retain their existing startup behavior.**
 
 Tools are named `<id>_<upstream>`, except already-prefixed upstream names stay unchanged.
 Server IDs match `^[a-z][a-z0-9]{0,15}$`; derived names must fit 64 characters (`__proto__` is not an owner-configurable upstream name). Collisions
@@ -114,6 +110,32 @@ Query detection is conservative, **not a universal secret detector**. Owners mus
 all query values and path segments as credential-free; put secrets only in header files.
 Private-address endpoints are permitted because this is privileged owner configuration.
 This is not an SSRF boundary against a malicious owner or a DNS rebinding defense.
+
+## WORK MCP: servers in the sandbox
+
+Servers that act on a machine rather than call an API, such as a browser, run inside each
+WORK sandbox instead of on the host. Each is a code-declared `WorkServerRecipe`
+(`src/extensions/mcp/work.ts`) owned by its feature: an upstream tool allowlist, the stdio
+command line and its whole environment, limits, and optional guards. The binary must be in
+the WORK image, and the recipe has no credential field. Owner config cannot add one.
+
+- **Startup:** the host lists the recipe's tools from a short-lived local process, then
+  stops it (Playwright does not launch Chromium for that). Failure logs `mcp: <id>: ...`
+  and registers placeholders, like a host server. Tools are worker-only.
+- **Calls:** model → Kaeno → envd `/mcp` → `WorkMcpHost` → stdio child in the sandbox.
+  envd re-checks the server and allowlist. Calls without a WORK sandbox are refused.
+- **State:** one lazily started session per (WORK, server), owned by envd and kept across
+  calls, so each WORK has its own browser. Calls are single-flight; a concurrent call is
+  rejected. Any error, cancellation, deadline, oversize or guard failure discards the
+  session. `/cleanup`, envd SIGTERM and sandbox deletion close it.
+- **Results** use the same bounds as host tools (32 KiB text, one image).
+- **Skew:** a host with this change cannot call an adopted sandbox running an older envd
+  without `/mcp`; start a new WORK.
+
+Adding a server: write a recipe in its feature, add it to `new WorkMcpHost([...])` in
+`src/host/envd.ts`, register it with `workMcpTools(recipe)` in `src/host/main.ts`, and
+install its binary in the `Dockerfile`. Browser (`src/extensions/browser/recipe.ts`) is
+the reference.
 
 ## Removal and recovery
 
@@ -165,4 +187,7 @@ recovery of saved tool and extension references.
 
 Run `npm run verify`. These tests exercise production code; passing unrelated repository
 or Browser tests alone is not evidence for the host MCP integration. No live cluster,
-external MCP account, OAuth or generic work/browser migration is verified by this phase.
+external MCP account or OAuth is verified. `test/integration/work-mcp.test.ts` runs a real
+stdio fixture server through real envd: discovery, per-WORK state across transient
+clients, cleanup, environment sanitization, allowlist/server re-checks, host refusal and
+placeholders.

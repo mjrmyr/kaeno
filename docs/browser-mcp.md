@@ -1,8 +1,9 @@
 # WORK browser tools over MCP
 
-The separate [owner-configured host MCP phase 1](mcp.md) does not migrate this feature.
-Browser still discovers tools at startup and uses its existing `/browser` route.
-No host MCP tool uses this route as a fallback.
+Browser is the first [WORK MCP server](mcp.md#work-mcp-servers-in-the-sandbox): a
+`WorkServerRecipe` in `src/extensions/browser/recipe.ts`, run by envd's generic
+`WorkMcpHost` over the `/mcp` route. The extension name `kaeno-browser` and tool names are
+unchanged, so saved databases recover without migration.
 
 Proxy-free follow-up to PR27's official MCP integration. No proxy service, new environment
 variable or deployment change is introduced. Chromium renderer sandboxing is explicitly
@@ -79,8 +80,9 @@ Playwright revision; do not independently substitute a stable browser package.
 
 ## State, cleanup, credentials and limits
 
-Schema discovery uses an in-memory MCP connection in the host, closes it immediately, and
-never invokes browser tools. Actual tools use an official SDK stdio transport inside envd.
+Schema discovery starts the official stdio server on the host only to list tools, stops
+it immediately, and never invokes browser tools. If it fails, Kaeno logs it and registers
+placeholders. Actual tools use an official SDK stdio transport inside envd.
 The child receives only fixed POSIX identity/shell values, PATH, temporary HOME/TMPDIR and browser-cache location: no provider,
 envd, SSH, GitHub or ambient proxy credentials. Its cwd is a fresh temporary directory, not
 `/workspace`; no authenticated browser profile or storage state is imported.
@@ -114,7 +116,7 @@ cleanup, cancellation, tool validation, proxy-free requests, explicit worker too
 and tab limits. Session lifecycle tests mock the
 SDK process. HTTP envd tests use a fake browser capability, not Chromium.
 
-`npm run browser:smoke` exercises the real BrowserSession against a loopback fixture:
+`npm run browser:smoke` exercises the real WORK MCP browser session against a loopback fixture:
 JavaScript, cross-navigation session persistence, screenshot and direct close. It keeps
 the explicitly approved `--no-sandbox` policy; it never changes pod security or retries
 with extra privileges. A launch failure is a failed gate.

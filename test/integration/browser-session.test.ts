@@ -29,7 +29,23 @@ vi.mock("@modelcontextprotocol/sdk/client/stdio.js", () => ({
     }
   },
 }));
-import { BrowserSession } from "./index.ts";
+import { browserRecipe } from "../../src/extensions/browser/index.ts";
+import { WorkMcpHost } from "../../src/extensions/mcp/index.ts";
+
+/** Browser's WORK session as envd runs it. */
+function browserSession(): {
+  call(
+    input: { name: string; arguments: object },
+    signal?: AbortSignal,
+  ): Promise<unknown>;
+  close(): Promise<void>;
+} {
+  const host = new WorkMcpHost([browserRecipe]);
+  return {
+    call: (input, signal) => host.call({ server: "browser", ...input }, signal),
+    close: () => host.close(),
+  };
+}
 const input = {
   name: "browser_snapshot",
   arguments: {},
@@ -40,7 +56,7 @@ afterEach(() => {
 });
 it("reuses one sanitized isolated stdio session and removes its temporary directory", async () => {
   mocks.call.mockResolvedValue({ content: [{ type: "text", text: "ok" }] });
-  const session = new BrowserSession();
+  const session = browserSession();
   await session.call(input);
   await session.call(input);
   expect(mocks.connect).toHaveBeenCalledTimes(1);
@@ -76,7 +92,7 @@ it("reuses one sanitized isolated stdio session and removes its temporary direct
   expect(mocks.close).toHaveBeenCalledOnce();
 });
 it("rejects unknown tools before starting a process", async () => {
-  const session = new BrowserSession();
+  const session = browserSession();
   await expect(
     session.call({ ...input, name: "browser_run_code" }),
   ).rejects.toThrow();
@@ -84,7 +100,7 @@ it("rejects unknown tools before starting a process", async () => {
 });
 it("resets on transport failure and can reconnect", async () => {
   mocks.call.mockRejectedValueOnce(new Error("cancelled"));
-  const session = new BrowserSession();
+  const session = browserSession();
   await expect(session.call(input)).rejects.toThrow("cancelled");
   expect(mocks.close).toHaveBeenCalledOnce();
   mocks.call.mockResolvedValue({ content: [] });
@@ -93,7 +109,7 @@ it("resets on transport failure and can reconnect", async () => {
   await session.close();
 });
 it("does not start an already cancelled call", async () => {
-  const session = new BrowserSession();
+  const session = browserSession();
   await expect(session.call(input, AbortSignal.abort())).rejects.toThrow();
   expect(mocks.connect).not.toHaveBeenCalled();
 });
@@ -108,12 +124,12 @@ it("resets when popups exceed the tab budget", async () => {
       },
     ],
   });
-  const session = new BrowserSession();
+  const session = browserSession();
   await expect(session.call(input)).rejects.toThrow("8 tabs");
   expect(mocks.close).toHaveBeenCalledOnce();
 });
 it("does not initialize an unused browser on close", async () => {
-  const session = new BrowserSession();
+  const session = browserSession();
   expect(await session.call({ ...input, name: "browser_close" })).toEqual({
     content: [],
   });
@@ -128,7 +144,7 @@ it("closes failed initialization without forwarding close or relaunching Chromiu
     content: [{ type: "text", text: "No usable sandbox!" }],
   };
   mocks.call.mockResolvedValueOnce(failure);
-  const session = new BrowserSession();
+  const session = browserSession();
   expect(
     await session.call({
       name: "browser_navigate",
@@ -146,7 +162,7 @@ it("closes failed initialization without forwarding close or relaunching Chromiu
 
 it("tears down an active session locally and reconnects only on the next action", async () => {
   mocks.call.mockResolvedValue({ content: [] });
-  const session = new BrowserSession();
+  const session = browserSession();
   await session.call(input);
   const directory = String(mocks.transports[0].cwd);
   await session.call({ ...input, name: "browser_close" });
@@ -175,7 +191,7 @@ it("cancels an active MCP call, rejects concurrent mutation and discards state",
       }),
   );
   const controller = new AbortController();
-  const session = new BrowserSession();
+  const session = browserSession();
   const pending = session.call(input, controller.signal);
   await ready;
   await expect(session.call(input)).rejects.toThrow("busy");

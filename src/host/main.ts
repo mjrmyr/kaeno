@@ -29,13 +29,20 @@ for (const diagnostic of mcp?.diagnostics ?? []) {
   console.error(`mcp: ${diagnostic}`);
 }
 const browser = await browserExtension();
+for (const diagnostic of browser.diagnostics) {
+  console.error(`mcp: ${diagnostic}`);
+}
 const githubExtensions = [
   process.env.KAENO_GITHUB_CONFIG
     ? await loadGitHubConfiguration(process.env.KAENO_GITHUB_CONFIG)
     : githubExtension(),
 ];
 const configuration = await loadEnvironment({
-  extensions: [...githubExtensions, browser, ...(mcp?.extensions ?? [])],
+  extensions: [
+    ...githubExtensions,
+    browser.extension,
+    ...(mcp?.extensions ?? []),
+  ],
   policy: (base) => ({
     assistant: {
       available: [
@@ -49,13 +56,13 @@ const configuration = await loadEnvironment({
       available: [
         ...base.worker.available,
         ...githubExtensions,
-        browser,
+        browser.extension,
         ...(mcp?.policy.worker.available ?? []),
       ],
       defaults: [
         ...base.worker.defaults,
         ...githubExtensions,
-        browser,
+        browser.live,
         ...(mcp?.policy.worker.defaults ?? []),
       ],
     },

@@ -1,9 +1,15 @@
 /** Run inside the candidate WORK image/pod, never on the credential-bearing host. */
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { BrowserSession } from "../src/extensions/browser/index.ts";
+import { browserRecipe } from "../src/extensions/browser/index.ts";
+import { WorkMcpHost } from "../src/extensions/mcp/index.ts";
 
-const session = new BrowserSession();
+const host = new WorkMcpHost([browserRecipe]);
+const session = {
+  call: (input: { name: string; arguments: object }) =>
+    host.call({ server: "browser", ...input }),
+  close: () => host.close(),
+};
 const server = createServer((request, response) => {
   response.setHeader("Content-Type", "text/html; charset=utf-8");
   response.end(`<!doctype html><title>fixture</title><main>loading</main><script>

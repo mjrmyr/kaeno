@@ -5,8 +5,7 @@ const read = { description: "Read", inputSchema: { type: "object" as const } };
 function server(): McpServer {
   return {
     id: "demo",
-    endpoint: "https://example.com/mcp?resource=one",
-    headerFiles: {},
+    call: () => Promise.reject(new Error("unexpected call")),
     tools: [{ upstream: "read", readOnly: true }, { upstream: "write" }],
     advertised: new Map([
       ["read", read],

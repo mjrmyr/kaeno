@@ -73,7 +73,7 @@ it("does not expose the removed collection endpoint", async () => {
   }
 });
 
-it("keeps the browser in envd across transient remote clients and cleans it up", async () => {
+it("keeps WORK MCP sessions in envd across transient remote clients and cleans them up", async () => {
   let calls = 0;
   let closed = false;
   const server = new EnvironmentServer(
@@ -82,7 +82,11 @@ it("keeps the browser in envd across transient remote clients and cleans it up",
     process.cwd(),
     {
       async call(input) {
-        expect(input).toMatchObject({ name: "browser_snapshot" });
+        expect(input).toEqual({
+          server: "browser",
+          name: "browser_snapshot",
+          arguments: {},
+        });
         return { content: [{ type: "text", text: String(++calls) }] };
       },
       async close() {
@@ -100,14 +104,18 @@ it("keeps the browser in envd across transient remote clients and cleans it up",
     function remote() {
       return new RemoteExecutionEnv(url, "token", "work", process.cwd(), fetch);
     }
-    expect((await fetch(`${url}/browser`, { method: "POST" })).status).toBe(
-      401,
-    );
+    expect((await fetch(`${url}/mcp`, { method: "POST" })).status).toBe(401);
     expect(
-      await remote().browser({ name: "browser_snapshot" }, context),
+      await remote().mcp(
+        { server: "browser", name: "browser_snapshot", arguments: {} },
+        context,
+      ),
     ).toMatchObject({ content: [{ text: "1" }] });
     expect(
-      await remote().browser({ name: "browser_snapshot" }, context),
+      await remote().mcp(
+        { server: "browser", name: "browser_snapshot", arguments: {} },
+        context,
+      ),
     ).toMatchObject({ content: [{ text: "2" }] });
     await remote().cleanup(context);
     expect(closed).toBe(true);

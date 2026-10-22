@@ -1,18 +1,65 @@
 import { Type } from "@earendil-works/pi-ai";
 import {
   defineExtension,
+  section,
+  type ToolExecutionApi,
+  type ToolExecutionResult,
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
+import type { Context } from "@earendil-works/chord";
+import { withAbortSignal } from "@earendil-works/chord/context";
 import type { AgentExtension } from "../contributions/index.ts";
+import { RemoteExecutionEnv } from "../execution/index.ts";
 import { toolName, type ToolContract, type ToolPolicy } from "./contract.ts";
 import { callRemote, type HostServer } from "./remote.ts";
-import { toolError } from "./results.ts";
+import { boundResult, toolError } from "./results.ts";
 
-/** Phase 1: host HTTP only; there is deliberately no unimplemented work placement variant. */
-export interface McpServer extends HostServer {
+/** Executes one upstream call. `context` aborts on cancellation and harness shutdown. */
+export type McpCall = (
+  upstream: string,
+  args: unknown,
+  api: ToolExecutionApi,
+  context: Context,
+) => Promise<ToolExecutionResult>;
+
+export interface McpServer {
+  readonly id: string;
   readonly tools: readonly ToolPolicy[];
   /** Contracts the server advertised at startup; empty when discovery failed. */
   readonly advertised: ReadonlyMap<string, ToolContract>;
+  readonly call: McpCall;
+  /** Defaults to `kaeno-mcp-<id>`. Browser keeps `kaeno-browser` so saved databases recover. */
+  readonly extensionName?: string;
+  /** Model guidance shown whenever one of the tools is selected. */
+  readonly guidance?: string;
+}
+
+/** Host placement: the Kaeno process calls the HTTP endpoint with host-only credentials. */
+export function hostCall(server: HostServer): McpCall {
+  return (upstream, args, _api, context) =>
+    callRemote(
+      server,
+      upstream,
+      args,
+      context.abortSignal ?? new AbortController().signal,
+    );
+}
+
+/** Work placement: envd runs the server inside the caller's WORK sandbox. */
+export function workCall(id: string): McpCall {
+  return async (upstream, args, api, context) => {
+    if (!(api.env instanceof RemoteExecutionEnv)) {
+      throw new Error(
+        `${id}: WORK MCP requires a WORK sandbox; host execution is forbidden`,
+      );
+    }
+    const raw = await api.env.mcp(
+      { server: id, name: upstream, arguments: args },
+      context,
+    );
+    // The sandbox holds no credentials, so there is nothing to redact.
+    return boundResult(raw, (text) => text);
+  };
 }
 
 export function mcpTools(server: McpServer): {
@@ -43,18 +90,21 @@ export function mcpTools(server: McpServer): {
       parameters: Type.Unsafe(contract?.inputSchema ?? { type: "object" }),
       replay: policy.replay ?? "unsafe",
       executionMode: policy.executionMode ?? "sequential",
-      async execute(args, _api, context) {
+      async execute(args, api, context) {
         if (!contract) {
           throw toolError(server.id, "not_loaded");
         }
-        const pending = callRemote(
-          server,
+        const pending = server.call(
           policy.upstream,
           args,
-          AbortSignal.any([
-            stopped.signal,
-            ...(context.abortSignal ? [context.abortSignal] : []),
-          ]),
+          api,
+          withAbortSignal(
+            AbortSignal.any([
+              stopped.signal,
+              ...(context.abortSignal ? [context.abortSignal] : []),
+            ]),
+            context,
+          ),
         );
         active.add(pending);
         try {
@@ -73,7 +123,13 @@ export function mcpTools(server: McpServer): {
   return {
     extension: {
       runtime: {
-        durable: defineExtension({ name: `kaeno-mcp-${server.id}`, tools }),
+        durable: defineExtension({
+          name: server.extensionName ?? `kaeno-mcp-${server.id}`,
+          tools,
+          sections: server.guidance
+            ? [section(server.id, () => server.guidance ?? "")]
+            : [],
+        }),
         readOnlyTools: readOnly.tools,
         async start(_core, signal) {
           // Discovery already ran; calls own their transports, so nothing to roll back.

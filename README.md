@@ -119,5 +119,6 @@ are not a production rollout.
 
 Set `KAENO_MCP_CONFIG` to an owner-controlled config; Kaeno discovers the allowlisted
 tools at startup. [Setup, security boundaries and phase-1 limitations](docs/mcp.md)
-cover host Streamable HTTP tools (`none`/header-file authentication). OAuth and the generic
-WORK/Browser migration are not implemented. GitHub credentials and publishing remain native.
+cover host Streamable HTTP tools (`none`/header-file authentication) and code-declared WORK MCP
+servers that run inside each sandbox, like Browser. OAuth is not implemented. GitHub credentials
+and publishing remain native.
