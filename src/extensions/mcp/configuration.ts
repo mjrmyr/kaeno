@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { AgentExtension } from "../contributions/index.ts";
 import { endpointOf, serverIdSchema, toolPolicySchema } from "./contract.ts";
 import { discoverRemote, type HostServer } from "./remote.ts";
-import { mcpTools } from "./server.ts";
+import { hostCall, mcpTools } from "./server.ts";
 
 // Only owner-controlled authentication headers, never routing, cookies, MCP protocol or process env.
 const headerNameSchema = z
@@ -121,7 +121,8 @@ export async function loadMcpConfiguration(
       );
     }
     const set = mcpTools({
-      ...host,
+      id: host.id,
+      call: hostCall(host),
       tools,
       advertised: result.status === "fulfilled" ? result.value : new Map(),
     });

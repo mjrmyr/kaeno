@@ -1,8 +1,9 @@
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { EnvironmentServer } from "../extensions/execution/index.ts";
 import { setupSsh } from "../extensions/github/index.ts";
-import { BrowserSession } from "../extensions/browser/index.ts";
-const browser = new BrowserSession();
+import { browserRecipe } from "../extensions/browser/index.ts";
+import { WorkMcpHost } from "../extensions/mcp/index.ts";
+const mcp = new WorkMcpHost([browserRecipe]);
 const token = process.env.KAENO_ENV_TOKEN ?? "";
 if (token.length < 32) {
   throw new Error("KAENO_ENV_TOKEN must be set");
@@ -15,11 +16,11 @@ const server = new EnvironmentServer(
   token,
   (cwd) => new NodeExecutionEnv({ cwd }),
   process.cwd(),
-  browser,
+  mcp,
 ).server.listen(port, () =>
   console.log(`envd listening on :${port}, cwd ${process.cwd()}`),
 );
 process.once("SIGTERM", () => {
   server.close();
-  void browser.close().finally(() => process.exit(0));
+  void mcp.close().finally(() => process.exit(0));
 });

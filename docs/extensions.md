@@ -68,8 +68,8 @@ An optional `forAgent(target, rolePolicy)` on the returned policy can narrow rol
 [Host MCP phase 1](mcp.md) adds one ordinary `kaeno-mcp-<id>` extension per configured server.
 It derives role policy from independently reviewed tool permissions and registers the
 allowlisted tools discovered from each server at startup.
-It does not add core machinery or definition readers. OAuth and the generic WORK/Browser
-transport migration in the design are not implemented; Browser remains a separate feature.
+It does not add core machinery or definition readers. Code-declared [WORK MCP](mcp.md#work-mcp-servers-in-the-sandbox)
+recipes run stdio servers inside each WORK sandbox; Browser is the first. OAuth is not implemented.
 
 ## Author an extension
 

@@ -641,7 +641,7 @@ it("rejects changed private scope in frozen WORK before provisioning, reconcilia
 
 it("derives real discovered Browser worker contributions and rejects an assistant self-grant", async () => {
   const { root, configFile } = await fixture();
-  const browser = await browserExtension();
+  const { extension: browser, live } = await browserExtension();
   const options: LoadEnvironmentOptions = {
     configFile,
     extensions: [browser],
@@ -649,7 +649,7 @@ it("derives real discovered Browser worker contributions and rejects an assistan
       ...base,
       worker: {
         available: [...base.worker.available, browser],
-        defaults: [...base.worker.defaults, browser],
+        defaults: [...base.worker.defaults, live],
       },
     }),
   };

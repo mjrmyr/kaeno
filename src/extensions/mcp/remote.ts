@@ -204,7 +204,7 @@ async function connected<T>(
 }
 
 /** Startup discovery: all pages, with finite pagination and duplicate/cursor-cycle rejection. */
-async function advertised(
+export async function advertised(
   client: Client,
   signal: AbortSignal,
   redact: (value: string) => string,

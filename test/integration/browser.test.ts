@@ -9,7 +9,11 @@ import {
 import { RemoteExecutionEnv } from "../../src/extensions/execution/index.ts";
 
 it("discovers real official MCP schemas and registers model-visible tools", async () => {
-  const { runtime: extension } = await browserExtension();
+  const {
+    extension: { runtime: extension },
+    diagnostics,
+  } = await browserExtension();
+  expect(diagnostics).toEqual([]);
   expect(extension.durable.tools?.map((tool) => tool.name)).toEqual(
     BROWSER_TOOLS,
   );
@@ -25,9 +29,12 @@ it("discovers real official MCP schemas and registers model-visible tools", asyn
       BACKGROUND_CONTEXT,
     ),
   ).rejects.toThrow("host execution is forbidden");
+  expect(extension.durable.sections).toHaveLength(1);
 });
 it("routes to sandbox and forwards bounded text and screenshot images", async () => {
-  const { runtime: extension } = await browserExtension();
+  const {
+    extension: { runtime: extension },
+  } = await browserExtension();
   let requested = "";
   let requestBody: unknown;
   const env = new RemoteExecutionEnv(
@@ -55,8 +62,9 @@ it("routes to sandbox and forwards bounded text and screenshot images", async ()
     apiWithEnvironment(env),
     BACKGROUND_CONTEXT,
   );
-  expect(requested).toBe("http://sandbox/browser");
+  expect(requested).toBe("http://sandbox/mcp");
   expect(requestBody).toMatchObject({
+    server: "browser",
     name: "browser_navigate",
     arguments: { url: "https://example.com" },
   });

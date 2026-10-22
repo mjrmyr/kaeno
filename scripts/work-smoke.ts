@@ -53,14 +53,14 @@ await writeFile(
 const browser = await browserExtension();
 const configuration = await loadEnvironment({
   configFile,
-  extensions: [browser],
+  extensions: [browser.extension],
   maxDepth: 1,
   maxConcurrent: 2,
   policy: (base) => ({
     ...base,
     worker: {
-      available: [...base.worker.available, browser],
-      defaults: [...base.worker.defaults, browser],
+      available: [...base.worker.available, browser.extension],
+      defaults: [...base.worker.defaults, browser.live],
     },
   }),
 });

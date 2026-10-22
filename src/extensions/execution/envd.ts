@@ -36,7 +36,7 @@ const requestSchema = z.object({
 });
 export class EnvironmentServer {
   readonly server: Server;
-  private readonly browser?: {
+  private readonly mcp?: {
     call(input: unknown, signal?: AbortSignal): Promise<unknown>;
     close(): Promise<void>;
   };
@@ -49,9 +49,9 @@ export class EnvironmentServer {
     token: string | (() => string),
     createEnvironment: (cwd: string) => ExecutionEnv,
     root = process.cwd(),
-    browser?: EnvironmentServer["browser"],
+    mcp?: EnvironmentServer["mcp"],
   ) {
-    this.browser = browser;
+    this.mcp = mcp;
     this.token = token;
     this.createEnvironment = createEnvironment;
     this.root = root;
@@ -100,7 +100,7 @@ export class EnvironmentServer {
       req.setEncoding("utf8");
       for await (const chunk of req) {
         raw += String(chunk);
-        if (req.url === "/browser" && Buffer.byteLength(raw) > 1_000_000) {
+        if (req.url === "/mcp" && Buffer.byteLength(raw) > 1_000_000) {
           throw new Error("Environment request too large");
         }
       }
@@ -136,17 +136,32 @@ export class EnvironmentServer {
           }),
         }),
       );
-      if (req.url === "/browser") {
-        if (!this.browser) {
-          throw new Error("Browser MCP unavailable in this environment");
+      if (req.url === "/mcp") {
+        if (!this.mcp) {
+          throw new Error("WORK MCP unavailable in this environment");
         }
-        const result = await this.browser.call(input, abort.signal);
+        // The route body is the whole MCP call; envd's request envelope fields are not part of it.
+        const {
+          server,
+          name,
+          arguments: args,
+        } = z
+          .object({
+            server: z.unknown(),
+            name: z.unknown(),
+            arguments: z.unknown(),
+          })
+          .parse(input);
+        const result = await this.mcp.call(
+          { server, name, arguments: args },
+          abort.signal,
+        );
         write({ ret: encode(result) });
         res.end();
         return;
       }
       if (req.url === "/cleanup") {
-        await this.browser?.close();
+        await this.mcp?.close();
         const client = this.clients.get(clientId);
         if (client) {
           for (const handle of client.handles.values()) {
