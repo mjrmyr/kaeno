@@ -1,5 +1,9 @@
 # WORK browser tools over MCP
 
+The separate [owner-configured host MCP phase 1](mcp.md) does not migrate this feature.
+Browser still discovers tools at startup and uses its existing `/browser` route.
+No host MCP tool uses this route as a fallback.
+
 Proxy-free follow-up to PR27's official MCP integration. No proxy service, new environment
 variable or deployment change is introduced. Chromium renderer sandboxing is explicitly
 disabled with owner approval; pod security settings are unchanged.

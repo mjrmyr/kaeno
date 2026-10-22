@@ -16,11 +16,18 @@ import {
 import { parseModelRef } from "../extensions/agents/index.ts";
 import { ApiServer } from "../extensions/api/index.ts";
 
+import { loadMcpConfiguration } from "../extensions/mcp/index.ts";
 import { browserExtension } from "../extensions/browser/index.ts";
 import { dockerExecutionProvider } from "../extensions/docker/index.ts";
 import { kubernetesExecutionProvider } from "../extensions/kubernetes/index.ts";
 import { microsandboxExecutionProvider } from "../extensions/microsandbox/index.ts";
 
+const mcp = process.env.KAENO_MCP_CONFIG
+  ? await loadMcpConfiguration(process.env.KAENO_MCP_CONFIG)
+  : undefined;
+for (const diagnostic of mcp?.diagnostics ?? []) {
+  console.error(`mcp: ${diagnostic}`);
+}
 const browser = await browserExtension();
 const githubExtensions = [
   process.env.KAENO_GITHUB_CONFIG
@@ -28,15 +35,29 @@ const githubExtensions = [
     : githubExtension(),
 ];
 const configuration = await loadEnvironment({
-  extensions: [...githubExtensions, browser],
+  extensions: [...githubExtensions, browser, ...(mcp?.extensions ?? [])],
   policy: (base) => ({
     assistant: {
-      available: [...base.assistant.available, ...githubExtensions],
+      available: [
+        ...base.assistant.available,
+        ...githubExtensions,
+        ...(mcp?.policy.assistant.available ?? []),
+      ],
       defaults: [...base.assistant.defaults, ...githubExtensions],
     },
     worker: {
-      available: [...base.worker.available, ...githubExtensions, browser],
-      defaults: [...base.worker.defaults, ...githubExtensions, browser],
+      available: [
+        ...base.worker.available,
+        ...githubExtensions,
+        browser,
+        ...(mcp?.policy.worker.available ?? []),
+      ],
+      defaults: [
+        ...base.worker.defaults,
+        ...githubExtensions,
+        browser,
+        ...(mcp?.policy.worker.defaults ?? []),
+      ],
     },
   }),
   configFile: process.env.KAENO_CONFIG ?? ".kaeno/config.json",
