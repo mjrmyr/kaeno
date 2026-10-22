@@ -63,6 +63,14 @@ This assigns knowledge and **zero tools**, not even `read_skill`. The existing s
 
 An optional `forAgent(target, rolePolicy)` on the returned policy can narrow role availability or change defaults within it. `target` contains a qualified agent ID and role. It cannot broaden role permission. WORK's approved tool surface comes from worker-role availability, not defaults, selected profiles or per-agent narrowing; this preserves frozen saved participant plans.
 
+## Owner-configured MCP
+
+[Host MCP phase 1](mcp.md) adds one ordinary `kaeno-mcp-<id>` extension per configured server.
+It derives role policy from independently reviewed tool permissions and registers the
+allowlisted tools discovered from each server at startup.
+It does not add core machinery or definition readers. OAuth and the generic WORK/Browser
+transport migration in the design are not implemented; Browser remains a separate feature.
+
 ## Author an extension
 
 `AgentExtension` is exported from `src/extensions/contributions/index.ts`:

@@ -114,3 +114,10 @@ Roll out only as a coordinated release:
 
 These changes do not merge, deploy or alter Homelab pins. CI image-build checks
 are not a production rollout.
+
+## Owner-configured MCP tools
+
+Set `KAENO_MCP_CONFIG` to an owner-controlled config; Kaeno discovers the allowlisted
+tools at startup. [Setup, security boundaries and phase-1 limitations](docs/mcp.md)
+cover host Streamable HTTP tools (`none`/header-file authentication). OAuth and the generic
+WORK/Browser migration are not implemented. GitHub credentials and publishing remain native.
