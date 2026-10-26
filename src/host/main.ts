@@ -19,6 +19,7 @@ import { ApiServer } from "../extensions/api/index.ts";
 
 import { loadMcpConfiguration } from "../extensions/mcp/index.ts";
 import { memoryExtension, MemoryStore } from "../extensions/memory/index.ts";
+import { Routines, RoutineStore } from "../extensions/routines/index.ts";
 import { browserExtension } from "../extensions/browser/index.ts";
 import { dockerExecutionProvider } from "../extensions/docker/index.ts";
 import { kubernetesExecutionProvider } from "../extensions/kubernetes/index.ts";
@@ -28,6 +29,11 @@ const data = await openDataDirectory(process.env.KAENO_DATA_DIR ?? "/data");
 const memory = new MemoryStore(data.kaeno);
 // Owner memory belongs to the assistant only: workers get the facts they need in their brief.
 const memoryTools = { runtime: memoryExtension(memory) };
+const routines = new Routines(new RoutineStore(data.kaeno), (error) =>
+  console.error("routines:", error),
+);
+// Kaeno may list routines; only the owner creates, changes or runs them.
+const routineTools = { runtime: routines.extension() };
 const mcp = process.env.KAENO_MCP_CONFIG
   ? await loadMcpConfiguration(process.env.KAENO_MCP_CONFIG)
   : undefined;
@@ -48,6 +54,7 @@ const configuration = await loadEnvironment({
     ...githubExtensions,
     browser.extension,
     memoryTools,
+    routineTools,
     ...(mcp?.extensions ?? []),
   ],
   policy: (base) => ({
@@ -56,9 +63,15 @@ const configuration = await loadEnvironment({
         ...base.assistant.available,
         ...githubExtensions,
         memoryTools,
+        routineTools,
         ...(mcp?.policy.assistant.available ?? []),
       ],
-      defaults: [...base.assistant.defaults, ...githubExtensions, memoryTools],
+      defaults: [
+        ...base.assistant.defaults,
+        ...githubExtensions,
+        memoryTools,
+        routineTools,
+      ],
     },
     worker: {
       available: [
@@ -207,7 +220,7 @@ try {
     previous = tasks;
   });
 
-  const current = new ApiServer(core, memory).server;
+  const current = new ApiServer(core, { memory, routines }).server;
   server = current;
   await new Promise<void>((resolve, reject) => {
     current.once("error", reject);

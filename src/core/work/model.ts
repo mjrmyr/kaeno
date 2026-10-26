@@ -103,7 +103,7 @@ export const WorkIndex = defineDoc<{
   fork: "initial",
   initial: () => ({ launches: {} }),
 });
-interface WorkScopeState extends JsonObject {
+export interface WorkScopeState extends JsonObject {
   workId: TaskId | null;
   depth: number;
   maxDepth: number | null;

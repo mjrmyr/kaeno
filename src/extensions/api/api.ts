@@ -8,6 +8,7 @@ import {
   updateEntry,
   type MemoryStore,
 } from "../memory/index.ts";
+import type { Routines } from "../routines/index.ts";
 
 async function readJson(req: IncomingMessage): Promise<unknown> {
   let raw = "";
@@ -23,7 +24,12 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
 
 export class ApiServer {
   readonly server: Server;
-  constructor(core: Kaeno, memory: MemoryStore) {
+  /** Routes of an omitted feature answer 404. */
+  constructor(
+    core: Kaeno,
+    features: { memory?: MemoryStore; routines?: Routines } = {},
+  ) {
+    const { memory, routines } = features;
     this.server = createServer(async (req, res) => {
       function json(status: number, value: unknown) {
         res.writeHead(status, { "content-type": "application/json" });
@@ -40,13 +46,45 @@ export class ApiServer {
           return json(200, await core.threads.listConversations());
         }
 
-        if (req.method === "GET" && url.pathname === "/v1/memory") {
+        if (routines && url.pathname === "/v1/routines") {
+          if (req.method === "GET") {
+            return json(200, await routines.describe(Date.now()));
+          }
+          if (req.method === "POST") {
+            return json(201, routines.create(await readJson(req)));
+          }
+        }
+        const routine = routines
+          ? /^\/v1\/routines\/([0-9]{1,15})(\/run)?$/.exec(url.pathname)
+          : null;
+        if (routines && routine) {
+          const routineId = Number(routine[1]);
+          if (routine[2] && req.method === "POST") {
+            return json(202, { workId: await routines.runNow(routineId) });
+          }
+          if (!routine[2] && req.method === "PUT") {
+            return routines.replace(routineId, await readJson(req))
+              ? json(200, { id: routineId })
+              : json(404, { error: "Not found" });
+          }
+          if (!routine[2] && req.method === "DELETE") {
+            return json(200, {
+              id: routineId,
+              removed: routines.remove(routineId),
+            });
+          }
+          return json(404, { error: "Not found" });
+        }
+
+        if (memory && req.method === "GET" && url.pathname === "/v1/memory") {
           return json(200, memoryIndex(memory.read()));
         }
 
         // Owner edits from this API are not turns: they change memory directly, like a settings page.
-        const entry = /^\/v1\/memory\/(m[0-9]{1,20})$/.exec(url.pathname);
-        if (entry) {
+        const entry = memory
+          ? /^\/v1\/memory\/(m[0-9]{1,20})$/.exec(url.pathname)
+          : null;
+        if (memory && entry) {
           const memoryId = entry[1];
           if (req.method === "GET") {
             const { entries } = memory.read();
