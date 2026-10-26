@@ -65,6 +65,11 @@ This cut intentionally does not migrate the prior WORK/Telegram database or lega
 
 See the [core entry point](src/core/application/index.ts), [WORK implementation](src/core/work/work.ts) and [extension composition tests](test/integration/extensions.test.ts).
 
+The [standing responsibilities implementation proposal](docs/standing-responsibilities-draft.md)
+describes scheduled/event-triggered activation and bounded follow-through from worker
+results. It is a design draft, not an implemented capability; existing activity-result
+turns remain read-only.
+
 ```sh
 npm run verify
 ```
