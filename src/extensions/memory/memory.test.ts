@@ -1,30 +1,75 @@
 import { expect, it } from "vitest";
 import {
   forgetEntry,
+  memoryIndex,
   memoryPrompt,
+  readEntries,
   saveEntry,
-  MAX_ENTRIES,
-  MAX_TEXT,
+  updateEntry,
+  LIMITS,
   type MemoryState,
 } from "./index.ts";
 
 const day = Date.UTC(2026, 9, 26);
 
-it("saves normalized single-line text and replays a saved call without change", () => {
+it("saves a one-line preference and replays a saved call without change", () => {
   const state: MemoryState = { entries: {} };
-  saveEntry(state, { id: "m1", text: "  prefers\n German  ", savedAt: day });
-  saveEntry(state, { id: "m1", text: "different", savedAt: day + 1 });
+  const change = {
+    id: "m1",
+    kind: "preference" as const,
+    text: "  answer\n in German  ",
+    savedAt: day,
+  };
+  saveEntry(state, change);
+  saveEntry(state, { ...change, text: "different", savedAt: day + 1 });
   expect(state.entries).toEqual({
-    m1: { text: "prefers German", savedAt: day },
+    m1: { kind: "preference", text: "answer in German", savedAt: day },
+  });
+});
+
+it("requires a title for a memory, forbids one for a preference, and keeps memory text layout", () => {
+  const state: MemoryState = { entries: {} };
+  expect(() =>
+    saveEntry(state, { id: "m1", kind: "memory", text: "x", savedAt: day }),
+  ).toThrow("needs a title");
+  expect(() =>
+    saveEntry(state, {
+      id: "m1",
+      kind: "preference",
+      title: "x",
+      text: "x",
+      savedAt: day,
+    }),
+  ).toThrow("has no title");
+  saveEntry(state, {
+    id: "m2",
+    kind: "memory",
+    title: " Flat \n lease ",
+    text: "Landlord: Ms. Weber\nEnds: 2027-03-31",
+    savedAt: day,
+  });
+  expect(state.entries.m2).toEqual({
+    kind: "memory",
+    title: "Flat lease",
+    text: "Landlord: Ms. Weber\nEnds: 2027-03-31",
+    savedAt: day,
   });
 });
 
 it("replaces atomically, and a replayed replacement does not fail on the removed ID", () => {
   const state: MemoryState = { entries: {} };
-  saveEntry(state, { id: "m1", text: "lives in Berlin", savedAt: day });
+  saveEntry(state, {
+    id: "m1",
+    kind: "memory",
+    title: "Home",
+    text: "Berlin",
+    savedAt: day,
+  });
   const change = {
     id: "m2",
-    text: "lives in Munich",
+    kind: "memory" as const,
+    title: "Home",
+    text: "Munich",
     savedAt: day,
     replaces: "m1",
   };
@@ -32,48 +77,96 @@ it("replaces atomically, and a replayed replacement does not fail on the removed
   saveEntry(state, change);
   expect(Object.keys(state.entries)).toEqual(["m2"]);
   expect(() =>
-    saveEntry(state, { id: "m3", text: "x", savedAt: day, replaces: "m9" }),
-  ).toThrow("No memory m9 to replace");
+    saveEntry(state, {
+      id: "m3",
+      kind: "preference",
+      text: "x",
+      savedAt: day,
+      replaces: "m9",
+    }),
+  ).toThrow("No entry m9 to replace");
 });
 
-it("rejects empty, oversized and over-capacity saves; replacing still works when full", () => {
+it("bounds each kind separately; replacing still works when full", () => {
   const state: MemoryState = { entries: {} };
-  expect(() =>
-    saveEntry(state, { id: "m0", text: " \n", savedAt: day }),
-  ).toThrow("needs text");
-  expect(() =>
+  for (let index = 0; index < LIMITS.preference.entries; index++) {
     saveEntry(state, {
-      id: "m0",
-      text: "x".repeat(MAX_TEXT + 1),
+      id: `p${index}`,
+      kind: "preference",
+      text: "rule",
       savedAt: day,
-    }),
-  ).toThrow(`at most ${MAX_TEXT}`);
-  for (let index = 0; index < MAX_ENTRIES; index++) {
-    saveEntry(state, { id: `f${index}`, text: "fact", savedAt: day });
+    });
   }
   expect(() =>
-    saveEntry(state, { id: "extra", text: "fact", savedAt: day }),
-  ).toThrow("Memory is full");
-  saveEntry(state, { id: "new", text: "fresh", savedAt: day, replaces: "f0" });
-  expect(Object.keys(state.entries)).toHaveLength(MAX_ENTRIES);
+    saveEntry(state, {
+      id: "extra",
+      kind: "preference",
+      text: "rule",
+      savedAt: day,
+    }),
+  ).toThrow("Preferences are full");
+  saveEntry(state, {
+    id: "fact",
+    kind: "memory",
+    title: "Still room",
+    text: "x",
+    savedAt: day,
+  });
+  saveEntry(state, {
+    id: "new",
+    kind: "preference",
+    text: "fresh",
+    savedAt: day,
+    replaces: "p0",
+  });
+  expect(() =>
+    saveEntry(state, {
+      id: "long",
+      kind: "preference",
+      text: "x".repeat(LIMITS.preference.text + 1),
+      savedAt: day,
+    }),
+  ).toThrow(`at most ${LIMITS.preference.text}`);
 });
 
-it("forgets idempotently", () => {
-  const state: MemoryState = { entries: { m1: { text: "x", savedAt: day } } };
+it("updates in place keeping the kind, and forgets idempotently", () => {
+  const state: MemoryState = {
+    entries: { m1: { kind: "memory", title: "A", text: "old", savedAt: day } },
+  };
+  expect(updateEntry(state, "m1", { title: "B", text: "new" }, day + 1)).toBe(
+    true,
+  );
+  expect(state.entries.m1).toEqual({
+    kind: "memory",
+    title: "B",
+    text: "new",
+    savedAt: day + 1,
+  });
+  expect(updateEntry(state, "m9", { text: "x" }, day)).toBe(false);
+  expect(updateEntry(state, "__proto__", { text: "x" }, day)).toBe(false);
   expect(forgetEntry(state, "m1")).toBe(true);
   expect(forgetEntry(state, "m1")).toBe(false);
 });
 
-it("renders entries oldest first with IDs and dates, and guidance when empty", () => {
-  expect(memoryPrompt(undefined)).toContain("Nothing saved yet.");
-  const prompt = memoryPrompt({
+it("indexes preferences in full and memories by title only; reading returns the body", () => {
+  const state: MemoryState = {
     entries: {
-      m9: { text: "newer", savedAt: day + 86_400_000 },
-      m2: { text: "older", savedAt: day },
+      m9: { kind: "memory", title: "Lease", text: "SECRET BODY", savedAt: day },
+      m2: { kind: "preference", text: "answer in German", savedAt: day },
     },
+  };
+  expect(memoryIndex(state)).toEqual({
+    preferences: [{ id: "m2", text: "answer in German", savedAt: day }],
+    memories: [{ id: "m9", title: "Lease", savedAt: day }],
   });
-  expect(prompt).toContain(
-    `Saved (2/${MAX_ENTRIES}):\n- m2 (2026-10-26): older\n- m9 (2026-10-27): newer`,
+  const prompt = memoryPrompt(state);
+  expect(prompt).toContain("Preferences:\n- m2: answer in German");
+  expect(prompt).toContain("Memories:\n- m9 (2026-10-26): Lease");
+  expect(prompt).not.toContain("SECRET BODY");
+  expect(readEntries(state, ["m9", "m4"])).toBe(
+    "## m9: Lease\nSECRET BODY\n\n## m4\nNot in memory.",
   );
-  expect(prompt).toContain("Workers cannot see this memory");
+  expect(memoryPrompt(undefined)).toContain(
+    "Preferences:\n(none)\n\nMemories:\n(none)",
+  );
 });

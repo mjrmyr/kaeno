@@ -47,7 +47,7 @@ To provision a login from a read-only source such as a Kubernetes Secret, set `K
 
 ## Owner memory
 
-Kaeno keeps long-term facts and preferences about its owner in one durable memory shared by every thread, and it survives `reset`. It saves them with `memory_save` and removes them with `memory_forget`, and every entry is in its prompt. Only your own messages can change memory: work reports are untrusted and cannot. Workers never see memory; Kaeno puts the facts a task needs into its brief. See [personal continuity](docs/continuity.md) for the design and the proposed persistent workspace.
+Kaeno keeps a durable memory of its owner, shared by every thread and kept across `reset`. **Preferences** (how you want things done) are always in its prompt in full. **Memories** (facts) appear there by title only, and Kaeno reads the ones it needs with `memory_read`. Only your own messages can change memory: work reports are untrusted and cannot. Workers never see memory; Kaeno puts the facts a task needs into its brief. Browse and edit it with `GET /v1/memory`, `GET`/`PUT`/`DELETE /v1/memory/:id`. See [personal continuity](docs/continuity.md) for the design and the proposed persistent workspace.
 
 ## Embed and extend
 

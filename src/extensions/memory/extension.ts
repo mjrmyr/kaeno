@@ -9,9 +9,11 @@ import type { KaenoExtension } from "../../core/application/index.ts";
 import {
   forgetEntry,
   memoryPrompt,
+  readEntries,
   saveEntry,
-  MAX_TEXT,
+  LIMITS,
   MEMORY_FORGET,
+  MEMORY_READ,
   MEMORY_SAVE,
   type MemoryState,
 } from "./memory.ts";
@@ -27,29 +29,38 @@ export const Memory = defineDoc<MemoryState>({
 });
 
 /**
- * Owner memory for CHAT. Both tools mutate, so the assistant tool policy admits them only on
- * user turns: a work report cannot plant a memory. Workers are never offered them.
+ * Owner memory for CHAT. Save and forget mutate, so the assistant tool policy admits them only on
+ * user turns: a work report cannot plant a memory. Workers are never offered these tools.
  */
 export function memoryExtension(): KaenoExtension {
   const save = defineTool({
     name: MEMORY_SAVE,
     description:
-      "Save one stable fact or preference about the owner to long-term memory, visible in every thread.",
+      "Save a preference (always applies, shown in full in every thread) or a memory (a fact, listed by title and read on demand).",
     parameters: Type.Object({
-      text: Type.String({ minLength: 1, maxLength: MAX_TEXT }),
+      kind: Type.Union([Type.Literal("preference"), Type.Literal("memory")]),
+      title: Type.Optional(
+        Type.String({
+          maxLength: LIMITS.memory.title,
+          description: "Required for a memory, omitted for a preference",
+        }),
+      ),
+      text: Type.String({ minLength: 1, maxLength: LIMITS.memory.text }),
       replaces: Type.Optional(
-        Type.String({ description: "ID of an outdated memory this corrects" }),
+        Type.String({ description: "ID of an outdated entry this corrects" }),
       ),
     }),
     replay: "safe",
-    execute: async ({ text, replaces }, api, context) => {
+    execute: async ({ kind, title, text, replaces }, api, context) => {
       // The tool call is the idempotency key, as for start_work.
       const id = `m${api.taskId}`;
       await api.commit(async (tx) => {
         saveEntry(await tx.doc(Memory), {
           id,
+          kind,
           text,
           savedAt: Date.now(),
+          ...(title === undefined ? {} : { title }),
           ...(replaces === undefined ? {} : { replaces }),
         });
       }, context);
@@ -58,7 +69,7 @@ export function memoryExtension(): KaenoExtension {
   });
   const forget = defineTool({
     name: MEMORY_FORGET,
-    description: "Remove one memory by ID.",
+    description: "Remove one preference or memory by ID.",
     parameters: Type.Object({ id: Type.String({ minLength: 1 }) }),
     replay: "safe",
     execute: async ({ id }, api, context) => {
@@ -76,15 +87,36 @@ export function memoryExtension(): KaenoExtension {
       };
     },
   });
+  const read = defineTool({
+    name: MEMORY_READ,
+    description:
+      "Read the full text of memories listed by title in your index.",
+    parameters: Type.Object({
+      ids: Type.Array(Type.String({ minLength: 1 }), {
+        minItems: 1,
+        maxItems: 20,
+      }),
+    }),
+    replay: "safe",
+    execute: async ({ ids }, api, context) => ({
+      content: [
+        {
+          type: "text",
+          text: readEntries(await api.snapshot(Memory, context), ids),
+        },
+      ],
+    }),
+  });
   return {
     durable: defineExtension({
       name: MEMORY_EXTENSION,
-      tools: [save, forget],
+      tools: [save, forget, read],
       sections: [
-        section("memory", async ({ read }, context) =>
-          memoryPrompt(await read.snapshot(Memory, context)),
+        section("memory", async ({ read: reader }, context) =>
+          memoryPrompt(await reader.snapshot(Memory, context)),
         ),
       ],
     }),
+    readOnlyTools: [MEMORY_READ],
   };
 }
