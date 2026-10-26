@@ -45,6 +45,10 @@ Provider API keys come from the environment (`ANTHROPIC_API_KEY`, `OPENAI_API_KE
 
 To provision a login from a read-only source such as a Kubernetes Secret, set `KAENO_AUTH_SEED_FILE` to that file. At startup Kaeno imports it into `KAENO_AUTH_FILE` once per distinct seed: an unchanged seed is ignored so refreshed tokens survive restarts, and a changed seed (a new login) replaces the live credentials. After the first refresh the seed's own tokens are spent, so it only helps on a fresh `KAENO_AUTH_FILE`. A configured seed that is missing or invalid fails startup.
 
+## Owner memory
+
+Kaeno keeps long-term facts and preferences about its owner in one durable memory shared by every thread, and it survives `reset`. It saves them with `memory_save` and removes them with `memory_forget`, and every entry is in its prompt. Only your own messages can change memory: work reports are untrusted and cannot. Workers never see memory; Kaeno puts the facts a task needs into its brief. See [personal continuity](docs/continuity.md) for the design and the proposed persistent workspace.
+
 ## Embed and extend
 
 The embedding entry point is `openKaeno` in `src/core/application/index.ts`. Callers supply resolved native assistant settings and explicitly install pi-durable extensions. WORK takes `work.agents`: plain agent profiles (`id`, `description`, resolved `setup`). `openKaeno` checks every agent against the approved worker tools and installed binding owners and throws on a misfit, so an agent that cannot run fails startup instead of being listed as unavailable. `loadEnvironment` in `src/host/composition/index.ts` resolves the same configured sources for local, Docker, and Kubernetes hosts; source acquisition and catalogs do not enter durable core.

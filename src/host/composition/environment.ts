@@ -28,6 +28,10 @@ import {
   SKILL_TOOLS,
   SkillCatalog,
 } from "../../extensions/skills/index.ts";
+import {
+  memoryExtension,
+  MEMORY_TOOLS,
+} from "../../extensions/memory/index.ts";
 import type { InstalledExtension } from "../../extensions/contributions/index.ts";
 import { resolveExtensions, type ContributionPolicy } from "./contributions.ts";
 import {
@@ -213,13 +217,15 @@ export async function loadEnvironment(
       const standard: KaenoExtension[] = [
         { durable: CodingTools },
         skillsExtension(),
+        memoryExtension(),
         definitionOriginsExtension(),
       ];
       const contributions = resolveExtensions({
         extensions: options.extensions ?? [],
         standard,
         sourceSkills: catalog,
-        assistantTools: [...ORCHESTRATION, ...SKILL_TOOLS],
+        // Owner memory stays with CHAT; workers get the facts they need in their brief.
+        assistantTools: [...ORCHESTRATION, ...SKILL_TOOLS, ...MEMORY_TOOLS],
         workerTools: [...WORKER_TOOLS, ...SKILL_TOOLS],
         policy: options.policy,
       });

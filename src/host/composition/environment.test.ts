@@ -215,6 +215,22 @@ it.each(["[]", "[list_work]"])(
     );
   },
 );
+it("gives owner memory to the assistant by default and never makes it available to workers", async () => {
+  const { root, configFile } = await fixture();
+  const config = await loadEnvironment({ configFile });
+  expect(config.assistant.tools).toEqual(
+    expect.arrayContaining(["memory_save", "memory_forget"]),
+  );
+  expect(config.work.tools).not.toContain("memory_save");
+  expect(config.work.agents[0].setup.tools).not.toContain("memory_save");
+  await put(
+    join(root, "agents/swe.md"),
+    agent("swe", "model: openai/test\ntools: [memory_save]\n"),
+  );
+  await expect(loadEnvironment({ configFile })).rejects.toThrow(
+    'tool "memory_save" is outside policy availability',
+  );
+});
 it("rejects explicit worker tools outside the approved policy before opening core", async () => {
   const { root, configFile } = await fixture();
   await put(
