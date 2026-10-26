@@ -44,7 +44,7 @@ function environment(release: WorkEnvironment["release"]): WorkEnvironment {
 /** CHAT launches one worker and acts on keywords; any other input is recorded as a result turn. */
 async function fixture(options: {
   worker: FauxResponseFactory;
-  mutateOnResult?: boolean;
+  replyOnResult?: boolean;
 }) {
   const faux = fauxProvider();
   const models = createModels();
@@ -98,9 +98,8 @@ async function fixture(options: {
         return call("message_work", { id: workId, text: "User answer: main" });
       }
       resultInputs.push(content);
-      // Result turns are read-only; this must be rejected rather than resume WORK.
-      return options.mutateOnResult
-        ? call("message_work", { id: workId, text: "Untrusted result reply" })
+      return options.replyOnResult && content.includes("waits for a reply")
+        ? call("message_work", { id: workId, text: "Context answer: main" })
         : answer("RESULT OBSERVED");
     }),
   );
@@ -241,12 +240,17 @@ it("delivers nonblocking progress while WORK keeps running, then completes", asy
   }
 });
 
-it.each(["question", undefined])(
-  "keeps a delivered question visible, rejects result-turn replies, and resumes on user input (kind=%s)",
-  async (kind) => {
+it.each([
+  { kind: "question", autonomous: false },
+  { kind: undefined, autonomous: false },
+  { kind: "question", autonomous: true },
+  { kind: undefined, autonomous: true },
+])(
+  "resumes questions from user input or autonomously from context ($kind, autonomous=$autonomous)",
+  async ({ kind, autonomous }) => {
     let turn = 0;
     const lifecycle = await fixture({
-      mutateOnResult: true,
+      replyOnResult: autonomous,
       worker: async () => {
         turn++;
         if (turn === 1) {
@@ -263,33 +267,24 @@ it.each(["question", undefined])(
     });
     try {
       await lifecycle.launch();
-      await vi.waitFor(async () =>
-        expect((await lifecycle.record())?.state).toMatchObject({
-          checkpoint: { awaiting: "reply" },
-        }),
-      );
-      await vi.waitFor(async () => {
-        const { replies } = await lifecycle.core.turns.readReplies(
-          lifecycle.chat,
-          0,
+      if (!autonomous) {
+        await vi.waitFor(async () =>
+          expect((await lifecycle.record())?.state).toMatchObject({
+            checkpoint: { awaiting: "reply" },
+          }),
         );
-        expect(
-          replies.some((reply) =>
-            reply.text.includes("Assistant mutation requires a user turn"),
-          ),
-        ).toBe(true);
-      });
-      expect(await lifecycle.inspect()).toMatchObject({
-        status: "awaiting-reply",
-        message: "Which branch should I publish?",
-        pendingQuestion: {
-          id: expect.any(Number),
-          text: "Which branch should I publish?",
-          askedAt: expect.any(Number),
-        },
-      });
-      expect(turn).toBe(1);
-      await lifecycle.user("reply-now");
+        expect(await lifecycle.inspect()).toMatchObject({
+          status: "awaiting-reply",
+          message: "Which branch should I publish?",
+          pendingQuestion: {
+            id: expect.any(Number),
+            text: "Which branch should I publish?",
+            askedAt: expect.any(Number),
+          },
+        });
+        expect(turn).toBe(1);
+        await lifecycle.user("reply-now");
+      }
       await vi.waitFor(() => expect(lifecycle.entered).toHaveBeenCalledOnce());
       const resumed = await lifecycle.inspect();
       expect(resumed).toMatchObject({ status: "running" });
