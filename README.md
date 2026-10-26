@@ -23,7 +23,7 @@ mkdir -p .kaeno
 cp kaeno.config.example.json .kaeno/config.json
 cp docker.config.example.json .kaeno/docker.json
 export OPENAI_API_KEY=...
-export KAENO_DB="$PWD/kaeno.sqlite"
+export KAENO_DATA_DIR="$PWD/.kaeno/data"
 npm start
 ```
 
@@ -60,6 +60,17 @@ Native extensions are trusted process code, fixed before the harness opens. Ther
 ## Private repository work
 
 The optional [GitHub App extension](docs/github.md) gives all agents installation-wide repository discovery, credential-free sandbox checkout, and draft-PR publishing. Configure `KAENO_GITHUB_CONFIG` with an owner-controlled App/installation file; GitHub tools become defaults for Kaeno and workers, while explicit `tools` lists still override defaults; no GitHub credentials are needed when the extension is disabled. GitHub controls repository access and permissions, with no duplicated per-agent policies. Other platforms can supply independent extensions through the same tool/binding/prompt-section composition.
+
+## Data directory
+
+`KAENO_DATA_DIR` (default `/data`) holds two SQLite files:
+
+- `durable.sqlite`: pi-durable storage only (conversations, tasks, documents). Its history is append-only.
+- `kaeno.sqlite`: Kaeno's own state, such as owner memory, where deleting really deletes.
+
+Back up both together. `KAENO_DB` is gone: startup fails while it is set, and when `kaeno.sqlite` still holds pi-durable data from an older release.
+
+**Upgrading from `KAENO_DB`:** finish or cancel all unfinished work and let its cleanup complete, stop Kaeno, rename the old database file (with any `-wal`/`-shm` files) to `durable.sqlite` in the data directory, unset `KAENO_DB` and set `KAENO_DATA_DIR`. The default Docker/microsandbox namespace is derived from the `durable.sqlite` path, so it changes with the rename; unfinished work would fail closed, and sandboxes left under the old namespace are no longer reconciled. To keep the old namespace instead, set `namespace` explicitly in the backend file.
 
 ## Durability and scope
 

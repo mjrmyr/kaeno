@@ -14,7 +14,7 @@ RUN npm ci --omit=dev --ignore-scripts \
 COPY src ./src
 COPY scripts/browser-runtime-smoke.ts ./scripts/browser-runtime-smoke.ts
 USER node
-ENV KAENO_DB=/data/kaeno.sqlite
+ENV KAENO_DATA_DIR=/data
 ENV KAENO_AUTH_FILE=/data/auth.json
 EXPOSE 8080
 CMD ["node", "src/host/main.ts"]

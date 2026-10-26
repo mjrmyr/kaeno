@@ -11,7 +11,7 @@ Ownership (goals, commitments), activation (schedules, events) and delegated aut
 
 ## Phase 1: owner memory
 
-`src/extensions/memory/` is a standard extension, `kaeno-memory`. Memory has two kinds of entry:
+`src/extensions/memory/` is the `kaeno-memory` extension, installed by the host for the assistant. Memory has two kinds of entry:
 
 | Kind       | Is                                     | In Kaeno's prompt                 |
 | ---------- | -------------------------------------- | --------------------------------- |
@@ -20,7 +20,7 @@ Ownership (goals, commitments), activation (schedules, events) and delegated aut
 
 The prompt carries an **index**: every preference, plus the title of every memory. Kaeno therefore knows what it should always do and what it knows, without carrying every body on every request. It reads the bodies it needs with `memory_read`.
 
-- **State.** One session-scoped durable document, `kaeno.memory` v1: `{ entries: { [id]: { kind, title?, text, savedAt } } }`. It is independent of threads, so it survives `reset` and is shared by every client. It is one document rather than one per entry because pi-durable cannot delete a document, and forgetting must actually remove the text.
+- **State.** A `memory_entries` table in Kaeno's own database, `kaeno.sqlite` in `KAENO_DATA_DIR`, not a pi-durable document. It is independent of threads, so it survives `reset` and is shared by every client. See [forgetting](#forgetting) for why it lives outside pi-durable.
 - **Tools.** `memory_save({ kind, title?, text, replaces? })`, `memory_forget({ id })` and the read-only `memory_read({ ids })`. Preferences are one line of at most 300 characters, and there are at most 30 of them. Memories need a one-line title of at most 80 characters, keep a body of up to 4000 characters, and there are at most 200 of them. A full kind refuses new saves until an entry is replaced or forgotten, instead of silently evicting.
 - **Prompt.** A `memory` section renders the index before each request, so an entry saved in one thread is in the next request of every other thread. It only changes when memory changes, which keeps provider prompt caches warm. Bodies never enter the prompt except as `memory_read` results.
 - **Idempotency.** An entry's ID is `m<tool task id>`. A replayed `memory_save` finds its entry and changes nothing, including a replayed `replaces`. Forgetting an absent ID reports it instead of failing.
@@ -43,15 +43,29 @@ Like the rest of the API, these routes are unauthenticated: keep the listener on
 Memory steers every future turn, so a write is a durable prompt injection if the wrong party can make it. Existing structure enforces the rules; nothing new is needed:
 
 - `memory_save` and `memory_forget` are mutating, so `assistantToolPolicy` admits them only on **user turns** that are not fenced by stop/reset. A work report, which is untrusted data, cannot save or forget an entry. If a report contains something worth keeping, Kaeno can save it on the owner's next message.
-- The tools are in the **assistant's** standard tools only. They are not in worker availability, so a worker profile that lists one fails startup. Workers also never see the index. They browse untrusted sites inside sandboxes, so the orchestrator copies only the facts a task needs into its brief.
+- The host (`src/host/main.ts`) makes the memory extension available to and default for the **assistant** only. It is not in worker availability, so a worker profile that lists a memory tool fails startup. Workers also never see the index. They browse untrusted sites inside sandboxes, so the orchestrator copies only the facts a task needs into its brief.
+
+The fence check runs when the tool is invoked. Because memory is outside pi-durable, it is not in the same transaction as the write: a save racing an exact stop/reset can still land. For memory that is harmless.
 
 An assistant profile with an explicit `tools:` list must name the memory tools to get them, like any other tool.
+
+### Forgetting
+
+pi-durable storage is append-only: a change is a new revision, and older revisions stay in `durable.sqlite`, even after a document is retired. Memory in a pi-durable document could therefore only be hidden, not forgotten. That is why memory lives in `kaeno.sqlite`:
+
+- `memory_forget` and `DELETE /v1/memory/:id` delete the row.
+- `PRAGMA secure_delete` overwrites the freed pages with zeros.
+- The connection uses a rollback journal, not WAL, so deleted text does not linger in a WAL file until a checkpoint.
+
+A test checks that a forgotten entry's text is absent from every file in the data directory. With `secure_delete` off, that test fails.
+
+What forgetting cannot reach is the conversation history in `durable.sqlite`: the `memory_save` call that stored the entry, Kaeno's replies about it, and the index as rendered into each existing thread. In an existing thread, Kaeno may still see an older index above the current one until that thread is reset or compacted. New threads only ever see the current index.
 
 ### Not in phase 1
 
 - Search. The index lists every title, so Kaeno can pick what to read. Full-text or embedding search earns its place once titles alone stop being enough to choose.
 - Automatic extraction from conversations. Saving stays a deliberate model action on a user turn.
-- Guaranteed physical erasure. Forgetting removes an entry from the document; whether earlier document versions persist in SQLite is up to pi-durable's storage and has not been verified.
+- Erasing what conversations said about a forgotten entry. That would mean rewriting append-only durable history.
 
 ## Phase 2 proposal: persistent working state
 

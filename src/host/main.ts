@@ -9,6 +9,7 @@ import { z } from "zod";
 import { openKaeno } from "../core/application/index.ts";
 import { DEFAULT_AUTH_FILE, FileCredentialStore } from "./auth/index.ts";
 import { loadEnvironment, loadExecution } from "./composition/index.ts";
+import { openDataDirectory } from "./data/index.ts";
 import {
   githubExtension,
   loadGitHubConfiguration,
@@ -17,11 +18,21 @@ import { parseModelRef } from "../extensions/agents/index.ts";
 import { ApiServer } from "../extensions/api/index.ts";
 
 import { loadMcpConfiguration } from "../extensions/mcp/index.ts";
+import { memoryExtension, MemoryStore } from "../extensions/memory/index.ts";
 import { browserExtension } from "../extensions/browser/index.ts";
 import { dockerExecutionProvider } from "../extensions/docker/index.ts";
 import { kubernetesExecutionProvider } from "../extensions/kubernetes/index.ts";
 import { microsandboxExecutionProvider } from "../extensions/microsandbox/index.ts";
 
+if (process.env.KAENO_DB) {
+  throw new Error(
+    "KAENO_DB was replaced by KAENO_DATA_DIR, a directory holding durable.sqlite and kaeno.sqlite. Rename the old database file to durable.sqlite inside that directory and unset KAENO_DB.",
+  );
+}
+const data = await openDataDirectory(process.env.KAENO_DATA_DIR ?? "/data");
+const memory = new MemoryStore(data.kaeno);
+// Owner memory belongs to the assistant only: workers get the facts they need in their brief.
+const memoryTools = { runtime: memoryExtension(memory) };
 const mcp = process.env.KAENO_MCP_CONFIG
   ? await loadMcpConfiguration(process.env.KAENO_MCP_CONFIG)
   : undefined;
@@ -41,6 +52,7 @@ const configuration = await loadEnvironment({
   extensions: [
     ...githubExtensions,
     browser.extension,
+    memoryTools,
     ...(mcp?.extensions ?? []),
   ],
   policy: (base) => ({
@@ -48,9 +60,10 @@ const configuration = await loadEnvironment({
       available: [
         ...base.assistant.available,
         ...githubExtensions,
+        memoryTools,
         ...(mcp?.policy.assistant.available ?? []),
       ],
-      defaults: [...base.assistant.defaults, ...githubExtensions],
+      defaults: [...base.assistant.defaults, ...githubExtensions, memoryTools],
     },
     worker: {
       available: [
@@ -96,12 +109,15 @@ const port = z.coerce
   .max(65535)
   .parse(process.env.PORT ?? 8080);
 
-const databaseFile = process.env.KAENO_DB ?? "/data/kaeno.sqlite";
-const execution = await loadExecution(configuration.execution, databaseFile, [
-  dockerExecutionProvider,
-  kubernetesExecutionProvider,
-  microsandboxExecutionProvider,
-]);
+const execution = await loadExecution(
+  configuration.execution,
+  data.durableFile,
+  [
+    dockerExecutionProvider,
+    kubernetesExecutionProvider,
+    microsandboxExecutionProvider,
+  ],
+);
 const credentials = new FileCredentialStore(
   process.env.KAENO_AUTH_FILE ?? DEFAULT_AUTH_FILE,
 );
@@ -115,7 +131,7 @@ models.setProvider(anthropicProvider());
 models.setProvider(openaiProvider());
 models.setProvider(openrouterProvider());
 const core = await openKaeno({
-  storage: await openNodeSqliteStorage(databaseFile),
+  storage: await openNodeSqliteStorage(data.durableFile),
   models,
   assistant: configuration.assistant,
   extensions: [...configuration.extensions, ...execution.extensions],
@@ -136,7 +152,11 @@ function close(): Promise<void> {
         await stopped;
       }
     } finally {
-      await core.close();
+      try {
+        await core.close();
+      } finally {
+        data.kaeno.close();
+      }
     }
   })();
   return closing;
@@ -192,7 +212,7 @@ try {
     previous = tasks;
   });
 
-  const current = new ApiServer(core).server;
+  const current = new ApiServer(core, memory).server;
   server = current;
   await new Promise<void>((resolve, reject) => {
     current.once("error", reject);

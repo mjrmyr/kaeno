@@ -18,4 +18,5 @@ export type {
   MemoryKind,
   MemoryState,
 } from "./memory.ts";
-export { Memory, MEMORY_EXTENSION, memoryExtension } from "./extension.ts";
+export { MEMORY_EXTENSION, memoryExtension } from "./extension.ts";
+export { MemoryStore } from "./store.ts";

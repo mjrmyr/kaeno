@@ -6,7 +6,7 @@ import {
   forgetEntry,
   memoryIndex,
   updateEntry,
-  Memory,
+  type MemoryStore,
 } from "../memory/index.ts";
 
 async function readJson(req: IncomingMessage): Promise<unknown> {
@@ -23,7 +23,7 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
 
 export class ApiServer {
   readonly server: Server;
-  constructor(core: Kaeno) {
+  constructor(core: Kaeno, memory: MemoryStore) {
     this.server = createServer(async (req, res) => {
       function json(status: number, value: unknown) {
         res.writeHead(status, { "content-type": "application/json" });
@@ -41,12 +41,7 @@ export class ApiServer {
         }
 
         if (req.method === "GET" && url.pathname === "/v1/memory") {
-          return json(
-            200,
-            memoryIndex(
-              await core.harness.snapshot(Memory, BACKGROUND_CONTEXT),
-            ),
-          );
+          return json(200, memoryIndex(memory.read()));
         }
 
         // Owner edits from this API are not turns: they change memory directly, like a settings page.
@@ -54,16 +49,9 @@ export class ApiServer {
         if (entry) {
           const memoryId = entry[1];
           if (req.method === "GET") {
-            const saved = await core.harness.snapshot(
-              Memory,
-              BACKGROUND_CONTEXT,
-            );
-            const found =
-              saved && Object.hasOwn(saved.entries, memoryId)
-                ? saved.entries[memoryId]
-                : undefined;
-            return found
-              ? json(200, { id: memoryId, ...found })
+            const { entries } = memory.read();
+            return Object.hasOwn(entries, memoryId)
+              ? json(200, { id: memoryId, ...entries[memoryId] })
               : json(404, { error: "Not found" });
           }
           if (req.method === "PUT") {
@@ -71,24 +59,16 @@ export class ApiServer {
               .object({ title: z.string().optional(), text: z.string() })
               .strict()
               .parse(await readJson(req));
-            const updated = await core.harness.commit(
-              async (tx) =>
-                updateEntry(
-                  await tx.doc(Memory),
-                  memoryId,
-                  content,
-                  Date.now(),
-                ),
-              BACKGROUND_CONTEXT,
+            const updated = memory.mutate((state) =>
+              updateEntry(state, memoryId, content, Date.now()),
             );
             return updated
               ? json(200, { id: memoryId })
               : json(404, { error: "Not found" });
           }
           if (req.method === "DELETE") {
-            const removed = await core.harness.commit(
-              async (tx) => forgetEntry(await tx.doc(Memory), memoryId),
-              BACKGROUND_CONTEXT,
+            const removed = memory.mutate((state) =>
+              forgetEntry(state, memoryId),
             );
             return json(200, { id: memoryId, removed });
           }

@@ -13,6 +13,7 @@ import {
   Harness,
   MemoryStorage,
 } from "@earendil-works/pi-durable";
+import { DatabaseSync } from "node:sqlite";
 import { expect, it, vi } from "vitest";
 import { openKaeno } from "../../src/core/application/index.ts";
 import { assistantToolPolicy } from "../../src/core/authority/index.ts";
@@ -20,13 +21,16 @@ import { parseTaskId } from "../../src/core/durable/index.ts";
 import { admitTurn, defineTurn } from "../../src/core/turns/index.ts";
 import { ApiServer } from "../../src/extensions/api/index.ts";
 import {
-  Memory,
   memoryExtension,
   saveEntry,
+  MemoryStore,
   MEMORY_TOOLS,
 } from "../../src/extensions/memory/index.ts";
 
 const model = { provider: "faux", modelId: "faux-1" };
+function store(): MemoryStore {
+  return new MemoryStore(new DatabaseSync(":memory:"));
+}
 
 it("another thread sees preferences in full and memories by title, and reads a body on demand", async () => {
   const faux = fauxProvider();
@@ -67,11 +71,12 @@ it("another thread sees preferences in full and memories by title, and reads a b
       return fauxAssistantMessage([fauxText("Hallo")]);
     },
   ]);
+  const memory = store();
   const core = await openKaeno({
     storage: new MemoryStorage(),
     models,
     assistant: { model, instructions: "Assist", tools: [...MEMORY_TOOLS] },
-    extensions: [memoryExtension()],
+    extensions: [memoryExtension(memory)],
   });
   try {
     const first = await core.threads.getOrCreateConversation("first");
@@ -103,15 +108,15 @@ it("another thread sees preferences in full and memories by title, and reads a b
     expect(otherThreadPrompt).toContain("Partner");
     expect(otherThreadPrompt).not.toContain("birthday 12 May");
     expect(readResult).toContain("Partner is called Mia; birthday 12 May");
-    const saved = await core.harness.snapshot(Memory, ctx);
-    expect(Object.values(saved?.entries ?? {})).toHaveLength(2);
+    expect(Object.values(memory.read().entries)).toHaveLength(2);
   } finally {
     await core.close();
   }
 });
 
 it("a work report cannot plant a memory", async () => {
-  const memory = memoryExtension();
+  const saved = store();
+  const memory = memoryExtension(saved);
   const tools = memory.durable.tools ?? [];
   let harness: Harness;
   const policy = assistantToolPolicy(() => harness, tools);
@@ -171,7 +176,7 @@ it("a work report cannot plant a memory", async () => {
     );
     harness.resume();
     await harness.waitForTask(task, ctx);
-    expect((await harness.snapshot(Memory, ctx))?.entries ?? {}).toEqual({});
+    expect(saved.read().entries).toEqual({});
   } finally {
     await harness.close(ctx);
   }
@@ -181,27 +186,27 @@ it("the HTTP API lists the index, reads, edits and forgets entries", async () =>
   const core = await openKaeno({
     storage: new MemoryStorage(),
     models: createModels(),
-    assistant: { model, instructions: "Assist", tools: [...MEMORY_TOOLS] },
-    extensions: [memoryExtension()],
+    assistant: { model, instructions: "Assist" },
+    extensions: [],
   });
-  const api = new ApiServer(core).server;
+  const memory = store();
+  const api = new ApiServer(core, memory).server;
   try {
-    await core.harness.commit(async (tx) => {
-      const memory = await tx.doc(Memory);
-      saveEntry(memory, {
+    memory.mutate((state) => {
+      saveEntry(state, {
         id: "m1",
         kind: "preference",
         text: "Answer in German",
         savedAt: 1,
       });
-      saveEntry(memory, {
+      saveEntry(state, {
         id: "m2",
         kind: "memory",
         title: "Partner",
         text: "Mia",
         savedAt: 2,
       });
-    }, ctx);
+    });
     await new Promise<void>((resolve) => api.listen(0, resolve));
     const address = api.address();
     const base = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}/v1/memory`;
@@ -222,7 +227,7 @@ it("the HTTP API lists the index, reads, edits and forgets entries", async () =>
       body: JSON.stringify({ title: "Partner", text: "Mia, birthday 12 May" }),
     });
     expect(put.status).toBe(200);
-    expect((await core.harness.snapshot(Memory, ctx))?.entries.m2).toEqual(
+    expect(memory.read().entries.m2).toEqual(
       expect.objectContaining({ text: "Mia, birthday 12 May" }),
     );
     const invalid = await fetch(`${base}/m1`, {

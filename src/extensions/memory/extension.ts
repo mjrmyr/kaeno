@@ -1,6 +1,5 @@
 import { Type } from "@earendil-works/pi-ai";
 import {
-  defineDoc,
   defineExtension,
   defineTool,
   section,
@@ -15,24 +14,17 @@ import {
   MEMORY_FORGET,
   MEMORY_READ,
   MEMORY_SAVE,
-  type MemoryState,
 } from "./memory.ts";
+import type { MemoryStore } from "./store.ts";
 
 export const MEMORY_EXTENSION = "kaeno-memory";
 
-/** Session scope: one memory for the owner, independent of threads, resets and WORK. */
-export const Memory = defineDoc<MemoryState>({
-  kind: "kaeno.memory",
-  version: 1,
-  scope: "session",
-  initial: () => ({ entries: {} }),
-});
-
 /**
- * Owner memory for CHAT. Save and forget mutate, so the assistant tool policy admits them only on
- * user turns: a work report cannot plant a memory. Workers are never offered these tools.
+ * Owner memory for CHAT, kept in Kaeno's store rather than durable history so forgetting deletes.
+ * Save and forget mutate, so the assistant tool policy admits them only on user turns: a work
+ * report cannot plant a memory. The host never makes these tools available to workers.
  */
-export function memoryExtension(): KaenoExtension {
+export function memoryExtension(store: MemoryStore): KaenoExtension {
   const save = defineTool({
     name: MEMORY_SAVE,
     description:
@@ -51,19 +43,19 @@ export function memoryExtension(): KaenoExtension {
       ),
     }),
     replay: "safe",
-    execute: async ({ kind, title, text, replaces }, api, context) => {
+    execute: async ({ kind, title, text, replaces }, api) => {
       // The tool call is the idempotency key, as for start_work.
       const id = `m${api.taskId}`;
-      await api.commit(async (tx) => {
-        saveEntry(await tx.doc(Memory), {
+      store.mutate((state) =>
+        saveEntry(state, {
           id,
           kind,
           text,
           savedAt: Date.now(),
           ...(title === undefined ? {} : { title }),
           ...(replaces === undefined ? {} : { replaces }),
-        });
-      }, context);
+        }),
+      );
       return { content: [{ type: "text", text: `Saved ${id}` }] };
     },
   });
@@ -72,11 +64,8 @@ export function memoryExtension(): KaenoExtension {
     description: "Remove one preference or memory by ID.",
     parameters: Type.Object({ id: Type.String({ minLength: 1 }) }),
     replay: "safe",
-    execute: async ({ id }, api, context) => {
-      const removed = await api.commit(
-        async (tx) => forgetEntry(await tx.doc(Memory), id),
-        context,
-      );
+    execute: async ({ id }) => {
+      const removed = store.mutate((state) => forgetEntry(state, id));
       return {
         content: [
           {
@@ -98,24 +87,15 @@ export function memoryExtension(): KaenoExtension {
       }),
     }),
     replay: "safe",
-    execute: async ({ ids }, api, context) => ({
-      content: [
-        {
-          type: "text",
-          text: readEntries(await api.snapshot(Memory, context), ids),
-        },
-      ],
+    execute: async ({ ids }) => ({
+      content: [{ type: "text", text: readEntries(store.read(), ids) }],
     }),
   });
   return {
     durable: defineExtension({
       name: MEMORY_EXTENSION,
       tools: [save, forget, read],
-      sections: [
-        section("memory", async ({ read: reader }, context) =>
-          memoryPrompt(await reader.snapshot(Memory, context)),
-        ),
-      ],
+      sections: [section("memory", () => memoryPrompt(store.read()))],
     }),
     readOnlyTools: [MEMORY_READ],
   };
