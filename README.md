@@ -68,9 +68,7 @@ The optional [GitHub App extension](docs/github.md) gives all agents installatio
 - `durable.sqlite`: pi-durable storage only (conversations, tasks, documents). Its history is append-only.
 - `kaeno.sqlite`: Kaeno's own state, such as owner memory, where deleting really deletes.
 
-Back up both together. `KAENO_DB` is gone: startup fails while it is set, and when `kaeno.sqlite` still holds pi-durable data from an older release.
-
-**Upgrading from `KAENO_DB`:** finish or cancel all unfinished work and let its cleanup complete, stop Kaeno, rename the old database file (with any `-wal`/`-shm` files) to `durable.sqlite` in the data directory, unset `KAENO_DB` and set `KAENO_DATA_DIR`. The default Docker/microsandbox namespace is derived from the `durable.sqlite` path, so it changes with the rename; unfinished work would fail closed, and sandboxes left under the old namespace are no longer reconciled. To keep the old namespace instead, set `namespace` explicitly in the backend file.
+Back up both together.
 
 ## Durability and scope
 

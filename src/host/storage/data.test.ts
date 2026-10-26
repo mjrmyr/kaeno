@@ -1,7 +1,6 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it } from "vitest";
 import { openDataDirectory } from "./index.ts";
 
@@ -28,14 +27,4 @@ it("separates pi-durable storage from Kaeno's own database", async () => {
   } finally {
     data.kaeno.close();
   }
-});
-
-it("refuses a kaeno.sqlite that still holds pi-durable data", async () => {
-  const root = await directory();
-  const legacy = new DatabaseSync(join(root, "kaeno.sqlite"));
-  legacy.exec("CREATE TABLE durable_schema (version INTEGER)");
-  legacy.close();
-  await expect(openDataDirectory(root)).rejects.toThrow(
-    "rename kaeno.sqlite (and any kaeno.sqlite-wal/-shm files) to durable.sqlite",
-  );
 });

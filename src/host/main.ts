@@ -24,11 +24,6 @@ import { dockerExecutionProvider } from "../extensions/docker/index.ts";
 import { kubernetesExecutionProvider } from "../extensions/kubernetes/index.ts";
 import { microsandboxExecutionProvider } from "../extensions/microsandbox/index.ts";
 
-if (process.env.KAENO_DB) {
-  throw new Error(
-    "KAENO_DB was replaced by KAENO_DATA_DIR, a directory holding durable.sqlite and kaeno.sqlite. Rename the old database file to durable.sqlite inside that directory and unset KAENO_DB.",
-  );
-}
 const data = await openDataDirectory(process.env.KAENO_DATA_DIR ?? "/data");
 const memory = new MemoryStore(data.kaeno);
 // Owner memory belongs to the assistant only: workers get the facts they need in their brief.
