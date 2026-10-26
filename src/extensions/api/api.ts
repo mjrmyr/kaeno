@@ -54,6 +54,27 @@ export class ApiServer {
             return json(201, routines.create(await readJson(req)));
           }
         }
+        // Changes Kaeno proposed: only an owner decision here applies them.
+        if (
+          routines &&
+          req.method === "GET" &&
+          url.pathname === "/v1/routines/changes"
+        ) {
+          return json(200, routines.changes());
+        }
+        const decision = routines
+          ? /^\/v1\/routines\/changes\/(c[0-9]{1,20})\/(approve|reject)$/.exec(
+              url.pathname,
+            )
+          : null;
+        if (routines && decision && req.method === "POST") {
+          return json(
+            200,
+            decision[2] === "approve"
+              ? routines.approve(decision[1])
+              : routines.reject(decision[1]),
+          );
+        }
         const routine = routines
           ? /^\/v1\/routines\/([0-9]{1,15})(\/run)?$/.exec(url.pathname)
           : null;

@@ -12,11 +12,53 @@ import { latestSlot, nextSlot } from "./schedule.ts";
 import {
   routineInputSchema,
   type Routine,
+  type RoutineChange,
+  type RoutineFields,
   type RoutineStore,
 } from "./store.ts";
 
 export const ROUTINES_EXTENSION = "kaeno-routines";
 export const LIST_ROUTINES = "list_routines";
+export const CREATE_ROUTINE = "create_routine";
+export const UPDATE_ROUTINE = "update_routine";
+export const DELETE_ROUTINE = "delete_routine";
+
+const scheduleParameter = Type.Union([
+  Type.Object({
+    every: Type.Integer({
+      minimum: 1,
+      maximum: 10_080,
+      description: "Minutes between runs",
+    }),
+  }),
+  Type.Object({
+    at: Type.String({ description: "Local time, HH:MM" }),
+    timeZone: Type.String({ description: "IANA zone, e.g. Europe/Berlin" }),
+    days: Type.Optional(
+      Type.Array(Type.Integer({ minimum: 1, maximum: 7 }), {
+        description: "1 = Monday … 7 = Sunday; omit for every day",
+      }),
+    ),
+  }),
+]);
+const routineParameters = {
+  name: Type.String({ minLength: 1, maxLength: 80 }),
+  agent: Type.String({ description: "Worker agent ID from your instructions" }),
+  instructions: Type.String({
+    minLength: 1,
+    description: "Complete, self-contained brief that every run starts with",
+  }),
+  schedule: scheduleParameter,
+  thread: Type.Optional(
+    Type.String({
+      description: "Thread that receives run reports; defaults to this one",
+    }),
+  ),
+  timeoutMinutes: Type.Optional(Type.Integer({ minimum: 1, maximum: 1440 })),
+  enabled: Type.Optional(Type.Boolean()),
+};
+const APPROVAL =
+  "Nothing changes until the owner approves this change ID; tell them exactly what you proposed and the ID. They can also reject it.";
 const TICK_MS = 30_000;
 
 /** Long enough to answer "how did it go", short enough for a tool result. */
@@ -53,6 +95,11 @@ function runOutcome(task: Awaited<ReturnType<Kaeno["harness"]["getTask"]>>): {
     : { status: "completed" };
 }
 
+function fieldsOf(routine: Routine): RoutineFields {
+  const { id: _id, updatedAt: _updatedAt, ...fields } = routine;
+  return fields;
+}
+
 export interface RoutineView extends Routine {
   lastRun?: {
     workId: number;
@@ -66,8 +113,9 @@ export interface RoutineView extends Routine {
 
 /**
  * Owner-defined scheduled work. Each run is root WORK for the routine's agent, started by the host
- * and reporting to the routine's Kaeno thread like work Kaeno started itself. Kaeno can list
- * routines but not create, change or run them; only the owner can, through the HTTP API.
+ * and reporting to the routine's Kaeno thread like work Kaeno started itself. Kaeno lists routines
+ * and may propose creating, changing or deleting one; a proposal changes nothing until the owner
+ * approves it. Only the scheduler and the owner start runs.
  */
 export class Routines {
   private readonly store: RoutineStore;
@@ -83,25 +131,94 @@ export class Routines {
     this.onReport = onReport;
   }
 
-  /** The runtime: the read-only tool for Kaeno and the scheduler, started once core is open. */
+  /** The runtime: Kaeno's tools and the scheduler, started once core is open. */
   extension(): KaenoExtension {
     const list = defineTool({
       name: LIST_ROUTINES,
       description:
-        "List the owner's routines: work that runs on its own schedule, with its agent, schedule, last run and next run. You can describe routines but not create, change or run them; the owner manages them.",
+        "List the owner's routines (work that runs on its own schedule) with agent, schedule, last run and next run, plus your proposed changes still awaiting the owner. You cannot run routines.",
       parameters: Type.Object({}),
       replay: "safe",
       execute: async (_args, _api, context) => ({
         content: [
           {
             type: "text",
-            text: JSON.stringify(await this.describe(Date.now(), context)),
+            text: JSON.stringify({
+              routines: await this.describe(Date.now(), context),
+              pendingChanges: this.store.changes("pending"),
+            }),
           },
         ],
       }),
     });
+    // Proposals mutate, so the assistant tool policy admits them only on the owner's own turns:
+    // a work or routine report can never propose a routine. The change ID is the tool call.
+    const create = defineTool({
+      name: CREATE_ROUTINE,
+      description: `Propose a new routine. ${APPROVAL}`,
+      parameters: Type.Object(routineParameters),
+      replay: "safe",
+      execute: async (args, api) => {
+        const input = this.validate({
+          ...args,
+          thread: args.thread ?? (await this.threadOf(api.conversationId)),
+        });
+        return this.proposed(
+          this.store.propose(
+            `c${api.taskId}`,
+            { action: "create", input },
+            Date.now(),
+          ),
+        );
+      },
+    });
+    const update = defineTool({
+      name: UPDATE_ROUTINE,
+      description: `Propose changing a routine; omitted fields keep their current value. ${APPROVAL}`,
+      parameters: Type.Object({
+        id: Type.Integer({ minimum: 1 }),
+        ...Type.Partial(Type.Object(routineParameters)).properties,
+      }),
+      replay: "safe",
+      execute: async ({ id, ...changes }, api) => {
+        const routine = this.routine(id);
+        return this.proposed(
+          this.store.propose(
+            `c${api.taskId}`,
+            {
+              action: "update",
+              routineId: id,
+              baseUpdatedAt: routine.updatedAt,
+              input: this.validate({ ...fieldsOf(routine), ...changes }),
+            },
+            Date.now(),
+          ),
+        );
+      },
+    });
+    const remove = defineTool({
+      name: DELETE_ROUTINE,
+      description: `Propose deleting a routine. ${APPROVAL}`,
+      parameters: Type.Object({ id: Type.Integer({ minimum: 1 }) }),
+      replay: "safe",
+      execute: async ({ id }, api) =>
+        this.proposed(
+          this.store.propose(
+            `c${api.taskId}`,
+            {
+              action: "delete",
+              routineId: id,
+              baseUpdatedAt: this.routine(id).updatedAt,
+            },
+            Date.now(),
+          ),
+        ),
+    });
     return {
-      durable: defineExtension({ name: ROUTINES_EXTENSION, tools: [list] }),
+      durable: defineExtension({
+        name: ROUTINES_EXTENSION,
+        tools: [list, create, update, remove],
+      }),
       readOnlyTools: [LIST_ROUTINES],
       start: async (core, signal) => {
         this.core = core;
@@ -171,6 +288,38 @@ export class Routines {
 
   remove(id: number): boolean {
     return this.store.remove(id);
+  }
+
+  changes(): RoutineChange[] {
+    return this.store.changes();
+  }
+
+  /**
+   * Apply a proposed change exactly as proposed. Idempotent: approving it again returns it. An
+   * update or delete of a routine that changed since the proposal is refused, never merged.
+   */
+  approve(id: string, now = Date.now()): RoutineChange {
+    return this.store.transaction(() => {
+      const change = this.change(id);
+      if (change.status === "approved") {
+        return change;
+      }
+      if (change.status === "rejected") {
+        throw new Error(`Change ${id} was rejected`);
+      }
+      this.store.decide(id, "approved", now, this.apply(change, now));
+      return this.change(id);
+    });
+  }
+
+  reject(id: string, now = Date.now()): RoutineChange {
+    return this.store.transaction(() => {
+      if (this.change(id).status === "approved") {
+        throw new Error(`Change ${id} was already approved`);
+      }
+      this.store.decide(id, "rejected", now);
+      return this.change(id);
+    });
   }
 
   /** Start a run now, outside the schedule. Refused while the previous run is unfinished. */
@@ -291,7 +440,62 @@ export class Routines {
     return task !== undefined && task.state.status !== "terminal";
   }
 
-  private validate(input: unknown) {
+  private apply(change: RoutineChange, now: number): number {
+    if (change.action === "create") {
+      return this.store.create(change.input, now).id;
+    }
+    const current = this.store.get(change.routineId);
+    if (!current) {
+      throw new Error(`Routine ${change.routineId} no longer exists`);
+    }
+    if (current.updatedAt !== change.baseUpdatedAt) {
+      throw new Error(
+        `Routine ${change.routineId} changed after change ${change.id} was proposed; reject it and ask again`,
+      );
+    }
+    if (change.action === "update") {
+      this.store.replace(change.routineId, change.input, now);
+    } else {
+      this.store.remove(change.routineId);
+    }
+    return change.routineId;
+  }
+
+  private change(id: string): RoutineChange {
+    const change = this.store.change(id);
+    if (!change) {
+      throw new Error(`No change ${id}`);
+    }
+    return change;
+  }
+
+  private routine(id: number): Routine {
+    const routine = this.store.get(id);
+    if (!routine) {
+      throw new Error(`No routine ${id}`);
+    }
+    return routine;
+  }
+
+  private proposed(change: RoutineChange) {
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `Proposed change ${change.id} (${change.status}): ${JSON.stringify(change)}. ${APPROVAL}`,
+        },
+      ],
+    };
+  }
+
+  /** The thread key of a CHAT conversation, so reports return where the routine was asked for. */
+  private async threadOf(conversationId: number): Promise<string | undefined> {
+    return (await this.attached().threads.listConversations()).find(
+      (thread) => thread.conversationId === conversationId,
+    )?.key;
+  }
+
+  private validate(input: unknown): RoutineFields {
     const parsed = routineInputSchema.parse(input);
     const work = this.attached().work;
     if (!work) {

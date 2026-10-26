@@ -51,7 +51,11 @@ Kaeno keeps a durable memory of its owner, shared by every thread and kept acros
 
 ## Routines
 
-A routine is work that runs on its own schedule: each run starts the routine's worker agent with its instructions, and the report arrives in the routine's Kaeno thread (default `routines`) like any other work report. Results go to the channel you last used in that thread. Kaeno can list routines (`list_routines`), with their next run and the last run's report, but only you can create, change or run them:
+A routine is work that runs on its own schedule: each run starts the routine's worker agent with its instructions, and the report arrives in the routine's Kaeno thread like any other work report, on the channel you last used there.
+
+Ask Kaeno ("check my PRs every weekday at 8") and it **proposes** the routine as a change, for example `c17`. Nothing changes until you approve it: `/kaeno-approve c17` (or `/kaeno-reject c17`, `/kaeno-changes`) in Pi, or `POST /v1/routines/changes/c17/approve` / `reject`. Changing or deleting a routine works the same way. A proposal is applied exactly as proposed, and one made against an older version of a routine is refused. Kaeno can propose only while answering your own messages, never from a work or routine report, and it cannot start runs.
+
+You can also manage routines directly:
 
 ```sh
 curl -X POST localhost:8080/v1/routines -d '{
@@ -62,7 +66,7 @@ curl -X POST localhost:8080/v1/routines -d '{
 }'
 ```
 
-`schedule` is `{ "every": <minutes> }` or `{ "at": "HH:MM", "timeZone": "<IANA zone>", "days"?: [1-7] }` (1 = Monday). Optional: `thread`, `timeoutMinutes` (default 60; a longer run is cancelled) and `enabled`. Runs never overlap, and after downtime only the latest missed run starts. `GET /v1/routines` lists them; `PUT` and `DELETE /v1/routines/:id` change or remove one; `POST /v1/routines/:id/run` starts a run now.
+`schedule` is `{ "every": <minutes> }` or `{ "at": "HH:MM", "timeZone": "<IANA zone>", "days"?: [1-7] }` (1 = Monday). Optional: `thread` (default `routines`; Kaeno's proposals default to the thread you asked in), `timeoutMinutes` (default 60; a longer run is cancelled) and `enabled`. Runs never overlap, and after downtime only the latest missed run starts. `GET /v1/routines` lists them; `PUT` and `DELETE /v1/routines/:id` change or remove one; `POST /v1/routines/:id/run` starts a run now.
 
 ## Embed and extend
 

@@ -22,7 +22,9 @@ export const routineInputSchema = z
   })
   .strict();
 export type RoutineInput = z.input<typeof routineInputSchema>;
-export interface Routine extends z.output<typeof routineInputSchema> {
+/** Validated routine fields, with defaults applied and the agent resolved. */
+export type RoutineFields = z.output<typeof routineInputSchema>;
+export interface Routine extends RoutineFields {
   id: number;
   /** Creation or last change; scheduling never fires slots from before it. */
   updatedAt: number;
@@ -33,6 +35,52 @@ export interface RoutineRun {
   slot: number | null;
   workId: number;
   startedAt: number;
+}
+
+const fieldsSchema = routineInputSchema.required();
+/** What Kaeno asked for. Update and delete name the routine version they were proposed against. */
+const proposalSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("create"), input: fieldsSchema }),
+  z.object({
+    action: z.literal("update"),
+    routineId: z.number(),
+    baseUpdatedAt: z.number(),
+    input: fieldsSchema,
+  }),
+  z.object({
+    action: z.literal("delete"),
+    routineId: z.number(),
+    baseUpdatedAt: z.number(),
+  }),
+]);
+export type RoutineProposal = z.infer<typeof proposalSchema>;
+/** A change Kaeno proposed; it is applied only when the owner approves it. */
+export type RoutineChange = RoutineProposal & {
+  id: string;
+  status: "pending" | "approved" | "rejected";
+  createdAt: number;
+  decidedAt?: number;
+  /** The routine an approved change created, changed or deleted. */
+  result?: number;
+};
+const changeRow = z.object({
+  id: z.string(),
+  proposal: z.string(),
+  status: z.enum(["pending", "approved", "rejected"]),
+  created_at: z.number(),
+  decided_at: z.number().nullable(),
+  result: z.number().nullable(),
+});
+function changeOf(row: unknown): RoutineChange {
+  const parsed = changeRow.parse(row);
+  return {
+    ...proposalSchema.parse(JSON.parse(parsed.proposal)),
+    id: parsed.id,
+    status: parsed.status,
+    createdAt: parsed.created_at,
+    ...(parsed.decided_at === null ? {} : { decidedAt: parsed.decided_at }),
+    ...(parsed.result === null ? {} : { result: parsed.result }),
+  };
 }
 
 const routineRow = z.object({
@@ -101,6 +149,34 @@ export class RoutineStore {
       started_at INTEGER NOT NULL,
       UNIQUE (routine_id, slot)
     ) STRICT`);
+    database.exec(`CREATE TABLE IF NOT EXISTS routine_changes (
+      id TEXT PRIMARY KEY,
+      proposal TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected')),
+      created_at INTEGER NOT NULL,
+      decided_at INTEGER,
+      result INTEGER
+    ) STRICT`);
+  }
+
+  private depth = 0;
+  /** Run `body` atomically; nested calls join the outer transaction. */
+  transaction<T>(body: () => T): T {
+    if (this.depth > 0) {
+      return body();
+    }
+    this.database.exec("BEGIN IMMEDIATE");
+    this.depth++;
+    try {
+      const result = body();
+      this.database.exec("COMMIT");
+      return result;
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    } finally {
+      this.depth--;
+    }
   }
 
   list(): Routine[] {
@@ -117,7 +193,7 @@ export class RoutineStore {
     return row ? routineOf(row) : undefined;
   }
 
-  create(input: z.output<typeof routineInputSchema>, now: number): Routine {
+  create(input: RoutineFields, now: number): Routine {
     const { lastInsertRowid } = this.database
       .prepare(
         "INSERT INTO routines (name, agent, instructions, schedule, thread, timeout_minutes, enabled, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -126,11 +202,7 @@ export class RoutineStore {
     return { ...input, id: Number(lastInsertRowid), updatedAt: now };
   }
 
-  replace(
-    id: number,
-    input: z.output<typeof routineInputSchema>,
-    now: number,
-  ): boolean {
+  replace(id: number, input: RoutineFields, now: number): boolean {
     const { changes } = this.database
       .prepare(
         "UPDATE routines SET name = ?, agent = ?, instructions = ?, schedule = ?, thread = ?, timeout_minutes = ?, enabled = ?, updated_at = ? WHERE id = ?",
@@ -140,20 +212,63 @@ export class RoutineStore {
   }
 
   remove(id: number): boolean {
-    this.database.exec("BEGIN IMMEDIATE");
-    try {
+    return this.transaction(() => {
       this.database
         .prepare("DELETE FROM routine_runs WHERE routine_id = ?")
         .run(id);
       const { changes } = this.database
         .prepare("DELETE FROM routines WHERE id = ?")
         .run(id);
-      this.database.exec("COMMIT");
       return changes > 0;
-    } catch (error) {
-      this.database.exec("ROLLBACK");
-      throw error;
+    });
+  }
+
+  /** Idempotent: proposing under an existing ID keeps the first proposal. */
+  propose(id: string, proposal: RoutineProposal, now: number): RoutineChange {
+    this.database
+      .prepare(
+        "INSERT OR IGNORE INTO routine_changes (id, proposal, status, created_at) VALUES (?, ?, 'pending', ?)",
+      )
+      .run(id, JSON.stringify(proposalSchema.parse(proposal)), now);
+    const change = this.change(id);
+    if (!change) {
+      throw new Error(`Change ${id} was not recorded`);
     }
+    return change;
+  }
+
+  change(id: string): RoutineChange | undefined {
+    const row = this.database
+      .prepare("SELECT * FROM routine_changes WHERE id = ?")
+      .get(id);
+    return row ? changeOf(row) : undefined;
+  }
+
+  changes(status?: RoutineChange["status"]): RoutineChange[] {
+    return (
+      status
+        ? this.database
+            .prepare(
+              "SELECT * FROM routine_changes WHERE status = ? ORDER BY created_at",
+            )
+            .all(status)
+        : this.database
+            .prepare("SELECT * FROM routine_changes ORDER BY created_at")
+            .all()
+    ).map(changeOf);
+  }
+
+  decide(
+    id: string,
+    status: "approved" | "rejected",
+    now: number,
+    result?: number,
+  ): void {
+    this.database
+      .prepare(
+        "UPDATE routine_changes SET status = ?, decided_at = ?, result = ? WHERE id = ? AND status = 'pending'",
+      )
+      .run(status, now, result ?? null, id);
   }
 
   lastRun(routineId: number): RoutineRun | undefined {
@@ -184,7 +299,7 @@ export class RoutineStore {
       .run(run.routineId, run.slot, run.workId, run.startedAt);
   }
 
-  private values(input: z.output<typeof routineInputSchema>) {
+  private values(input: RoutineFields) {
     return [
       input.name,
       input.agent,

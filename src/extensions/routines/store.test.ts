@@ -63,3 +63,43 @@ it("round-trips routines, applies defaults, and deletes a routine with its runs"
   expect(store.lastRun(created.id)).toBeUndefined();
   expect(store.list()).toEqual([]);
 });
+
+it("keeps the first proposal under an ID and decides only pending changes", () => {
+  const store = new RoutineStore(new DatabaseSync(":memory:"));
+  const first = store.propose("c1", { action: "create", input }, 1);
+  const replayed = store.propose(
+    "c1",
+    { action: "delete", routineId: 9, baseUpdatedAt: 1 },
+    2,
+  );
+  expect(replayed).toEqual(first);
+  expect(first).toMatchObject({
+    id: "c1",
+    action: "create",
+    status: "pending",
+  });
+
+  store.decide("c1", "rejected", 3);
+  store.decide("c1", "approved", 4, 7);
+  expect(store.change("c1")).toMatchObject({
+    status: "rejected",
+    decidedAt: 3,
+  });
+  expect(store.change("c1")?.result).toBeUndefined();
+  expect(store.changes("pending")).toEqual([]);
+});
+
+it("rolls back everything a failed transaction wrote, including nested calls", () => {
+  const store = new RoutineStore(new DatabaseSync(":memory:"));
+  expect(() =>
+    store.transaction(() => {
+      store.create(input, 1);
+      store.transaction(() =>
+        store.propose("c1", { action: "create", input }, 1),
+      );
+      throw new Error("apply failed");
+    }),
+  ).toThrow("apply failed");
+  expect(store.list()).toEqual([]);
+  expect(store.changes()).toEqual([]);
+});

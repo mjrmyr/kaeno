@@ -40,6 +40,40 @@ export async function request(
   return response;
 }
 
+const changeList = z.array(
+  z.object({ id: z.string(), action: z.string(), status: z.string() }),
+);
+/** Routine changes Kaeno proposed. They apply only through `decideChange`, an owner action. */
+export async function listChanges(
+  baseUrl: string,
+  fetcher = fetch,
+): Promise<z.infer<typeof changeList>> {
+  const response = await request(
+    baseUrl,
+    "/v1/routines/changes",
+    undefined,
+    fetcher,
+  );
+  return changeList.parse(await response.json());
+}
+
+export async function decideChange(
+  baseUrl: string,
+  id: string,
+  decision: "approve" | "reject",
+  fetcher = fetch,
+): Promise<void> {
+  if (!/^c[0-9]+$/.test(id)) {
+    throw new Error(`Not a change ID: "${id}" (expected e.g. c42)`);
+  }
+  await request(
+    baseUrl,
+    `/v1/routines/changes/${id}/${decision}`,
+    { method: "POST" },
+    fetcher,
+  );
+}
+
 export async function readReplies(
   baseUrl: string,
   session: string,
