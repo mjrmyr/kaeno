@@ -85,11 +85,6 @@ export function createWorkCommands(
     ) {
       throw new Error("This turn was fenced by stop/reset");
     }
-    if (turn.source.kind === "activity-result") {
-      throw new Error(
-        "Work-result turns are read-only; only a user can start, message or cancel work",
-      );
-    }
     return turn.origin;
   }
   const start = defineTool({

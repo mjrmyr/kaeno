@@ -10,6 +10,7 @@ import { activeTurn, TurnLedger } from "../turns/index.ts";
 /**
  * Wrap the complete selected CHAT tool surface, not WORK's delegated tools.
  * Unlisted read names do not grant authority to any tool added later.
+ * Explicit activity-result tools may mutate without a new user turn, but remain epoch-fenced.
  * This is an invocation gate, not an atomic external-effect boundary: durable
  * mutations must recheck origin epoch/control in their effect-admission commit.
  */
@@ -17,6 +18,7 @@ export function assistantToolPolicy(
   getHarness: () => Harness,
   tools: readonly ToolRegistration[],
   readOnlyNames: readonly string[] = [],
+  activityResultTools: readonly string[] = [],
 ): Extension {
   const names = new Set<string>();
   for (const tool of tools) {
@@ -26,6 +28,7 @@ export function assistantToolPolicy(
     names.add(tool.name);
   }
   const reads = new Set(readOnlyNames);
+  const autonomous = new Set(activityResultTools);
   return defineExtension({
     name: "kaeno-tool-authority",
     wraps: tools.map((selected) =>
@@ -38,7 +41,7 @@ export function assistantToolPolicy(
               api.conversationId,
               context,
             );
-            if (source.kind !== "user") {
+            if (source.kind !== "user" && !autonomous.has(tool.name)) {
               throw new Error("Assistant mutation requires a user turn");
             }
             const ledger = await api.snapshot(
