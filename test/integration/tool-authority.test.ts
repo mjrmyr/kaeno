@@ -14,15 +14,26 @@ import {
   defineTool,
   Harness,
   MemoryStorage,
+  type ConversationId,
 } from "@earendil-works/pi-durable";
 import { expect, it } from "vitest";
 import { assistantToolPolicy } from "../../src/core/authority/index.ts";
 import { parseTaskId } from "../../src/core/durable/index.ts";
-import { admitTurn, defineTurn } from "../../src/core/turns/index.ts";
+import {
+  admitTurn,
+  defineTurn,
+  TurnLedger,
+} from "../../src/core/turns/index.ts";
 
-it.each(["user", "activity-result"] as const)(
-  "gates generic mutations but permits reads on admitted %s turns",
-  async (kind) => {
+it.each([
+  { kind: "user", autonomous: false, fenced: false },
+  { kind: "user", autonomous: false, fenced: true },
+  { kind: "activity-result", autonomous: false, fenced: false },
+  { kind: "activity-result", autonomous: true, fenced: false },
+  { kind: "activity-result", autonomous: true, fenced: true },
+] as const)(
+  "gates mutations and preserves reads ($kind, autonomous=$autonomous, fenced=$fenced)",
+  async ({ kind, autonomous, fenced }) => {
     const effects: string[] = [];
     const mutation = defineTool({
       name: "generic_mutation",
@@ -44,7 +55,13 @@ it.each(["user", "activity-result"] as const)(
     });
     const tools = [mutation, read];
     let harness: Harness;
-    const policy = assistantToolPolicy(() => harness, tools, [read.name]);
+    let chatId: ConversationId;
+    const policy = assistantToolPolicy(
+      () => harness,
+      tools,
+      [read.name],
+      autonomous ? [mutation.name] : [],
+    );
     expect(policy.name).toBe("kaeno-tool-authority");
     const sent: string[] = [];
     const Turn = defineTurn(() => ({
@@ -62,9 +79,16 @@ it.each(["user", "activity-result"] as const)(
     const models = createModels();
     models.setProvider(faux.provider);
     faux.setResponses([
-      fauxAssistantMessage([fauxToolCall(mutation.name, {})], {
-        stopReason: "toolUse",
-      }),
+      async () => {
+        if (fenced) {
+          await harness.commit(async (tx) => {
+            (await tx.doc(TurnLedger, chatId)).epoch++;
+          }, ctx);
+        }
+        return fauxAssistantMessage([fauxToolCall(mutation.name, {})], {
+          stopReason: "toolUse",
+        });
+      },
       fauxAssistantMessage([fauxToolCall(read.name, {})], {
         stopReason: "toolUse",
       }),
@@ -83,6 +107,7 @@ it.each(["user", "activity-result"] as const)(
         { ownership: { kind: "ownerless" } },
         ctx,
       );
+      chatId = chat.id;
       await harness.commit(
         (tx) =>
           configure(tx, chat.id, {
@@ -114,9 +139,16 @@ it.each(["user", "activity-result"] as const)(
       harness.resume();
       await harness.waitForTask(task, ctx);
       expect(effects).toEqual(
-        kind === "user" ? ["mutation", "read"] : ["read"],
+        !fenced && (kind === "user" || autonomous)
+          ? ["mutation", "read"]
+          : ["read"],
       );
-      expect(sent).toEqual(["DONE"]);
+      if (fenced) {
+        expect(sent).not.toContain("DONE");
+        expect(sent).toHaveLength(kind === "user" ? 0 : 1);
+      } else {
+        expect(sent).toEqual(["DONE"]);
+      }
     } finally {
       await harness.close(ctx);
     }

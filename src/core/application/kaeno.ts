@@ -288,6 +288,7 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
     reference.getHarness,
     tools,
     extensions.flatMap((extension) => extension.readOnlyTools ?? []),
+    work ? WORK_TOOLS.orchestration : [],
   );
 
   // Selection is explicit for both CHAT and WORK. Installed tools are never offered implicitly.
