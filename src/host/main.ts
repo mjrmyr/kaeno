@@ -9,7 +9,7 @@ import { z } from "zod";
 import { openKaeno } from "../core/application/index.ts";
 import { DEFAULT_AUTH_FILE, FileCredentialStore } from "./auth/index.ts";
 import { loadEnvironment, loadExecution } from "./composition/index.ts";
-import { openDataDirectory } from "./data/index.ts";
+import { openDataDirectory } from "./storage/index.ts";
 import {
   githubExtension,
   loadGitHubConfiguration,
