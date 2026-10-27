@@ -1,11 +1,29 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createServer, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server } from "node:http";
 import { z } from "zod";
 import type { Kaeno } from "../../core/application/index.ts";
+import {
+  forgetEntry,
+  memoryIndex,
+  updateEntry,
+  type MemoryStore,
+} from "../memory/index.ts";
+
+async function readJson(req: IncomingMessage): Promise<unknown> {
+  let raw = "";
+  for await (const chunk of req) {
+    raw += String(chunk);
+
+    if (Buffer.byteLength(raw) > 1_000_000) {
+      throw new Error("Body too large");
+    }
+  }
+  return JSON.parse(raw);
+}
 
 export class ApiServer {
   readonly server: Server;
-  constructor(core: Kaeno) {
+  constructor(core: Kaeno, memory: MemoryStore) {
     this.server = createServer(async (req, res) => {
       function json(status: number, value: unknown) {
         res.writeHead(status, { "content-type": "application/json" });
@@ -20,6 +38,41 @@ export class ApiServer {
 
         if (req.method === "GET" && url.pathname === "/v1/threads") {
           return json(200, await core.threads.listConversations());
+        }
+
+        if (req.method === "GET" && url.pathname === "/v1/memory") {
+          return json(200, memoryIndex(memory.read()));
+        }
+
+        // Owner edits from this API are not turns: they change memory directly, like a settings page.
+        const entry = /^\/v1\/memory\/(m[0-9]{1,20})$/.exec(url.pathname);
+        if (entry) {
+          const memoryId = entry[1];
+          if (req.method === "GET") {
+            const { entries } = memory.read();
+            return Object.hasOwn(entries, memoryId)
+              ? json(200, { id: memoryId, ...entries[memoryId] })
+              : json(404, { error: "Not found" });
+          }
+          if (req.method === "PUT") {
+            const content = z
+              .object({ title: z.string().optional(), text: z.string() })
+              .strict()
+              .parse(await readJson(req));
+            const updated = memory.mutate((state) =>
+              updateEntry(state, memoryId, content, Date.now()),
+            );
+            return updated
+              ? json(200, { id: memoryId })
+              : json(404, { error: "Not found" });
+          }
+          if (req.method === "DELETE") {
+            const removed = memory.mutate((state) =>
+              forgetEntry(state, memoryId),
+            );
+            return json(200, { id: memoryId, removed });
+          }
+          return json(404, { error: "Not found" });
         }
 
         const match =
@@ -38,21 +91,12 @@ export class ApiServer {
 
         let input: { text: string; requestId: string } | undefined;
         if (match[2] === "turn") {
-          let raw = "";
-          for await (const chunk of req) {
-            raw += String(chunk);
-
-            if (Buffer.byteLength(raw) > 1_000_000) {
-              throw new Error("Body too large");
-            }
-          }
-
           input = z
             .object({
               text: z.string().trim().min(1),
               requestId: z.string().regex(/^[A-Za-z0-9:_.-]{8,200}$/),
             })
-            .parse(JSON.parse(raw));
+            .parse(await readJson(req));
 
           if (
             ["__proto__", "constructor", "prototype"].includes(

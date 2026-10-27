@@ -27,7 +27,7 @@ This is a fragment of the owner configuration, alongside `sourceDirectory`, `kae
 
 Copy `docker.config.example.json` to that location. An empty object uses the defaults shown above. Optional Docker settings in that file:
 
-- `namespace`: stable owner namespace, at most 32 letters/digits/underscores/dots/hyphens, starting with a letter or digit. Defaults to a hash of the absolute database path. Separate databases, including clones, must use separate namespaces.
+- `namespace`: stable owner namespace, at most 32 letters/digits/underscores/dots/hyphens, starting with a letter or digit. Defaults to a hash of the absolute path of `durable.sqlite` in `KAENO_DATA_DIR`. Separate databases, including clones, must use separate namespaces.
 - `apiHost`: address where the host reaches the sandbox's loopback-published execution port; defaults to `127.0.0.1`.
 
 Docker uses the host's Docker CLI and its configured daemon/context. Keep that daemon/context stable across restarts; the saved identity is not a physical Docker daemon identifier and cannot detect a context retargeted outside Kaeno.
@@ -58,7 +58,7 @@ Copy `microsandbox.config.example.json` to that path. Its settings are `image`, 
 
 For every provider, `configFile` resolves relative to the owner config, not the working directory, and the referenced file must exist. Omitting `execution` defaults to Docker with `./docker.json` next to the owner config. Cluster-specific settings and credentials remain in the separate [Kubernetes configuration](kubernetes.md). Selecting Docker does not load Kubernetes credentials or the native microsandbox SDK, and does not contact a cluster.
 
-Backend settings come only from the selected extension's file. `KAENO_DB`, `KAENO_WORK_MAX_DEPTH`, and `KAENO_WORK_MAX_CONCURRENT` configure the host independently of the backend.
+Backend settings come only from the selected extension's file. `KAENO_DATA_DIR`, `KAENO_WORK_MAX_DEPTH`, and `KAENO_WORK_MAX_CONCURRENT` configure the host independently of the backend.
 
 ## Recovery and switching
 

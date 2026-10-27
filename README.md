@@ -23,7 +23,7 @@ mkdir -p .kaeno
 cp kaeno.config.example.json .kaeno/config.json
 cp docker.config.example.json .kaeno/docker.json
 export OPENAI_API_KEY=...
-export KAENO_DB="$PWD/kaeno.sqlite"
+export KAENO_DATA_DIR="$PWD/.kaeno/data"
 npm start
 ```
 
@@ -45,6 +45,10 @@ Provider API keys come from the environment (`ANTHROPIC_API_KEY`, `OPENAI_API_KE
 
 To provision a login from a read-only source such as a Kubernetes Secret, set `KAENO_AUTH_SEED_FILE` to that file. At startup Kaeno imports it into `KAENO_AUTH_FILE` once per distinct seed: an unchanged seed is ignored so refreshed tokens survive restarts, and a changed seed (a new login) replaces the live credentials. After the first refresh the seed's own tokens are spent, so it only helps on a fresh `KAENO_AUTH_FILE`. A configured seed that is missing or invalid fails startup.
 
+## Owner memory
+
+Kaeno keeps a durable memory of its owner, shared by every thread and kept across `reset`. **Preferences** (how you want things done) are always in its prompt in full. **Memories** (facts) appear there by title only, and Kaeno reads the ones it needs with `memory_read`. Only your own messages can change memory: work reports are untrusted and cannot. Workers never see memory; Kaeno puts the facts a task needs into its brief. Browse and edit it with `GET /v1/memory`, `GET`/`PUT`/`DELETE /v1/memory/:id`. See [personal continuity](docs/continuity.md) for the design and the proposed persistent workspace.
+
 ## Embed and extend
 
 The embedding entry point is `openKaeno` in `src/core/application/index.ts`. Callers supply resolved native assistant settings and explicitly install pi-durable extensions. WORK takes `work.agents`: plain agent profiles (`id`, `description`, resolved `setup`). `openKaeno` checks every agent against the approved worker tools and installed binding owners and throws on a misfit, so an agent that cannot run fails startup instead of being listed as unavailable. `loadEnvironment` in `src/host/composition/index.ts` resolves the same configured sources for local, Docker, and Kubernetes hosts; source acquisition and catalogs do not enter durable core.
@@ -56,6 +60,15 @@ Native extensions are trusted process code, fixed before the harness opens. Ther
 ## Private repository work
 
 The optional [GitHub App extension](docs/github.md) gives all agents installation-wide repository discovery, credential-free sandbox checkout, and draft-PR publishing. Configure `KAENO_GITHUB_CONFIG` with an owner-controlled App/installation file; GitHub tools become defaults for Kaeno and workers, while explicit `tools` lists still override defaults; no GitHub credentials are needed when the extension is disabled. GitHub controls repository access and permissions, with no duplicated per-agent policies. Other platforms can supply independent extensions through the same tool/binding/prompt-section composition.
+
+## Data directory
+
+`KAENO_DATA_DIR` (default `/data`) holds two SQLite files:
+
+- `durable.sqlite`: pi-durable storage only (conversations, tasks, documents). Its history is append-only.
+- `kaeno.sqlite`: Kaeno's own state, such as owner memory, where deleting really deletes.
+
+Back up both together.
 
 ## Durability and scope
 

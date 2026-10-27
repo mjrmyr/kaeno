@@ -38,12 +38,12 @@ This fragment sits alongside the normal source/agent configuration. The path res
 }
 ```
 
-| Setting       | Default                   | Purpose                                                                 |
-| ------------- | ------------------------- | ----------------------------------------------------------------------- |
-| `image`       | `kaeno:local`             | Guest image or root filesystem supported by the SDK                     |
-| `namespace`   | Hash of the database path | Stable owner scope; never share between independent databases or clones |
-| `cpus`        | `1`                       | Positive vCPUs per VM, rounded up to a whole CPU                        |
-| `memoryBytes` | `1073741824`              | Integer bytes, at least one MiB, rounded down to whole MiB              |
+| Setting       | Default                           | Purpose                                                                 |
+| ------------- | --------------------------------- | ----------------------------------------------------------------------- |
+| `image`       | `kaeno:local`                     | Guest image or root filesystem supported by the SDK                     |
+| `namespace`   | Hash of the `durable.sqlite` path | Stable owner scope; never share between independent databases or clones |
+| `cpus`        | `1`                               | Positive vCPUs per VM, rounded up to a whole CPU                        |
+| `memoryBytes` | `1073741824`                      | Integer bytes, at least one MiB, rounded down to whole MiB              |
 
 The namespace accepts at most 32 letters/digits/underscores/dots/hyphens, starting with a letter or digit. Unknown settings are rejected. There is no `apiHost`: the execution port is always loopback-only. Backend settings belong in the extension's file.
 
