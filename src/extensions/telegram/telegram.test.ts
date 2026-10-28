@@ -12,13 +12,6 @@ import {
 function response(result: unknown) {
   return new Response(JSON.stringify({ ok: true, result }));
 }
-function multipart(init: RequestInit | undefined): FormData {
-  const body = init?.body;
-  if (!(body instanceof FormData)) {
-    throw new Error("Expected a multipart body");
-  }
-  return body;
-}
 it("long-polls only messages using the persisted offset and an abortable request", async () => {
   const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
     response([
@@ -76,13 +69,13 @@ it("redacts the bot token from transport errors", async () => {
     new TelegramClient("secret-token", fetch).sendMessage(111, "hello"),
   ).rejects.toThrow("bot[redacted]/sendMessage");
 });
-it("downloads files through getFile and uploads voice replies as multipart", async () => {
+it("downloads files through getFile", async () => {
   const fetch = vi
     .fn<typeof globalThis.fetch>()
     .mockResolvedValueOnce(response({ file_path: "voice/file_1.oga" }))
     .mockResolvedValueOnce(new Response(new Uint8Array([7, 8])))
-    .mockResolvedValueOnce(new Response("", { status: 404 }))
-    .mockResolvedValueOnce(response(true));
+    .mockResolvedValueOnce(response({ file_path: "voice/file_1.oga" }))
+    .mockResolvedValueOnce(new Response("", { status: 404 }));
   const client = new TelegramClient("token", fetch);
   expect(await client.download("abc")).toEqual(new Uint8Array([7, 8]));
   expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toEqual({
@@ -92,18 +85,6 @@ it("downloads files through getFile and uploads voice replies as multipart", asy
     "https://api.telegram.org/file/bottoken/voice/file_1.oga",
   );
   await expect(client.download("abc")).rejects.toThrow();
-  await client.sendVoice(
-    111,
-    { audio: new Uint8Array([1]), mimeType: "audio/mpeg" },
-    "hi",
-  );
-  const [url, init] = fetch.mock.calls[3];
-  expect(url).toBe("https://api.telegram.org/bottoken/sendVoice");
-  const form = multipart(init);
-  expect(form.get("chat_id")).toBe("111");
-  expect(form.get("caption")).toBe("hi");
-  const audio = form.get("voice");
-  expect(audio instanceof Blob && audio.type).toBe("audio/mpeg");
 });
 it("splits plain-text replies safely, preserves Unicode and uses the requested chat", async () => {
   const fetch = vi
@@ -135,20 +116,16 @@ it("does not deliver to removed, malformed or unapproved addresses", async () =>
   const client: TelegramTransport = {
     fetchUpdates: vi.fn<TelegramTransport["fetchUpdates"]>(),
     sendMessage: vi.fn<TelegramTransport["sendMessage"]>(),
-    sendVoice: vi.fn<TelegramTransport["sendVoice"]>(),
     sendTypingIndicator: vi.fn<TelegramTransport["sendTypingIndicator"]>(),
     download: vi.fn<TelegramTransport["download"]>(),
   };
   const extension = telegramExtension({ allowedChatIds: [111], client });
   for (const address of ["222", "0111", "-111", "not-a-chat"]) {
-    await expect(
-      extension.delivery?.send({ channel: "telegram", address }, "secret"),
-    ).rejects.toThrow("not an allowed private chat");
+    await expect(extension.delivery?.send(address, "secret")).rejects.toThrow(
+      "not an allowed private chat",
+    );
   }
-  await extension.delivery?.send(
-    { channel: "telegram", address: "111" },
-    "reply",
-  );
+  await extension.delivery?.send("111", "reply");
   expect(client.sendMessage).toHaveBeenCalledExactlyOnceWith(111, "reply");
 });
 it("loads strict owner configuration and requires a token and at least one private chat", async () => {

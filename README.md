@@ -70,9 +70,11 @@ curl -X POST localhost:8080/v1/routines -d '{
 
 ## Telegram
 
-Set `TELEGRAM_BOT_TOKEN` and point `KAENO_TELEGRAM_CONFIG` at a file like `telegram.config.example.json`. Each allowed private chat is one Kaeno thread. Send text, a photo (with an optional caption) or an image sent as a file (JPEG, PNG, GIF or WebP, up to 5 MB): images go to Kaeno's model as they are, so its model must accept images.
+Set `TELEGRAM_BOT_TOKEN` and point `KAENO_TELEGRAM_CONFIG` at a file with `{ "allowedChatIds": [<your chat ID>] }`. Each allowed private chat is one Kaeno thread. Send text, a photo (with an optional caption) or an image sent as a file (JPEG, PNG, GIF or WebP, up to 5 MB). Images go to Kaeno's model as they are, so its model must accept images.
 
-With `speech` configured, you can also send voice messages. Kaeno reads the transcript and answers by voice, with the text as the caption (or as a separate message when it is longer than a caption). Work reports for that request are spoken too. Replies longer than 3000 characters, and any reply whose speech fails, arrive as text. `transcription` is any OpenAI-compatible `/audio/transcriptions` endpoint (OpenAI, Groq, a local whisper server). `synthesis` is ElevenLabs, or any OpenAI-compatible `/audio/speech` endpoint such as a local Kokoro server (`"provider": "openai-compatible"` with `baseUrl`, `model`, `voice` and optional `instructions`). `apiKeyEnv` names the environment variable that holds a key: keys never go in the file, and a local server needs none.
+## Voice messages
+
+Point `KAENO_TRANSCRIPTION_CONFIG` at a file like `transcription.config.example.json` to talk to Kaeno with voice messages. Kaeno receives the transcript, marked as a transcribed voice message, and answers in text. The endpoint is any OpenAI-compatible `/audio/transcriptions` API: OpenAI, Groq, or a local whisper server. `apiKeyEnv` names the environment variable that holds the key. Keys never go in the file, and a local server needs none. The host creates one transcriber, and every channel that accepts voice uses it: Telegram does today.
 
 ## Embed and extend
 

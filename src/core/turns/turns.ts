@@ -21,8 +21,6 @@ import { requireConversation, type Stored } from "../durable/index.ts";
 export interface ChannelRoute {
   channel: string;
   address: string;
-  /** The owner spoke this request: the channel answers by voice where it can. */
-  voice?: boolean;
 }
 export interface Notify {
   route?: ChannelRoute;
@@ -113,7 +111,6 @@ export const TurnLedger = defineDoc<Stored<TurnLedgerState>>({
 });
 interface TurnInput {
   conversationId: ConversationId;
-  /** Text, or text and images from the owner. Activity results are always text. */
   content: UserInput;
   requestId: string;
   notify?: Notify;

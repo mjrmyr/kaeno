@@ -25,11 +25,7 @@ const workParentSchema = z.discriminatedUnion("kind", [
       epoch: z.number().int().nonnegative(),
       notify: z.object({
         route: z
-          .object({
-            channel: z.string(),
-            address: z.string(),
-            voice: z.boolean().optional(),
-          })
+          .object({ channel: z.string(), address: z.string() })
           .optional(),
       }),
     }),
