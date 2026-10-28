@@ -16,6 +16,7 @@ import {
 } from "../extensions/github/index.ts";
 import { parseModelRef } from "../extensions/agents/index.ts";
 import { ApiServer } from "../extensions/api/index.ts";
+import { loadTelegramConfiguration } from "../extensions/telegram/index.ts";
 
 import { loadMcpConfiguration } from "../extensions/mcp/index.ts";
 import { memoryExtension, MemoryStore } from "../extensions/memory/index.ts";
@@ -138,11 +139,26 @@ const models = createModels({ credentials });
 models.setProvider(anthropicProvider());
 models.setProvider(openaiProvider());
 models.setProvider(openrouterProvider());
+if (process.env.TELEGRAM_BOT_TOKEN && !process.env.KAENO_TELEGRAM_CONFIG) {
+  throw new Error(
+    "TELEGRAM_BOT_TOKEN requires KAENO_TELEGRAM_CONFIG with allowedChatIds",
+  );
+}
+const telegram = process.env.KAENO_TELEGRAM_CONFIG
+  ? await loadTelegramConfiguration(
+      process.env.KAENO_TELEGRAM_CONFIG,
+      process.env.TELEGRAM_BOT_TOKEN ?? "",
+    )
+  : undefined;
 const core = await openKaeno({
   storage: await openNodeSqliteStorage(data.durableFile),
   models,
   assistant: configuration.assistant,
-  extensions: [...configuration.extensions, ...execution.extensions],
+  extensions: [
+    ...configuration.extensions,
+    ...execution.extensions,
+    ...(telegram ? [telegram] : []),
+  ],
   work: { ...configuration.work, environment: execution.environment },
   onReport: (error) => console.error("harness:", error),
 });
