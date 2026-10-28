@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { createSpeech } from "../speech/index.ts";
 import { TelegramClient } from "./client.ts";
 import { telegramConfigurationSchema, telegramExtension } from "./telegram.ts";
 
@@ -11,8 +12,9 @@ export async function loadTelegramConfiguration(
     JSON.parse(await readFile(path, "utf8")),
   );
   return telegramExtension({
-    ...config,
+    allowedChatIds: config.allowedChatIds,
     client: new TelegramClient(token),
+    speech: config.speech && createSpeech(config.speech),
     onError: (error) => console.error("telegram:", error),
   });
 }

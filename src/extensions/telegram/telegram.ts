@@ -3,6 +3,7 @@ import {
   defineDoc,
   defineExtension,
   type Tx,
+  type UserInput,
 } from "@earendil-works/pi-durable";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
@@ -12,6 +13,8 @@ import {
   type Kaeno,
   type KaenoExtension,
 } from "../../core/application/index.ts";
+import type { Speech } from "../speech/index.ts";
+import { speechConfigurationSchema } from "../speech/index.ts";
 import {
   TelegramApiError,
   type TelegramTransport,
@@ -21,6 +24,8 @@ import {
 export const telegramConfigurationSchema = z
   .object({
     allowedChatIds: z.array(z.number().int().positive().safe()).min(1),
+    /** Without it, voice messages are refused and replies are always text. */
+    speech: speechConfigurationSchema.optional(),
   })
   .strict();
 
@@ -33,12 +38,25 @@ const TelegramState = defineDoc<{
   scope: "session",
   initial: () => ({ offset: 0 }),
 });
+// The strictest provider limit for one image.
+const maxImageBytes = 5 * 1024 * 1024;
+const imageTypes = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
+// Longer replies are sent as text only: minutes of speech are worse than reading.
+const maxSpokenCharacters = 3000;
+const voiceNote =
+  "[Voice message, transcribed. Your reply is read aloud: answer as you would speak, without Markdown, tables or code unless asked.]";
 const help =
-  "Kaeno here. Send me a task. /jobs lists work; /cancel <id> cancels one; /stop stops this chat and its work; /new resets context but leaves existing work running.";
+  "Kaeno here. Send me a task as text, a photo or a voice message. /jobs lists work; /cancel <id> cancels one; /stop stops this chat and its work; /new resets context but leaves existing work running.";
 
 export interface TelegramExtensionOptions {
   allowedChatIds: readonly number[];
   client: TelegramTransport;
+  speech?: Speech;
   onError?(error: unknown): void;
 }
 
@@ -71,12 +89,49 @@ export function telegramExtension(
       }
     }, context);
   }
+  type Message = NonNullable<TelegramUpdate["message"]>;
+  /** Downloads and transcribes before the transaction; a retried update repeats this. */
+  async function media(
+    message: Message,
+  ): Promise<{ content: UserInput; voice?: boolean }> {
+    if (message.voice) {
+      if (!options.speech) {
+        throw new Error(
+          "Voice messages need speech in the Telegram configuration",
+        );
+      }
+      const transcript = await options.speech.transcribe(
+        await options.client.download(message.voice.file_id),
+        message.voice.mime_type ?? "audio/ogg",
+      );
+      if (!transcript) {
+        throw new Error("No speech recognized in that voice message");
+      }
+      return { content: `${voiceNote}\n${transcript}`, voice: true };
+    }
+    const file = message.photo?.at(-1) ?? message.document;
+    const mimeType = message.photo ? "image/jpeg" : message.document?.mime_type;
+    if (!file || !mimeType || !imageTypes.has(mimeType)) {
+      throw new Error("Kaeno reads text, images and voice messages");
+    }
+    if ((file.file_size ?? 0) > maxImageBytes) {
+      throw new Error("Images are limited to 5 MB");
+    }
+    const data = Buffer.from(await options.client.download(file.file_id));
+    const caption = message.caption?.trim();
+    return {
+      content: [
+        ...(caption ? [{ type: "text" as const, text: caption }] : []),
+        { type: "image", data: data.toString("base64"), mimeType },
+      ],
+    };
+  }
   async function handle(core: Kaeno, update: TelegramUpdate): Promise<void> {
     const message = update.message;
-    const text = message?.text?.trim();
+    const text = message?.text?.trim() ?? "";
     if (
       !message ||
-      !text ||
+      !(text || message.photo?.length || message.document || message.voice) ||
       message.chat.type !== "private" ||
       message.from?.is_bot !== false ||
       message.from.id !== message.chat.id ||
@@ -88,6 +143,7 @@ export function telegramExtension(
     const chatId = message.chat.id;
     const id = await core.threads.getOrCreateConversation(`telegram:${chatId}`);
     try {
+      const input = text ? undefined : await media(message);
       const jobs =
         text === "/jobs" || text === "/status"
           ? await listWork(() => core.harness, id)
@@ -129,9 +185,15 @@ export function telegramExtension(
           await core.turns.admitUserTurn(
             tx,
             id,
-            text,
+            input?.content ?? text,
             `telegram:${update.update_id}`,
-            { route: { channel: "telegram", address: String(chatId) } },
+            {
+              route: {
+                channel: "telegram",
+                address: String(chatId),
+                ...(input?.voice ? { voice: true } : {}),
+              },
+            },
           );
         }
         state.offset = update.update_id + 1;
@@ -207,10 +269,39 @@ export function telegramExtension(
     durable: defineExtension({ name: "kaeno-telegram" }),
     delivery: {
       channel: "telegram",
-      send: async (value, text) =>
-        options.client.sendMessage(address(value), text),
-      typing: async (value) =>
-        options.client.sendTypingIndicator(address(value)),
+      async send(route, text) {
+        const chatId = address(route.address);
+        if (
+          route.voice &&
+          options.speech &&
+          text.length <= maxSpokenCharacters
+        ) {
+          try {
+            await options.client.sendVoice(
+              chatId,
+              await options.speech.synthesize(text),
+              text.length <= 1024 ? text : undefined,
+            );
+          } catch (error) {
+            // Speech is a nicety: the reply itself must still arrive.
+            options.onError?.(error);
+            await options.client.sendMessage(chatId, text);
+            return;
+          }
+          if (text.length > 1024) {
+            await options.client.sendMessage(chatId, text);
+          }
+          return;
+        }
+        await options.client.sendMessage(chatId, text);
+      },
+      typing: async (route) =>
+        route.voice
+          ? options.client.sendTypingIndicator(
+              address(route.address),
+              "record_voice",
+            )
+          : options.client.sendTypingIndicator(address(route.address)),
     },
     async start(core, signal) {
       const polling = poll(core, signal);

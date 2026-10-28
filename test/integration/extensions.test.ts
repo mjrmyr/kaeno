@@ -136,7 +136,7 @@ it("composes native tools/tasks/docs, transactional channel ingress and delivery
     },
     delivery: {
       channel: "test-channel",
-      send: async (address, text) => {
+      send: async ({ address }, text) => {
         sent.push({ address, text });
       },
     },

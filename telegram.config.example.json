@@ -1,0 +1,16 @@
+{
+  "allowedChatIds": [123456789],
+  "speech": {
+    "transcription": {
+      "baseUrl": "https://api.openai.com/v1",
+      "model": "gpt-4o-transcribe",
+      "apiKeyEnv": "OPENAI_API_KEY"
+    },
+    "synthesis": {
+      "provider": "elevenlabs",
+      "model": "eleven_v3",
+      "voice": "<ElevenLabs voice ID>",
+      "apiKeyEnv": "ELEVENLABS_API_KEY"
+    }
+  }
+}

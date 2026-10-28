@@ -68,6 +68,12 @@ curl -X POST localhost:8080/v1/routines -d '{
 
 `schedule` is `{ "every": <minutes> }` or `{ "at": "HH:MM", "timeZone": "<IANA zone>", "days"?: [1-7] }` (1 = Monday). Optional: `thread` (default `routines`; Kaeno's proposals default to the thread you asked in), `timeoutMinutes` (default 60; a longer run is cancelled) and `enabled`. Runs never overlap, and after downtime only the latest missed run starts. `GET /v1/routines` lists them; `PUT` and `DELETE /v1/routines/:id` change or remove one; `POST /v1/routines/:id/run` starts a run now.
 
+## Telegram
+
+Set `TELEGRAM_BOT_TOKEN` and point `KAENO_TELEGRAM_CONFIG` at a file like `telegram.config.example.json`. Each allowed private chat is one Kaeno thread. Send text, a photo (with an optional caption) or an image sent as a file (JPEG, PNG, GIF or WebP, up to 5 MB): images go to Kaeno's model as they are, so its model must accept images.
+
+With `speech` configured, you can also send voice messages. Kaeno reads the transcript and answers by voice, with the text as the caption (or as a separate message when it is longer than a caption). Work reports for that request are spoken too. Replies longer than 3000 characters, and any reply whose speech fails, arrive as text. `transcription` is any OpenAI-compatible `/audio/transcriptions` endpoint (OpenAI, Groq, a local whisper server). `synthesis` is ElevenLabs, or any OpenAI-compatible `/audio/speech` endpoint such as a local Kokoro server (`"provider": "openai-compatible"` with `baseUrl`, `model`, `voice` and optional `instructions`). `apiKeyEnv` names the environment variable that holds a key: keys never go in the file, and a local server needs none.
+
 ## Embed and extend
 
 The embedding entry point is `openKaeno` in `src/core/application/index.ts`. Callers supply resolved native assistant settings and explicitly install pi-durable extensions. WORK takes `work.agents`: plain agent profiles (`id`, `description`, resolved `setup`). `openKaeno` checks every agent against the approved worker tools and installed binding owners and throws on a misfit, so an agent that cannot run fails startup instead of being listed as unavailable. `loadEnvironment` in `src/host/composition/index.ts` resolves the same configured sources for local, Docker, and Kubernetes hosts; source acquisition and catalogs do not enter durable core.

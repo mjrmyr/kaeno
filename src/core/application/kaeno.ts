@@ -27,7 +27,12 @@ import {
   HarnessReference,
 } from "../durable/index.ts";
 import { ThreadDirectory } from "../threads/index.ts";
-import { defineControl, defineTurn, TurnCoordinator } from "../turns/index.ts";
+import {
+  defineControl,
+  defineTurn,
+  TurnCoordinator,
+  type ChannelRoute,
+} from "../turns/index.ts";
 import {
   START_WORK,
   WORK_EXTENSION,
@@ -57,8 +62,8 @@ export interface KaenoExtension {
   environment?: HarnessOptions["env"];
   delivery?: {
     channel: string;
-    send(address: string, text: string): Promise<void>;
-    typing?(address: string): Promise<void>;
+    send(route: ChannelRoute, text: string): Promise<void>;
+    typing?(route: ChannelRoute): Promise<void>;
   };
   /** Boundary check of this extension's saved bindings; runs before anything resumes. */
   validateBinding?(binding: Binding): void;
@@ -177,13 +182,11 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
       if (!delivery) {
         throw new Error(`Missing delivery channel: ${notify.route.channel}`);
       }
-      await delivery.send(notify.route.address, text);
+      await delivery.send(notify.route, text);
     },
     async typing(notify) {
       if (notify.route) {
-        await deliveries
-          .get(notify.route.channel)
-          ?.typing?.(notify.route.address);
+        await deliveries.get(notify.route.channel)?.typing?.(notify.route);
       }
     },
   }));

@@ -26,6 +26,7 @@ import {
   type TelegramTransport,
   type TelegramUpdate,
 } from "../../src/extensions/telegram/index.ts";
+import type { Speech } from "../../src/extensions/speech/index.ts";
 
 function message(
   update_id: number,
@@ -48,9 +49,15 @@ function inbox() {
     sendMessage: vi
       .fn<TelegramTransport["sendMessage"]>()
       .mockResolvedValue(undefined),
+    sendVoice: vi
+      .fn<TelegramTransport["sendVoice"]>()
+      .mockResolvedValue(undefined),
     sendTypingIndicator: vi
       .fn<TelegramTransport["sendTypingIndicator"]>()
       .mockResolvedValue(undefined),
+    download: vi
+      .fn<TelegramTransport["download"]>()
+      .mockResolvedValue(new Uint8Array([1, 2, 3])),
     fetchUpdates: vi
       .fn<TelegramTransport["fetchUpdates"]>()
       .mockImplementation(async (offset, signal) => {
@@ -94,6 +101,7 @@ async function open(options: {
   storage?: Storage;
   work?: boolean;
   allowedChatIds?: number[];
+  speech?: Speech;
 }) {
   const faux = fauxProvider();
   const models = createModels();
@@ -113,6 +121,7 @@ async function open(options: {
       telegramExtension({
         allowedChatIds: options.allowedChatIds ?? [111, 222],
         client: options.inbox.client,
+        speech: options.speech,
         onError: errors,
       }),
     ],
@@ -504,3 +513,140 @@ it.each([false, true])(
     }
   },
 );
+
+function media(
+  update_id: number,
+  fields: Partial<NonNullable<TelegramUpdate["message"]>>,
+): TelegramUpdate {
+  return {
+    update_id,
+    message: {
+      chat: { id: 111, type: "private" },
+      from: { id: 111, is_bot: false },
+      ...fields,
+    },
+  };
+}
+function lastUserContent(request: Parameters<FauxResponseFactory>[0]) {
+  return request.messages.findLast((entry) => entry.role === "user")?.content;
+}
+
+it("gives the model a photo with its caption, and refuses other files and unconfigured voice", async () => {
+  const input = inbox();
+  const seen: unknown[] = [];
+  const { core } = await open({
+    inbox: input,
+    respond: async (request) => {
+      seen.push(lastUserContent(request));
+      return answer("A CAT");
+    },
+  });
+  try {
+    input.push(
+      media(1, {
+        caption: "what is this?",
+        photo: [
+          { file_id: "small", file_size: 10 },
+          { file_id: "large", file_size: 3 },
+        ],
+      }),
+      media(2, { document: { file_id: "doc", mime_type: "application/pdf" } }),
+      media(3, {
+        document: {
+          file_id: "huge",
+          mime_type: "image/png",
+          file_size: 6 * 1024 * 1024,
+        },
+      }),
+      media(4, { voice: { file_id: "voice" } }),
+    );
+    await vi.waitFor(() =>
+      expect(input.client.sendMessage).toHaveBeenCalledWith(111, "A CAT"),
+    );
+    await caughtUp(input, 5);
+    expect(seen).toEqual([
+      [
+        { type: "text", text: "what is this?" },
+        { type: "image", data: "AQID", mimeType: "image/jpeg" },
+      ],
+    ]);
+    expect(input.client.download).toHaveBeenCalledExactlyOnceWith("large");
+    for (const reason of [
+      "Kaeno reads text, images and voice messages",
+      "Images are limited to 5 MB",
+      "Voice messages need speech",
+    ]) {
+      expect(input.client.sendMessage).toHaveBeenCalledWith(
+        111,
+        expect.stringContaining(reason),
+      );
+    }
+  } finally {
+    await core.close();
+  }
+});
+
+it("transcribes a voice message, answers by voice with a caption, and falls back to text when speech fails", async () => {
+  const input = inbox();
+  const audio = { audio: new Uint8Array([9]), mimeType: "audio/mpeg" };
+  const speech = {
+    transcribe: vi.fn<Speech["transcribe"]>().mockResolvedValue("how are you"),
+    synthesize: vi
+      .fn<Speech["synthesize"]>()
+      .mockResolvedValueOnce(audio)
+      .mockRejectedValueOnce(new Error("Speech synthesis failed: HTTP 500")),
+  };
+  const seen: unknown[] = [];
+  const { core, errors } = await open({
+    inbox: input,
+    speech,
+    respond: async (request) => {
+      seen.push(lastUserContent(request));
+      return answer(seen.length === 1 ? "GOOD" : "STILL GOOD");
+    },
+  });
+  try {
+    input.push(media(1, { voice: { file_id: "v1", mime_type: "audio/ogg" } }));
+    await vi.waitFor(() =>
+      expect(input.client.sendVoice).toHaveBeenCalledExactlyOnceWith(
+        111,
+        audio,
+        "GOOD",
+      ),
+    );
+    expect(speech.transcribe).toHaveBeenCalledWith(
+      new Uint8Array([1, 2, 3]),
+      "audio/ogg",
+    );
+    expect(seen[0]).toEqual(
+      expect.stringMatching(/^\[Voice message.*\]\nhow are you$/s),
+    );
+    expect(speech.synthesize).toHaveBeenCalledWith("GOOD");
+    expect(input.client.sendTypingIndicator).toHaveBeenCalledWith(
+      111,
+      "record_voice",
+    );
+    expect(input.client.sendMessage).not.toHaveBeenCalled();
+
+    input.push(media(2, { voice: { file_id: "v2" } }));
+    await vi.waitFor(() =>
+      expect(input.client.sendMessage).toHaveBeenCalledExactlyOnceWith(
+        111,
+        "STILL GOOD",
+      ),
+    );
+    expect(errors).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Speech synthesis failed: HTTP 500" }),
+    );
+    const id = await thread(core, 111);
+    const turns = await core.harness.commit(
+      (tx) => tx.scanTasks({ kind: "kaeno.turn", conversationId: id }, 100),
+      context,
+    );
+    expect(turns.items[0].input).toMatchObject({
+      notify: { route: { channel: "telegram", address: "111", voice: true } },
+    });
+  } finally {
+    await core.close();
+  }
+});

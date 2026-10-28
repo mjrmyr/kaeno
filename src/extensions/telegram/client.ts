@@ -1,5 +1,9 @@
 import { z } from "zod";
 
+const fileSchema = z.object({
+  file_id: z.string().min(1),
+  file_size: z.number().int().nonnegative().safe().optional(),
+});
 const updateSchema = z.object({
   update_id: z.number().int().nonnegative().safe(),
   message: z
@@ -9,6 +13,14 @@ const updateSchema = z.object({
         .object({ id: z.number().int().positive().safe(), is_bot: z.boolean() })
         .optional(),
       text: z.string().optional(),
+      caption: z.string().optional(),
+      /** The same picture in ascending sizes. */
+      photo: z.array(fileSchema).optional(),
+      /** A file sent uncompressed, such as an image sent "as file". */
+      document: fileSchema
+        .extend({ mime_type: z.string().optional() })
+        .optional(),
+      voice: fileSchema.extend({ mime_type: z.string().optional() }).optional(),
     })
     .optional(),
 });
@@ -16,7 +28,15 @@ export type TelegramUpdate = z.infer<typeof updateSchema>;
 export interface TelegramTransport {
   fetchUpdates(offset: number, signal: AbortSignal): Promise<TelegramUpdate[]>;
   sendMessage(chatId: number, text: string): Promise<void>;
-  sendTypingIndicator(chatId: number): Promise<void>;
+  /** The caption is at most 1024 characters. */
+  sendVoice(
+    chatId: number,
+    audio: { audio: Uint8Array<ArrayBuffer>; mimeType: string },
+    caption?: string,
+  ): Promise<void>;
+  sendTypingIndicator(chatId: number, action?: "record_voice"): Promise<void>;
+  /** Bot API downloads are limited to 20 MB. */
+  download(fileId: string): Promise<Uint8Array<ArrayBuffer>>;
 }
 
 export class TelegramApiError extends Error {
@@ -50,9 +70,13 @@ export class TelegramClient implements TelegramTransport {
           method: "POST",
           signal: signal
             ? AbortSignal.any([signal, AbortSignal.timeout(60_000)])
-            : AbortSignal.timeout(10_000),
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body),
+            : AbortSignal.timeout(body instanceof FormData ? 60_000 : 10_000),
+          ...(body instanceof FormData
+            ? { body }
+            : {
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(body),
+              }),
         },
       );
       const data = z
@@ -102,7 +126,44 @@ export class TelegramClient implements TelegramTransport {
       });
     }
   }
-  async sendTypingIndicator(chatId: number): Promise<void> {
-    await this.call("sendChatAction", { chat_id: chatId, action: "typing" });
+  async sendVoice(
+    chatId: number,
+    { audio, mimeType }: { audio: Uint8Array<ArrayBuffer>; mimeType: string },
+    caption?: string,
+  ): Promise<void> {
+    const form = new FormData();
+    form.set("chat_id", String(chatId));
+    form.set("voice", new Blob([audio], { type: mimeType }), "kaeno.mp3");
+    if (caption) {
+      form.set("caption", caption);
+    }
+    await this.call("sendVoice", form);
+  }
+  async sendTypingIndicator(
+    chatId: number,
+    action: "typing" | "record_voice" = "typing",
+  ): Promise<void> {
+    await this.call("sendChatAction", { chat_id: chatId, action });
+  }
+  async download(fileId: string): Promise<Uint8Array<ArrayBuffer>> {
+    const { file_path: path } = z
+      .object({ file_path: z.string().min(1) })
+      .parse(await this.call("getFile", { file_id: fileId }));
+    let response: Response;
+    try {
+      response = await this.fetch(
+        `https://api.telegram.org/file/bot${this.token}/${path}`,
+        { signal: AbortSignal.timeout(60_000) },
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Request failed";
+      throw new Error(
+        `Telegram download: ${message.replaceAll(this.token, "[redacted]")}`,
+      );
+    }
+    if (!response.ok) {
+      throw new TelegramApiError("download", response.status);
+    }
+    return new Uint8Array(await response.arrayBuffer());
   }
 }
