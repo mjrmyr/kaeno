@@ -162,10 +162,9 @@ const core = await openKaeno({
   extensions: [...configuration.extensions, ...backend.extensions],
   work: { ...configuration.work, environment: backend.environment },
 });
-const server = new ApiServer(
-  core,
-  new MemoryStore(new DatabaseSync(":memory:")),
-).server;
+const server = new ApiServer(core, {
+  memory: new MemoryStore(new DatabaseSync(":memory:")),
+}).server;
 await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 try {
   const thread = await core.threads.getOrCreateConversation("smoke");
