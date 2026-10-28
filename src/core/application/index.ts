@@ -9,7 +9,7 @@ export { readBinding, bindingSchema } from "../conversation/index.ts";
 export type { Binding, ConversationSetup } from "../conversation/index.ts";
 export { parseTaskId, parseConversationId } from "../durable/index.ts";
 export type { Stored } from "../durable/index.ts";
-export { WORK_TOOLS, WORK_EXTENSION } from "../work/index.ts";
+export { listWork, WORK_TOOLS, WORK_EXTENSION } from "../work/index.ts";
 export { qualifiedIdMatches } from "../conversation/index.ts";
 export type {
   AgentProfile,

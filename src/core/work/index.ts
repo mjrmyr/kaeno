@@ -1,3 +1,4 @@
+export { listWork } from "./directory.ts";
 export { workTurns } from "./turns.ts";
 export {
   assertPlanFits,
