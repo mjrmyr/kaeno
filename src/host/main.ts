@@ -20,6 +20,7 @@ import { loadTelegramConfiguration } from "../extensions/telegram/index.ts";
 
 import { loadMcpConfiguration } from "../extensions/mcp/index.ts";
 import { memoryExtension, MemoryStore } from "../extensions/memory/index.ts";
+import { loadZoteroConfiguration } from "../extensions/zotero/index.ts";
 import { browserExtension } from "../extensions/browser/index.ts";
 import { dockerExecutionProvider } from "../extensions/docker/index.ts";
 import { kubernetesExecutionProvider } from "../extensions/kubernetes/index.ts";
@@ -44,11 +45,19 @@ const githubExtensions = [
     ? await loadGitHubConfiguration(process.env.KAENO_GITHUB_CONFIG)
     : githubExtension(),
 ];
+const zoteroTools = process.env.KAENO_ZOTERO_CONFIG
+  ? [
+      {
+        runtime: await loadZoteroConfiguration(process.env.KAENO_ZOTERO_CONFIG),
+      },
+    ]
+  : [];
 const configuration = await loadEnvironment({
   extensions: [
     ...githubExtensions,
     browser.extension,
     memoryTools,
+    ...zoteroTools,
     ...(mcp?.extensions ?? []),
   ],
   policy: (base) => ({
@@ -57,21 +66,29 @@ const configuration = await loadEnvironment({
         ...base.assistant.available,
         ...githubExtensions,
         memoryTools,
+        ...zoteroTools,
         ...(mcp?.policy.assistant.available ?? []),
       ],
-      defaults: [...base.assistant.defaults, ...githubExtensions, memoryTools],
+      defaults: [
+        ...base.assistant.defaults,
+        ...githubExtensions,
+        memoryTools,
+        ...zoteroTools,
+      ],
     },
     worker: {
       available: [
         ...base.worker.available,
         ...githubExtensions,
         browser.extension,
+        ...zoteroTools,
         ...(mcp?.policy.worker.available ?? []),
       ],
       defaults: [
         ...base.worker.defaults,
         ...githubExtensions,
         browser.live,
+        ...zoteroTools,
         ...(mcp?.policy.worker.defaults ?? []),
       ],
     },
