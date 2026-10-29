@@ -10,9 +10,11 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { openKaeno } from "../src/core/application/index.ts";
 import { browserExtension } from "../src/extensions/browser/index.ts";
 import { ApiServer } from "../src/extensions/api/index.ts";
+import { MemoryStore } from "../src/extensions/memory/index.ts";
 import {
   loadExecution,
   loadEnvironment,
@@ -160,7 +162,9 @@ const core = await openKaeno({
   extensions: [...configuration.extensions, ...backend.extensions],
   work: { ...configuration.work, environment: backend.environment },
 });
-const server = new ApiServer(core).server;
+const server = new ApiServer(core, {
+  memory: new MemoryStore(new DatabaseSync(":memory:")),
+}).server;
 await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 try {
   const thread = await core.threads.getOrCreateConversation("smoke");
