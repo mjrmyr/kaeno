@@ -157,6 +157,10 @@ export interface WorkDetails extends WorkView {
   latest?: string;
   children: WorkView[];
 }
+export interface WorkTreeNode extends WorkView {
+  conversationId?: ConversationId;
+  children: WorkTreeNode[];
+}
 /** Core WORK settings supplied by application composition. */
 export interface WorkSettings {
   /** Agents WORK may start, fit-checked once when Kaeno opens. */

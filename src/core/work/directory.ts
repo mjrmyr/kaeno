@@ -18,6 +18,7 @@ import {
   checkpointSchema,
   type WorkDetails,
   type WorkRuntime,
+  type WorkTreeNode,
   type WorkView,
 } from "./model.ts";
 const LIVE = ["pending", "running", "waiting", "completing"] as const;
@@ -117,6 +118,20 @@ export async function listWork(
     }
   }
   return result;
+}
+export async function workTree(
+  _harness: () => WorkRuntime,
+  _conversationId: ConversationId,
+): Promise<WorkTreeNode[]> {
+  throw new Error("not implemented");
+}
+export async function requireBelow(
+  _harness: () => WorkRuntime,
+  _caller: ConversationId,
+  _conversationId: ConversationId,
+  _context: Context,
+): Promise<void> {
+  throw new Error("not implemented");
 }
 async function viewWork(
   harness: () => WorkRuntime,

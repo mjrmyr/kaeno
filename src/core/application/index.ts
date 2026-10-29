@@ -9,7 +9,13 @@ export { readBinding, bindingSchema } from "../conversation/index.ts";
 export type { Binding, ConversationSetup } from "../conversation/index.ts";
 export { parseTaskId, parseConversationId } from "../durable/index.ts";
 export type { Stored } from "../durable/index.ts";
-export { listWork, WORK_TOOLS, WORK_EXTENSION } from "../work/index.ts";
+export {
+  listWork,
+  requireBelow,
+  workTree,
+  WORK_TOOLS,
+  WORK_EXTENSION,
+} from "../work/index.ts";
 export { qualifiedIdMatches } from "../conversation/index.ts";
 export type {
   AgentProfile,
@@ -17,6 +23,7 @@ export type {
   WorkEnvironmentRuntime,
   WorkInstance,
   WorkPlan,
+  WorkTreeNode,
 } from "../work/index.ts";
 export type {
   Extension,

@@ -1,4 +1,4 @@
-export { listWork } from "./directory.ts";
+export { listWork, requireBelow, workTree } from "./directory.ts";
 export { workTurns } from "./turns.ts";
 export {
   assertPlanFits,
@@ -23,6 +23,7 @@ export type {
   WorkResult,
   WorkView,
   WorkDetails,
+  WorkTreeNode,
   WorkReport,
   WorkSettings,
   WorkTurns,

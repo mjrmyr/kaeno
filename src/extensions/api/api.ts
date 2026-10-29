@@ -1,13 +1,19 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { z } from "zod";
-import type { Kaeno } from "../../core/application/index.ts";
+import {
+  parseConversationId,
+  parseTaskId,
+  requireBelow,
+  type Kaeno,
+} from "../../core/application/index.ts";
 import {
   forgetEntry,
   memoryIndex,
   updateEntry,
   type MemoryStore,
 } from "../memory/index.ts";
+import { streamThread, writeEventStream } from "./stream.ts";
 
 async function readJson(req: IncomingMessage): Promise<unknown> {
   let raw = "";
@@ -73,6 +79,54 @@ export class ApiServer {
             return json(200, { id: memoryId, removed });
           }
           return json(404, { error: "Not found" });
+        }
+
+        const events = /^\/v1\/threads\/([A-Za-z0-9:_.-]{1,200})\/events$/.exec(
+          url.pathname,
+        );
+        if (req.method === "GET" && events) {
+          const thread = await core.threads.getOrCreateConversation(events[1]);
+          const watch = url.searchParams
+            .getAll("watch")
+            .map((value) => parseConversationId(Number(value)));
+          for (const conversation of watch) {
+            await requireBelow(
+              () => core.harness,
+              thread,
+              conversation,
+              BACKGROUND_CONTEXT,
+            );
+          }
+          const closed = new AbortController();
+          req.once("close", () => closed.abort());
+          return await writeEventStream(
+            res,
+            streamThread(
+              core,
+              {
+                thread,
+                repliesAfter: Number(url.searchParams.get("after") ?? 0),
+                watch,
+              },
+              closed.signal,
+            ),
+          );
+        }
+
+        const cancel =
+          /^\/v1\/threads\/([A-Za-z0-9:_.-]{1,200})\/work\/([1-9][0-9]{0,15})\/cancel$/.exec(
+            url.pathname,
+          );
+        if (req.method === "POST" && cancel) {
+          const thread = await core.threads.getOrCreateConversation(cancel[1]);
+          const workId = parseTaskId(Number(cancel[2]));
+          const taskId = await core.harness.commit(async (tx) => {
+            if ((await tx.task(workId))?.kind !== "kaeno.work") {
+              throw new Error("Not a WORK activity");
+            }
+            return core.turns.admitActivityCancellation(tx, thread, workId);
+          }, BACKGROUND_CONTEXT);
+          return json(202, { taskId });
         }
 
         const match =
