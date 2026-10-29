@@ -16,7 +16,7 @@ import {
 } from "../extensions/github/index.ts";
 import { parseModelRef } from "../extensions/agents/index.ts";
 import { ApiServer } from "../extensions/api/index.ts";
-import { loadTelegramConfiguration } from "../extensions/telegram/index.ts";
+import { loadTelegram } from "../extensions/telegram/index.ts";
 import { loadTranscription } from "../extensions/transcription/index.ts";
 
 import { loadMcpConfiguration } from "../extensions/mcp/index.ts";
@@ -140,21 +140,10 @@ const models = createModels({ credentials });
 models.setProvider(anthropicProvider());
 models.setProvider(openaiProvider());
 models.setProvider(openrouterProvider());
-if (process.env.TELEGRAM_BOT_TOKEN && !process.env.KAENO_TELEGRAM_CONFIG) {
-  throw new Error(
-    "TELEGRAM_BOT_TOKEN requires KAENO_TELEGRAM_CONFIG with allowedChatIds",
-  );
-}
 const transcriber = process.env.KAENO_TRANSCRIPTION_CONFIG
   ? await loadTranscription(process.env.KAENO_TRANSCRIPTION_CONFIG)
   : undefined;
-const telegram = process.env.KAENO_TELEGRAM_CONFIG
-  ? await loadTelegramConfiguration(
-      process.env.KAENO_TELEGRAM_CONFIG,
-      process.env.TELEGRAM_BOT_TOKEN ?? "",
-      transcriber,
-    )
-  : undefined;
+const telegram = await loadTelegram(process.env, transcriber);
 const core = await openKaeno({
   storage: await openNodeSqliteStorage(data.durableFile),
   models,

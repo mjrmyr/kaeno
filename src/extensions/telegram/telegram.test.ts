@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import {
   TelegramClient,
-  loadTelegramConfiguration,
+  loadTelegram,
   telegramExtension,
   type TelegramTransport,
 } from "./index.ts";
@@ -131,6 +131,7 @@ it("does not deliver to removed, malformed or unapproved addresses", async () =>
 it("loads strict owner configuration and requires a token and at least one private chat", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-telegram-config-"));
   const file = join(directory, "telegram.json");
+  const env = { KAENO_TELEGRAM_CONFIG: file, TELEGRAM_BOT_TOKEN: "token" };
   try {
     for (const config of [
       { allowedChatIds: [] },
@@ -139,14 +140,20 @@ it("loads strict owner configuration and requires a token and at least one priva
       { allowedChatIds: [111], token: "must-not-live-here" },
     ]) {
       await writeFile(file, JSON.stringify(config));
-      await expect(loadTelegramConfiguration(file, "token")).rejects.toThrow();
+      await expect(loadTelegram(env)).rejects.toThrow();
     }
     await writeFile(file, JSON.stringify({ allowedChatIds: [111] }));
-    await expect(loadTelegramConfiguration(file, "")).rejects.toThrow();
-    expect(
-      (await loadTelegramConfiguration(file, "token")).delivery?.channel,
-    ).toBe("telegram");
+    await expect(
+      loadTelegram({ KAENO_TELEGRAM_CONFIG: file }),
+    ).rejects.toThrow();
+    expect((await loadTelegram(env))?.delivery?.channel).toBe("telegram");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+it("is off without configuration and refuses a token without it", async () => {
+  expect(await loadTelegram({})).toBeUndefined();
+  await expect(loadTelegram({ TELEGRAM_BOT_TOKEN: "token" })).rejects.toThrow(
+    "TELEGRAM_BOT_TOKEN requires KAENO_TELEGRAM_CONFIG",
+  );
 });
