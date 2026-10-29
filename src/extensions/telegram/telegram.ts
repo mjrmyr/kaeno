@@ -13,7 +13,6 @@ import {
   type Kaeno,
   type KaenoExtension,
 } from "../../core/application/index.ts";
-import { voiceMessage, type Transcriber } from "../transcription/index.ts";
 import {
   TelegramApiError,
   type TelegramTransport,
@@ -43,12 +42,11 @@ const imageTypes = new Set([
   "image/webp",
 ]);
 const help =
-  "Kaeno here. Send me a task as text, a photo or a voice message. /jobs lists work; /cancel <id> cancels one; /stop stops this chat and its work; /new resets context but leaves existing work running.";
+  "Kaeno here. Send me a task as text or a photo. /jobs lists work; /cancel <id> cancels one; /stop stops this chat and its work; /new resets context but leaves existing work running.";
 
 export interface TelegramExtensionOptions {
   allowedChatIds: readonly number[];
   client: TelegramTransport;
-  transcriber?: Transcriber;
   onError?(error: unknown): void;
 }
 
@@ -82,21 +80,11 @@ export function telegramExtension(
     }, context);
   }
   type Message = NonNullable<TelegramUpdate["message"]>;
-  async function media(message: Message): Promise<UserInput> {
-    if (message.voice) {
-      if (!options.transcriber) {
-        throw new Error("Voice messages need KAENO_TRANSCRIPTION_CONFIG");
-      }
-      return voiceMessage(
-        options.transcriber,
-        await options.client.download(message.voice.file_id),
-        message.voice.mime_type ?? "audio/ogg",
-      );
-    }
+  async function image(message: Message): Promise<UserInput> {
     const file = message.photo?.at(-1) ?? message.document;
     const mimeType = message.photo ? "image/jpeg" : message.document?.mime_type;
     if (!file || !mimeType || !imageTypes.has(mimeType)) {
-      throw new Error("Kaeno reads text, images and voice messages");
+      throw new Error("Kaeno reads text and images");
     }
     if ((file.file_size ?? 0) > maxImageBytes) {
       throw new Error("Images are limited to 5 MB");
@@ -113,7 +101,7 @@ export function telegramExtension(
     const text = message?.text?.trim() ?? "";
     if (
       !message ||
-      !(text || message.photo?.length || message.document || message.voice) ||
+      !(text || message.photo?.length || message.document) ||
       message.chat.type !== "private" ||
       message.from?.is_bot !== false ||
       message.from.id !== message.chat.id ||
@@ -125,7 +113,7 @@ export function telegramExtension(
     const chatId = message.chat.id;
     const id = await core.threads.getOrCreateConversation(`telegram:${chatId}`);
     try {
-      const input = text ? undefined : await media(message);
+      const input = text ? undefined : await image(message);
       const jobs =
         text === "/jobs" || text === "/status"
           ? await listWork(() => core.harness, id)

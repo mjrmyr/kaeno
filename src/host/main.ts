@@ -17,7 +17,6 @@ import {
 import { parseModelRef } from "../extensions/agents/index.ts";
 import { ApiServer } from "../extensions/api/index.ts";
 import { loadTelegram } from "../extensions/telegram/index.ts";
-import { loadTranscription } from "../extensions/transcription/index.ts";
 
 import { loadMcpConfiguration } from "../extensions/mcp/index.ts";
 import { memoryExtension, MemoryStore } from "../extensions/memory/index.ts";
@@ -140,10 +139,7 @@ const models = createModels({ credentials });
 models.setProvider(anthropicProvider());
 models.setProvider(openaiProvider());
 models.setProvider(openrouterProvider());
-const transcriber = process.env.KAENO_TRANSCRIPTION_CONFIG
-  ? await loadTranscription(process.env.KAENO_TRANSCRIPTION_CONFIG)
-  : undefined;
-const telegram = await loadTelegram(process.env, transcriber);
+const telegram = await loadTelegram(process.env);
 const core = await openKaeno({
   storage: await openNodeSqliteStorage(data.durableFile),
   models,

@@ -72,9 +72,9 @@ it("redacts the bot token from transport errors", async () => {
 it("downloads files through getFile", async () => {
   const fetch = vi
     .fn<typeof globalThis.fetch>()
-    .mockResolvedValueOnce(response({ file_path: "voice/file_1.oga" }))
+    .mockResolvedValueOnce(response({ file_path: "photos/file_1.jpg" }))
     .mockResolvedValueOnce(new Response(new Uint8Array([7, 8])))
-    .mockResolvedValueOnce(response({ file_path: "voice/file_1.oga" }))
+    .mockResolvedValueOnce(response({ file_path: "photos/file_1.jpg" }))
     .mockResolvedValueOnce(new Response("", { status: 404 }));
   const client = new TelegramClient("token", fetch);
   expect(await client.download("abc")).toEqual(new Uint8Array([7, 8]));
@@ -82,7 +82,7 @@ it("downloads files through getFile", async () => {
     file_id: "abc",
   });
   expect(fetch.mock.calls[1][0]).toBe(
-    "https://api.telegram.org/file/bottoken/voice/file_1.oga",
+    "https://api.telegram.org/file/bottoken/photos/file_1.jpg",
   );
   await expect(client.download("abc")).rejects.toThrow();
 });

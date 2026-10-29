@@ -18,7 +18,6 @@ const updateSchema = z.object({
       document: fileSchema
         .extend({ mime_type: z.string().optional() })
         .optional(),
-      voice: fileSchema.extend({ mime_type: z.string().optional() }).optional(),
     })
     .optional(),
 });

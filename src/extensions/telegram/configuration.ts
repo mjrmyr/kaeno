@@ -1,12 +1,10 @@
 import { readFile } from "node:fs/promises";
-import type { Transcriber } from "../transcription/index.ts";
 import { TelegramClient } from "./client.ts";
 import { telegramConfigurationSchema, telegramExtension } from "./telegram.ts";
 
 /** Owner configuration and host-only token; never included in agent setup or prompts. */
 export async function loadTelegram(
   env: NodeJS.ProcessEnv,
-  transcriber?: Transcriber,
 ): Promise<ReturnType<typeof telegramExtension> | undefined> {
   const path = env.KAENO_TELEGRAM_CONFIG;
   if (!path) {
@@ -23,7 +21,6 @@ export async function loadTelegram(
   return telegramExtension({
     ...config,
     client: new TelegramClient(env.TELEGRAM_BOT_TOKEN ?? ""),
-    transcriber,
     onError: (error) => console.error("telegram:", error),
   });
 }

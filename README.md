@@ -72,10 +72,6 @@ curl -X POST localhost:8080/v1/routines -d '{
 
 Set `TELEGRAM_BOT_TOKEN` and point `KAENO_TELEGRAM_CONFIG` at a file with `{ "allowedChatIds": [<your chat ID>] }`. Each allowed private chat is one Kaeno thread. Send text, a photo (with an optional caption) or an image sent as a file (JPEG, PNG, GIF or WebP, up to 5 MB). Images go to Kaeno's model as they are, so its model must accept images.
 
-## Voice messages
-
-Point `KAENO_TRANSCRIPTION_CONFIG` at a file like `transcription.config.example.json` to talk to Kaeno with voice messages. Kaeno receives the transcript, marked as a transcribed voice message, and answers in text. The endpoint is any OpenAI-compatible `/audio/transcriptions` API: OpenAI, Groq, or a local whisper server. `apiKeyEnv` names the environment variable that holds the key. Keys never go in the file, and a local server needs none. The host creates one transcriber, and every channel that accepts voice uses it: Telegram does today.
-
 ## Embed and extend
 
 The embedding entry point is `openKaeno` in `src/core/application/index.ts`. Callers supply resolved native assistant settings and explicitly install pi-durable extensions. WORK takes `work.agents`: plain agent profiles (`id`, `description`, resolved `setup`). `openKaeno` checks every agent against the approved worker tools and installed binding owners and throws on a misfit, so an agent that cannot run fails startup instead of being listed as unavailable. `loadEnvironment` in `src/host/composition/index.ts` resolves the same configured sources for local, Docker, and Kubernetes hosts; source acquisition and catalogs do not enter durable core.

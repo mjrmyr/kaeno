@@ -26,7 +26,6 @@ import {
   type TelegramTransport,
   type TelegramUpdate,
 } from "../../src/extensions/telegram/index.ts";
-import type { Transcriber } from "../../src/extensions/transcription/index.ts";
 
 function message(
   update_id: number,
@@ -98,7 +97,6 @@ async function open(options: {
   storage?: Storage;
   work?: boolean;
   allowedChatIds?: number[];
-  transcriber?: Transcriber;
 }) {
   const faux = fauxProvider();
   const models = createModels();
@@ -118,7 +116,6 @@ async function open(options: {
       telegramExtension({
         allowedChatIds: options.allowedChatIds ?? [111, 222],
         client: options.inbox.client,
-        transcriber: options.transcriber,
         onError: errors,
       }),
     ],
@@ -528,7 +525,7 @@ function lastUserContent(request: Parameters<FauxResponseFactory>[0]) {
   return request.messages.findLast((entry) => entry.role === "user")?.content;
 }
 
-it("gives the model a photo with its caption, and refuses other files and unconfigured voice", async () => {
+it("gives the model a photo with its caption, and refuses other files", async () => {
   const input = inbox();
   const seen: unknown[] = [];
   const { core } = await open({
@@ -555,12 +552,11 @@ it("gives the model a photo with its caption, and refuses other files and unconf
           file_size: 6 * 1024 * 1024,
         },
       }),
-      media(4, { voice: { file_id: "voice" } }),
     );
     await vi.waitFor(() =>
       expect(input.client.sendMessage).toHaveBeenCalledWith(111, "A CAT"),
     );
-    await caughtUp(input, 5);
+    await caughtUp(input, 4);
     expect(seen).toEqual([
       [
         { type: "text", text: "what is this?" },
@@ -569,52 +565,14 @@ it("gives the model a photo with its caption, and refuses other files and unconf
     ]);
     expect(input.client.download).toHaveBeenCalledExactlyOnceWith("large");
     for (const reason of [
-      "Kaeno reads text, images and voice messages",
+      "Kaeno reads text and images",
       "Images are limited to 5 MB",
-      "Voice messages need KAENO_TRANSCRIPTION_CONFIG",
     ]) {
       expect(input.client.sendMessage).toHaveBeenCalledWith(
         111,
         expect.stringContaining(reason),
       );
     }
-  } finally {
-    await core.close();
-  }
-});
-
-it("gives the model a transcribed voice message and answers in text", async () => {
-  const input = inbox();
-  const transcriber = {
-    transcribe: vi
-      .fn<Transcriber["transcribe"]>()
-      .mockResolvedValue("how are you"),
-  };
-  const seen: unknown[] = [];
-  const { core } = await open({
-    inbox: input,
-    transcriber,
-    respond: async (request) => {
-      seen.push(lastUserContent(request));
-      return answer("GOOD");
-    },
-  });
-  try {
-    input.push(media(1, { voice: { file_id: "v1", mime_type: "audio/ogg" } }));
-    await vi.waitFor(() =>
-      expect(input.client.sendMessage).toHaveBeenCalledExactlyOnceWith(
-        111,
-        "GOOD",
-      ),
-    );
-    expect(input.client.download).toHaveBeenCalledExactlyOnceWith("v1");
-    expect(transcriber.transcribe).toHaveBeenCalledExactlyOnceWith(
-      new Uint8Array([1, 2, 3]),
-      "audio/ogg",
-    );
-    expect(seen).toEqual([
-      expect.stringMatching(/^\[Voice message.*\]\nhow are you$/),
-    ]);
   } finally {
     await core.close();
   }
