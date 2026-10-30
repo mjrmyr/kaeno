@@ -42,6 +42,8 @@ export interface Kaeno {
   harness: Harness;
   threads: ThreadDirectory;
   turns: TurnCoordinator;
+  /** Absent when Kaeno runs without WORK. */
+  work: Work | undefined;
   close(): Promise<void>;
 }
 
@@ -379,6 +381,7 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
     harness,
     threads,
     turns,
+    work,
     close() {
       // NOTE: can't we just return that async function using Promise?
       // that would be cleaner

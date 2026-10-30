@@ -190,7 +190,7 @@ it("the HTTP API lists the index, reads, edits and forgets entries", async () =>
     extensions: [],
   });
   const memory = store();
-  const api = new ApiServer(core, memory).server;
+  const api = new ApiServer(core, { memory }).server;
   try {
     memory.mutate((state) => {
       saveEntry(state, {

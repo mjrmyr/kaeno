@@ -114,6 +114,27 @@ export class TurnCoordinator {
   }> {
     return activeTurn(this.harness(), id, ctx);
   }
+  /**
+   * An origin for activity the host starts in this chat without a user turn. It carries the
+   * current epoch, so stop/reset fences it like any other origin, and reuses the route of the
+   * latest user message, so results reach the channel the owner last used here.
+   */
+  async hostOrigin(
+    id: ConversationId,
+    requestId: string,
+    ctx: Context,
+  ): Promise<Origin> {
+    const ledger = await this.harness().snapshot(TurnLedger, id, ctx);
+    const route = Object.values(ledger?.receipts ?? {}).findLast(
+      (receipt) => receipt.source.kind === "user" && receipt.notify.route,
+    )?.notify.route;
+    return {
+      conversationId: id,
+      requestId,
+      epoch: ledger?.epoch ?? 0,
+      notify: route ? { route: { ...route } } : {},
+    };
+  }
   async isOriginFenced(tx: Tx, origin: Origin): Promise<boolean> {
     const ledger = await tx.doc(TurnLedger, origin.conversationId);
     return Boolean(ledger.control) || ledger.epoch !== origin.epoch;

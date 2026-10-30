@@ -5,7 +5,9 @@ import type {
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Markdown } from "@earendil-works/pi-tui";
 import {
+  decideChange,
   deliveryKey,
+  listChanges,
   receiptPrefix,
   request,
   streamKaeno,
@@ -243,6 +245,33 @@ function registerTarget(pi: ExtensionAPI, target: Target) {
       }
     },
   });
+
+  // Routine changes Kaeno proposed apply only through these owner decisions, never a model reply.
+  pi.registerCommand(`${name}-changes`, {
+    description: `List routine changes ${label} proposed and their status`,
+    handler: async (_args, ctx) => {
+      const changes = await listChanges(baseUrl);
+      ctx.ui.notify(
+        changes.length === 0
+          ? "No routine changes."
+          : changes
+              .map(
+                (change) => `${change.id}: ${change.action} (${change.status})`,
+              )
+              .join("\n"),
+        "info",
+      );
+    },
+  });
+  for (const decision of ["approve", "reject"] as const) {
+    pi.registerCommand(`${name}-${decision}`, {
+      description: `${decision === "approve" ? "Approve" : "Reject"} a routine change ${label} proposed: /${name}-${decision} <change id>`,
+      handler: async (args, ctx) => {
+        await decideChange(baseUrl, args.trim(), decision);
+        ctx.ui.notify(`${label}: change ${args.trim()} ${decision}d`, "info");
+      },
+    });
+  }
 
   pi.registerCommand(`${name}-stop`, {
     description: `Stop ${label}'s current turn and background work for this session`,

@@ -49,6 +49,25 @@ To provision a login from a read-only source such as a Kubernetes Secret, set `K
 
 Kaeno keeps a durable memory of its owner, shared by every thread and kept across `reset`. **Preferences** (how you want things done) are always in its prompt in full. **Memories** (facts) appear there by title only, and Kaeno reads the ones it needs with `memory_read`. Only your own messages can change memory: work reports are untrusted and cannot. Workers never see memory; Kaeno puts the facts a task needs into its brief. Browse and edit it with `GET /v1/memory`, `GET`/`PUT`/`DELETE /v1/memory/:id`. See [personal continuity](docs/continuity.md) for the design and the proposed persistent workspace.
 
+## Routines
+
+A routine is work that runs on its own schedule: each run starts the routine's worker agent with its instructions, and the report arrives in the routine's Kaeno thread like any other work report, on the channel you last used there.
+
+Ask Kaeno ("check my PRs every weekday at 8") and it **proposes** the routine as a change, for example `c17`. Nothing changes until you approve it: `/kaeno-approve c17` (or `/kaeno-reject c17`, `/kaeno-changes`) in Pi, or `POST /v1/routines/changes/c17/approve` / `reject`. Changing or deleting a routine works the same way. A proposal is applied exactly as proposed, and one made against an older version of a routine is refused. Kaeno can propose only while answering your own messages, never from a work or routine report, and it cannot start runs.
+
+You can also manage routines directly:
+
+```sh
+curl -X POST localhost:8080/v1/routines -d '{
+  "name": "PR check",
+  "agent": "swe",
+  "instructions": "Check open PRs in mjrmyr/kaeno and report failing checks.",
+  "schedule": { "at": "08:00", "timeZone": "Europe/Berlin", "days": [1, 2, 3, 4, 5] }
+}'
+```
+
+`schedule` is `{ "every": <minutes> }` or `{ "at": "HH:MM", "timeZone": "<IANA zone>", "days"?: [1-7] }` (1 = Monday). Optional: `thread` (default `routines`; Kaeno's proposals default to the thread you asked in), `timeoutMinutes` (default 60; a longer run is cancelled) and `enabled`. Runs never overlap, and after downtime only the latest missed run starts. `GET /v1/routines` lists them; `PUT` and `DELETE /v1/routines/:id` change or remove one; `POST /v1/routines/:id/run` starts a run now.
+
 ## Embed and extend
 
 The embedding entry point is `openKaeno` in `src/core/application/index.ts`. Callers supply resolved native assistant settings and explicitly install pi-durable extensions. WORK takes `work.agents`: plain agent profiles (`id`, `description`, resolved `setup`). `openKaeno` checks every agent against the approved worker tools and installed binding owners and throws on a misfit, so an agent that cannot run fails startup instead of being listed as unavailable. `loadEnvironment` in `src/host/composition/index.ts` resolves the same configured sources for local, Docker, and Kubernetes hosts; source acquisition and catalogs do not enter durable core.

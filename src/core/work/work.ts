@@ -10,6 +10,7 @@ import {
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import type { Binding } from "../conversation/index.ts";
+import type { Origin } from "../turns/index.ts";
 import { cancelWork, createWorkCommands } from "./commands.ts";
 import { listWork } from "./directory.ts";
 import type {
@@ -18,7 +19,7 @@ import type {
   WorkTurns,
   WorkView,
 } from "./model.ts";
-import { describeAgents } from "./plan.ts";
+import { describeAgents, resolveAgentId } from "./plan.ts";
 import {
   assertSavedWorkFits,
   reconcileEnvironment,
@@ -36,6 +37,9 @@ export class Work {
   private readonly harness: () => WorkRuntime;
   private readonly turns: WorkTurns;
   private readonly settings: WorkSettings;
+  private readonly launchRoot: ReturnType<
+    typeof createWorkCommands
+  >["launchRoot"];
   constructor(
     harness: () => WorkRuntime,
     turns: WorkTurns,
@@ -48,6 +52,7 @@ export class Work {
     const commands = createWorkCommands(harness, turns, settings, task);
     this.orchestrationTools = commands.orchestrationTools;
     this.parentTools = commands.parentTools;
+    this.launchRoot = commands.launchRoot;
     this.extension = defineExtension({
       name: WORK_EXTENSION,
       tools: [...this.orchestrationTools, ...this.parentTools],
@@ -76,6 +81,29 @@ export class Work {
   }
   async reconcileEnvironment(context: Context): Promise<void> {
     await reconcileEnvironment(this.harness, this.settings, context);
+  }
+  /** The configured agent a requested name refers to; throws when unknown or ambiguous. */
+  resolveAgent(requested: string): string {
+    return resolveAgentId(
+      requested,
+      this.settings.agents.map((agent) => agent.id),
+    );
+  }
+  /**
+   * Start root WORK for the host, reporting to `origin` like work started there. The same `key`
+   * always finds the same work, so a retried start never launches twice.
+   */
+  startWork(
+    request: {
+      origin: Origin;
+      key: string;
+      agent: string;
+      title: string;
+      brief: string;
+    },
+    context: Context,
+  ): Promise<TaskId> {
+    return this.launchRoot(request, context);
   }
   async listWork(conversationId: ConversationId): Promise<WorkView[]> {
     return listWork(this.harness, conversationId);

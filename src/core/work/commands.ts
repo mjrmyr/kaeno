@@ -19,7 +19,9 @@ import {
   jsonValueSchema,
   readParent,
   type WorkParent,
+  type WorkResult,
   type WorkRuntime,
+  type WorkScopeState,
   type WorkSettings,
   type WorkTask,
   type WorkTurns,
@@ -48,6 +50,17 @@ const FINISHED = ["completed", "failed", "aborted", "faulted", "orphaned"];
 interface WorkCommands {
   orchestrationTools: ToolRegistration[];
   parentTools: ToolRegistration[];
+  /** Root WORK admitted by the host on behalf of a CHAT origin, not by a tool call. */
+  launchRoot(
+    request: {
+      origin: Origin;
+      key: string;
+      agent: string;
+      title: string;
+      brief: string;
+    },
+    context: Context,
+  ): Promise<TaskId<WorkResult>>;
 }
 export function createWorkCommands(
   harness: () => WorkRuntime,
@@ -87,6 +100,135 @@ export function createWorkCommands(
     }
     return turn.origin;
   }
+  /**
+   * Admit one WORK started by `conversationId`. `key` is the idempotency key: a replayed admission
+   * finds its work; separate keys start separate work.
+   */
+  async function launchWork(
+    runtime: Pick<WorkRuntime, "commit" | "snapshot">,
+    request: {
+      conversationId: ConversationId;
+      parent: WorkParent;
+      caller: Readonly<WorkScopeState> | undefined;
+      key: string;
+      agent: string;
+      title: string;
+      brief: string;
+    },
+    context: Context,
+  ): Promise<TaskId<WorkResult>> {
+    const { conversationId, parent, caller, key, agent, title, brief } =
+      request;
+    const isRoot = parent.kind === "chat";
+    // A replayed call that already launched its work keeps it; a new root plan is prepared outside
+    // the admission transaction from the agents loaded at startup, then saved inside it.
+    const launched = (
+      await runtime.snapshot(WorkIndex, conversationId, context)
+    )?.launches[key];
+    const rootPlan =
+      launched === undefined && isRoot ? prepareRootPlan(agent) : undefined;
+    const capacity =
+      launched === undefined
+        ? await settings.environment?.capacity?.(context)
+        : undefined;
+    const limit = Math.min(
+      settings.maxConcurrent,
+      capacity ?? settings.maxConcurrent,
+    );
+    return runtime.commit(async (tx) => {
+      if (
+        parent.kind === "chat" &&
+        (await turns.isOriginFenced(tx, parent.origin))
+      ) {
+        throw new Error("This turn was fenced by stop/reset");
+      }
+      const index = await tx.doc(WorkIndex, conversationId);
+      const existing = index.launches[key];
+      if (existing) {
+        return existing;
+      }
+      let plan: WorkPlan;
+      let agentId: string;
+      let depth: number;
+      if (isRoot) {
+        if (!rootPlan) {
+          throw new Error("Work launch changed during admission; retry");
+        }
+        plan = rootPlan;
+        agentId = rootPlan.root;
+        depth = 1;
+      } else {
+        if (!caller) {
+          throw new Error("Child WORK requires its parent's scope");
+        }
+        plan = readPlan(caller.plan);
+        if (caller.maxDepth === null || caller.depth >= caller.maxDepth) {
+          throw new Error(
+            "This WORK is at the maximum nesting depth and cannot start child work",
+          );
+        }
+        agentId = resolveAgentId(agent, Object.keys(plan.agents));
+        depth = caller.depth + 1;
+      }
+      assertPlanFits(plan, settings.surface());
+      // Every unfinished WORK may hold an environment until it is terminal, and a parent keeps its
+      // own while it waits for children. Starting work only when a slot is free now means no WORK
+      // waits for one, so parents and children cannot deadlock. Counted inside this commit, so
+      // concurrent start_work calls cannot overbook.
+      const used = (await liveWork(tx)).length;
+      if (used >= limit) {
+        throw new Error(
+          `No free work slot: ${used} of ${limit} are in use by unfinished works. Wait for a running work to report or cancel one, then retry.`,
+        );
+      }
+      const live = await liveWork(tx, conversationId);
+      if (live.length >= maxActive) {
+        throw new Error(
+          `${maxActive} works are already active here; cancel or wait before adding more`,
+        );
+      }
+      const retained = new Set<number>(live);
+      if (parent.kind === "chat") {
+        for (const reportId of await turns.getPendingReportIds(
+          tx,
+          conversationId,
+        )) {
+          retained.add(reportId);
+        }
+      }
+      const history = Object.entries(index.launches);
+      for (const [key, launched] of history.slice(
+        0,
+        Math.max(0, history.length - 511),
+      )) {
+        if (!retained.has(launched)) {
+          delete index.launches[key];
+        }
+      }
+      const created = await tx.createTask(
+        task,
+        {
+          title,
+          brief,
+          agent: agentId,
+          depth,
+          maxDepth: caller?.maxDepth ?? settings.maxDepth,
+          parent: jsonValueSchema.parse(
+            copyJson(parent, { omitUndefinedProperties: true }),
+          ),
+          plan: storedPlan(plan),
+          environment: settings.environment?.identity ?? null,
+        },
+        {
+          ownership: { kind: "conversation" },
+          conversationId,
+          background: true,
+        },
+      );
+      index.launches[key] = created;
+      return created;
+    }, context);
+  }
   const start = defineTool({
     name: START_WORK,
     description:
@@ -106,112 +248,20 @@ export function createWorkCommands(
             origin: await resolveAuthorizedOrigin(api, context),
           }
         : { kind: "work", conversationId: api.conversationId };
-      // A replayed call that already launched its work keeps it; a new root plan is prepared outside
-      // the admission transaction from the agents loaded at startup, then saved inside it.
-      const launched = (
-        await api.snapshot(WorkIndex, api.conversationId, context)
-      )?.launches[String(api.taskId)];
-      const rootPlan =
-        launched === undefined && isRoot ? prepareRootPlan(agent) : undefined;
-      const capacity =
-        launched === undefined
-          ? await settings.environment?.capacity?.(context)
-          : undefined;
-      const limit = Math.min(
-        settings.maxConcurrent,
-        capacity ?? settings.maxConcurrent,
+      // The tool call is the idempotency key: a replayed call finds its work.
+      const id = await launchWork(
+        api,
+        {
+          conversationId: api.conversationId,
+          parent,
+          caller,
+          key: String(api.taskId),
+          agent,
+          title,
+          brief,
+        },
+        context,
       );
-      const id = await api.commit(async (tx) => {
-        if (
-          parent.kind === "chat" &&
-          (await turns.isOriginFenced(tx, parent.origin))
-        ) {
-          throw new Error("This turn was fenced by stop/reset");
-        }
-        const index = await tx.doc(WorkIndex, api.conversationId);
-        // The tool call is the idempotency key: a replayed call finds its work; separate calls start separate work.
-        const existing = index.launches[String(api.taskId)];
-        if (existing) {
-          return existing;
-        }
-        let plan: WorkPlan;
-        let agentId: string;
-        let depth: number;
-        if (isRoot) {
-          if (!rootPlan) {
-            throw new Error("Work launch changed during admission; retry");
-          }
-          plan = rootPlan;
-          agentId = rootPlan.root;
-          depth = 1;
-        } else {
-          plan = readPlan(caller.plan);
-          if (caller.maxDepth === null || caller.depth >= caller.maxDepth) {
-            throw new Error(
-              "This WORK is at the maximum nesting depth and cannot start child work",
-            );
-          }
-          agentId = resolveAgentId(agent, Object.keys(plan.agents));
-          depth = caller.depth + 1;
-        }
-        assertPlanFits(plan, settings.surface());
-        // Every unfinished WORK may hold an environment until it is terminal, and a parent keeps its
-        // own while it waits for children. Starting work only when a slot is free now means no WORK
-        // waits for one, so parents and children cannot deadlock. Counted inside this commit, so
-        // concurrent start_work calls cannot overbook.
-        const used = (await liveWork(tx)).length;
-        if (used >= limit) {
-          throw new Error(
-            `No free work slot: ${used} of ${limit} are in use by unfinished works. Wait for a running work to report or cancel one, then retry.`,
-          );
-        }
-        const live = await liveWork(tx, api.conversationId);
-        if (live.length >= maxActive) {
-          throw new Error(
-            `${maxActive} works are already active here; cancel or wait before adding more`,
-          );
-        }
-        const retained = new Set<number>(live);
-        if (parent.kind === "chat") {
-          for (const reportId of await turns.getPendingReportIds(
-            tx,
-            api.conversationId,
-          )) {
-            retained.add(reportId);
-          }
-        }
-        const history = Object.entries(index.launches);
-        for (const [key, launched] of history.slice(
-          0,
-          Math.max(0, history.length - 511),
-        )) {
-          if (!retained.has(launched)) {
-            delete index.launches[key];
-          }
-        }
-        const created = await tx.createTask(
-          task,
-          {
-            title,
-            brief,
-            agent: agentId,
-            depth,
-            maxDepth: caller?.maxDepth ?? settings.maxDepth,
-            parent: jsonValueSchema.parse(
-              copyJson(parent, { omitUndefinedProperties: true }),
-            ),
-            plan: storedPlan(plan),
-            environment: settings.environment?.identity ?? null,
-          },
-          {
-            ownership: { kind: "conversation" },
-            conversationId: api.conversationId,
-            background: true,
-          },
-        );
-        index.launches[String(api.taskId)] = created;
-        return created;
-      }, context);
       const next =
         parent.kind === "chat"
           ? "It runs independently; do not wait for it. Explain your plan and answer the user now."
@@ -462,6 +512,20 @@ export function createWorkCommands(
   return {
     orchestrationTools: [start, list, inspect, message, cancel],
     parentTools: [messageParent],
+    launchRoot: ({ origin, key, agent, title, brief }, context) =>
+      launchWork(
+        harness(),
+        {
+          conversationId: origin.conversationId,
+          parent: { kind: "chat", origin },
+          caller: undefined,
+          key: `host:${key}`,
+          agent,
+          title,
+          brief,
+        },
+        context,
+      ),
   };
 }
 export async function cancelWork(

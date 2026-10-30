@@ -4,6 +4,8 @@ import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { normalizeContext } from "@earendil-works/pi-ai";
 import { afterEach, expect, it } from "vitest";
 import {
+  decideChange,
+  listChanges,
   readReplies,
   receiptPrefix,
   streamKaeno,
@@ -167,4 +169,30 @@ it("reads later worker reports", async () => {
   expect((await readReplies(base, "session-1")).replies[0].text).toBe(
     "worker finished",
   );
+});
+
+it("lists routine changes and sends owner decisions by change ID only", async () => {
+  const calls: string[] = [];
+  const base = await serve((req, res) => {
+    calls.push(`${req.method} ${req.url}`);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(
+      req.method === "GET"
+        ? JSON.stringify([{ id: "c7", action: "create", status: "pending" }])
+        : "{}",
+    );
+  });
+  expect(await listChanges(base)).toEqual([
+    { id: "c7", action: "create", status: "pending" },
+  ]);
+  await decideChange(base, "c7", "approve");
+  await decideChange(base, "c8", "reject");
+  await expect(
+    decideChange(base, "c7/../../threads", "approve"),
+  ).rejects.toThrow("Not a change ID");
+  expect(calls).toEqual([
+    "GET /v1/routines/changes",
+    "POST /v1/routines/changes/c7/approve",
+    "POST /v1/routines/changes/c8/reject",
+  ]);
 });
