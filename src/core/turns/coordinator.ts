@@ -5,6 +5,7 @@ import type {
   Harness,
   TaskId,
   Tx,
+  UserInput,
 } from "@earendil-works/pi-durable";
 import {
   activeTurn,
@@ -53,7 +54,7 @@ export class TurnCoordinator {
   admitUserTurn(
     tx: Tx,
     id: ConversationId,
-    content: string,
+    content: UserInput,
     requestId: string,
     notify?: Notify,
   ): Promise<TaskId> {

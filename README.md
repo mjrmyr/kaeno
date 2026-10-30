@@ -68,6 +68,10 @@ curl -X POST localhost:8080/v1/routines -d '{
 
 `schedule` is `{ "every": <minutes> }` or `{ "at": "HH:MM", "timeZone": "<IANA zone>", "days"?: [1-7] }` (1 = Monday). Optional: `thread` (default `routines`; Kaeno's proposals default to the thread you asked in), `timeoutMinutes` (default 60; a longer run is cancelled) and `enabled`. Runs never overlap, and after downtime only the latest missed run starts. `GET /v1/routines` lists them; `PUT` and `DELETE /v1/routines/:id` change or remove one; `POST /v1/routines/:id/run` starts a run now.
 
+## Telegram
+
+Set `TELEGRAM_BOT_TOKEN` and point `KAENO_TELEGRAM_CONFIG` at a file with `{ "allowedChatIds": [<your chat ID>] }`. Each allowed private chat is one Kaeno thread. Send text, a photo (with an optional caption) or an image sent as a file (JPEG, PNG, GIF or WebP, up to 5 MB). Images go to Kaeno's model as they are, so its model must accept images.
+
 ## Embed and extend
 
 The embedding entry point is `openKaeno` in `src/core/application/index.ts`. Callers supply resolved native assistant settings and explicitly install pi-durable extensions. WORK takes `work.agents`: plain agent profiles (`id`, `description`, resolved `setup`). `openKaeno` checks every agent against the approved worker tools and installed binding owners and throws on a misfit, so an agent that cannot run fails startup instead of being listed as unavailable. `loadEnvironment` in `src/host/composition/index.ts` resolves the same configured sources for local, Docker, and Kubernetes hosts; source acquisition and catalogs do not enter durable core.

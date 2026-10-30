@@ -12,8 +12,10 @@ import {
   type SettledSubmissionRecord,
   type Task,
   type TaskId,
+  type UserInput,
   type Tx,
 } from "@earendil-works/pi-durable";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { requireConversation, type Stored } from "../durable/index.ts";
 export interface ChannelRoute {
@@ -109,7 +111,7 @@ export const TurnLedger = defineDoc<Stored<TurnLedgerState>>({
 });
 interface TurnInput {
   conversationId: ConversationId;
-  content: string;
+  content: UserInput;
   requestId: string;
   notify?: Notify;
   epoch?: number;
@@ -175,14 +177,10 @@ export async function admitTurn(
   if (existing?.taskId) {
     const record = await tx.task(existing.taskId);
     const prior = record
-      ? z
-          .object({
-            content: z.string(),
-          })
-          .parse(record.input)
+      ? z.object({ content: z.unknown() }).parse(record.input)
       : undefined;
     if (
-      (prior && prior.content !== input.content) ||
+      (prior && !isDeepStrictEqual(prior.content, input.content)) ||
       sourceIdentity(existing.source) !==
         sourceIdentity(input.source ?? { kind: "user" })
     ) {

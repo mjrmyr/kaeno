@@ -1,5 +1,9 @@
 import { z } from "zod";
 
+const fileSchema = z.object({
+  file_id: z.string().min(1),
+  file_size: z.number().int().nonnegative().safe().optional(),
+});
 const updateSchema = z.object({
   update_id: z.number().int().nonnegative().safe(),
   message: z
@@ -9,6 +13,11 @@ const updateSchema = z.object({
         .object({ id: z.number().int().positive().safe(), is_bot: z.boolean() })
         .optional(),
       text: z.string().optional(),
+      caption: z.string().optional(),
+      photo: z.array(fileSchema).optional(),
+      document: fileSchema
+        .extend({ mime_type: z.string().optional() })
+        .optional(),
     })
     .optional(),
 });
@@ -17,6 +26,7 @@ export interface TelegramTransport {
   fetchUpdates(offset: number, signal: AbortSignal): Promise<TelegramUpdate[]>;
   sendMessage(chatId: number, text: string): Promise<void>;
   sendTypingIndicator(chatId: number): Promise<void>;
+  download(fileId: string): Promise<Uint8Array<ArrayBuffer>>;
 }
 
 export class TelegramApiError extends Error {
@@ -104,5 +114,26 @@ export class TelegramClient implements TelegramTransport {
   }
   async sendTypingIndicator(chatId: number): Promise<void> {
     await this.call("sendChatAction", { chat_id: chatId, action: "typing" });
+  }
+  async download(fileId: string): Promise<Uint8Array<ArrayBuffer>> {
+    const { file_path: path } = z
+      .object({ file_path: z.string().min(1) })
+      .parse(await this.call("getFile", { file_id: fileId }));
+    let response: Response;
+    try {
+      response = await this.fetch(
+        `https://api.telegram.org/file/bot${this.token}/${path}`,
+        { signal: AbortSignal.timeout(60_000) },
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Request failed";
+      throw new Error(
+        `Telegram download: ${message.replaceAll(this.token, "[redacted]")}`,
+      );
+    }
+    if (!response.ok) {
+      throw new TelegramApiError("download", response.status);
+    }
+    return new Uint8Array(await response.arrayBuffer());
   }
 }

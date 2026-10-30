@@ -51,6 +51,9 @@ function inbox() {
     sendTypingIndicator: vi
       .fn<TelegramTransport["sendTypingIndicator"]>()
       .mockResolvedValue(undefined),
+    download: vi
+      .fn<TelegramTransport["download"]>()
+      .mockResolvedValue(new Uint8Array([1, 2, 3])),
     fetchUpdates: vi
       .fn<TelegramTransport["fetchUpdates"]>()
       .mockImplementation(async (offset, signal) => {
@@ -504,3 +507,73 @@ it.each([false, true])(
     }
   },
 );
+
+function media(
+  update_id: number,
+  fields: Partial<NonNullable<TelegramUpdate["message"]>>,
+): TelegramUpdate {
+  return {
+    update_id,
+    message: {
+      chat: { id: 111, type: "private" },
+      from: { id: 111, is_bot: false },
+      ...fields,
+    },
+  };
+}
+function lastUserContent(request: Parameters<FauxResponseFactory>[0]) {
+  return request.messages.findLast((entry) => entry.role === "user")?.content;
+}
+
+it("gives the model a photo with its caption, and refuses other files", async () => {
+  const input = inbox();
+  const seen: unknown[] = [];
+  const { core } = await open({
+    inbox: input,
+    respond: async (request) => {
+      seen.push(lastUserContent(request));
+      return answer("A CAT");
+    },
+  });
+  try {
+    input.push(
+      media(1, {
+        caption: "what is this?",
+        photo: [
+          { file_id: "small", file_size: 10 },
+          { file_id: "large", file_size: 3 },
+        ],
+      }),
+      media(2, { document: { file_id: "doc", mime_type: "application/pdf" } }),
+      media(3, {
+        document: {
+          file_id: "huge",
+          mime_type: "image/png",
+          file_size: 6 * 1024 * 1024,
+        },
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(input.client.sendMessage).toHaveBeenCalledWith(111, "A CAT"),
+    );
+    await caughtUp(input, 4);
+    expect(seen).toEqual([
+      [
+        { type: "text", text: "what is this?" },
+        { type: "image", data: "AQID", mimeType: "image/jpeg" },
+      ],
+    ]);
+    expect(input.client.download).toHaveBeenCalledExactlyOnceWith("large");
+    for (const reason of [
+      "Kaeno reads text and images",
+      "Images are limited to 5 MB",
+    ]) {
+      expect(input.client.sendMessage).toHaveBeenCalledWith(
+        111,
+        expect.stringContaining(reason),
+      );
+    }
+  } finally {
+    await core.close();
+  }
+});
