@@ -128,6 +128,16 @@ Roll out only as a coordinated release:
 These changes do not merge, deploy or alter Homelab pins. CI image-build checks
 are not a production rollout.
 
+## Zotero library
+
+The optional Zotero extension gives Kaeno and every worker read-only access to one Zotero library through the Zotero web API: `zotero_search_items`, `zotero_get_item`, `zotero_get_children` (notes, attachments, PDF annotations), `zotero_get_fulltext` and `zotero_list_collections`. They are defaults for both roles; explicit `tools` lists still override defaults. Set `KAENO_ZOTERO_CONFIG` to an owner-controlled file:
+
+```json
+{ "library": { "type": "user", "id": 1234567 }, "apiKeyFile": "zotero.key" }
+```
+
+`id` is the numeric userID shown at <https://www.zotero.org/settings/keys>, or a group ID with `"type": "group"`. `apiKeyFile` resolves next to the config and holds a private key with library read access. The key stays on the host and is read once at startup.
+
 ## Owner-configured MCP tools
 
 Set `KAENO_MCP_CONFIG` to an owner-controlled config; Kaeno discovers the allowlisted
