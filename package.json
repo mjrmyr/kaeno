@@ -7,7 +7,7 @@
     "auth": "node --env-file-if-exists=.env scripts/auth.ts",
     "prepare": "husky",
     "check": "npm run typecheck && npm run lint && npm run architecture:check && npm run format:check",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p src/ui/tsconfig.json --noEmit",
     "lint": "oxlint -c .oxlintrc.json src scripts test",
     "architecture:check": "node scripts/check-architecture.ts",
     "format": "prettier --write .",
@@ -16,15 +16,19 @@
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
     "browser:smoke": "node scripts/browser-runtime-smoke.ts",
-    "verify": "npm run check && npm test"
+    "verify": "npm run check && npm test",
+    "ui": "node --env-file-if-exists=.env scripts/ui.ts",
+    "ui:check": "tsc -p src/ui/tsconfig.json --noEmit && vite build src/ui --outDir ../../dist/ui"
   },
   "devDependencies": {
     "@types/node": "24.19.1",
     "@types/proper-lockfile": "^4.1.4",
     "husky": "^9.1.7",
+    "jsdom": "^26.1.0",
     "oxlint": "^1.87.0",
     "prettier": "^3.9.10",
     "typescript": "5.9.3",
+    "vite": "^6.4.5",
     "vitest": "3.2.7"
   },
   "engines": {

@@ -23,6 +23,9 @@ async function filesIn(directory: string): Promise<string[]> {
   const groups = await Promise.all(
     entries.map(async (entry) => {
       const path = resolve(directory, entry.name);
+      if (path === resolve(root, "src/ui")) {
+        return []; // Browser code has its own DOM-only tsconfig, lint and behavior tests.
+      }
       if (entry.isDirectory()) {
         return filesIn(path);
       }

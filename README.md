@@ -39,6 +39,12 @@ A skill has `name` and `description` frontmatter, an optional supported `disable
 
 The CLI's HTTP adapter listens on `PORT` (default `8080`). It supports thread listing, replies, stop and reset. This adapter does not implement transport authentication: run it on a trusted network or behind authenticated ingress. Setting a token environment variable alone does not secure the listener. Disconnecting a client does not cancel an admitted turn.
 
+## Web UI
+
+Run `npm run ui` from the repository root after `npm ci` and host configuration.
+It launches a loopback UI plus the backend together—no nested install or second
+terminal required. See [fresh-clone UI setup, connection settings and API limits](docs/ui.md).
+
 ## Model credentials
 
 Provider API keys come from the environment (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`). An OpenAI subscription login is stored in a writable host-only file, `KAENO_AUTH_FILE` (default `~/.kaeno/auth.json`), created with `npm run auth -- login openai [--output <file>]`. Kaeno refreshes and rotates those tokens in place, so the file must stay writable and persistent.

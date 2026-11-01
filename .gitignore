@@ -10,3 +10,5 @@ data
 .kaeno
 *auth.json
 *auth.json.*
+
+dist/

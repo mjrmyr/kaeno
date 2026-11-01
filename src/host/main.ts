@@ -243,7 +243,7 @@ try {
   server = current;
   await new Promise<void>((resolve, reject) => {
     current.once("error", reject);
-    current.listen(port, () => {
+    current.listen(port, process.env.HOST ?? "0.0.0.0", () => {
       current.removeListener("error", reject);
       resolve();
     });
