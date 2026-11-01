@@ -22,5 +22,5 @@
     "typescript/no-non-null-assertion": "error",
     "typescript/consistent-type-definitions": ["error", "interface"]
   },
-  "ignorePatterns": ["node_modules", "coverage"]
+  "ignorePatterns": ["node_modules", "coverage", "src/ui/**"]
 }

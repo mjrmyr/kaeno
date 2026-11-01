@@ -4,4 +4,4 @@ work-config.json
 package-lock.json
 coverage
 
-ui/dist/
+src/ui/dist/

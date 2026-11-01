@@ -1,7 +1,8 @@
 # Kaeno UI
 
-A first conversation-centric vertical slice, kept in root `ui/`. The core and
-extension implementations remain untouched under `src/`.
+A first conversation-centric vertical slice, in `src/ui/`, next to `src/core/` and
+`src/extensions/`. It is an independent browser package with its own dependencies
+and TypeScript/test configuration.
 
 ## Run locally
 
@@ -10,16 +11,15 @@ README's configuration/credentials; it listens on port 8080 by default. In anoth
 terminal:
 
 ```sh
-cd ui
-npm ci
-npm run dev
+npm --prefix src/ui ci
+npm run ui
 # Open http://127.0.0.1:5173
 ```
 
 Vite proxies `/v1` to `http://127.0.0.1:8080`. To use a different trusted host:
 
 ```sh
-KAENO_API_URL=http://127.0.0.1:8090 npm run dev
+KAENO_API_URL=http://127.0.0.1:8090 npm run ui
 ```
 
 `KAENO_API_URL` is a **server-side development setting**, not a browser secret.
@@ -35,19 +35,19 @@ it shows a recoverable connection error, not silently substituted fake replies.
 ## Check and build
 
 ```sh
-cd ui
+cd src/ui
 npm run check   # strict TypeScript + component/model/API tests
-npm run build   # strict TypeScript + production build into ui/dist/
+npm run build   # strict TypeScript + production build into src/ui/dist/
 npm audit
 ```
 
 From the repository root, `npm run verify` checks the existing host too. UI
 commands are independent of the host dependency lockfile. Root formatting covers
-UI source and excludes generated `ui/dist/`.
+UI source and excludes generated `src/ui/dist/`.
 
 `npm run preview` serves the production assets for inspection, **not a production
 API deployment**: the development proxy is not part of the build. To deploy, serve
-`ui/dist/` at `/` and route `/v1/*` to Kaeno on the **same authenticated origin**.
+`src/ui/dist/` at `/` and route `/v1/*` to Kaeno on the **same authenticated origin**.
 The Kaeno API has no built-in authentication. Keep the dev server loopback-only;
 put real deployments behind authenticated ingress and a trusted network. This PR
 does not change Docker images, expose a server, or deploy anything.

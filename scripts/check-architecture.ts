@@ -19,6 +19,10 @@ const errors: string[] = [];
 // extensions may use core and each other; only the host composes concrete features.
 const layers = new Set(["core", "extensions", "host"]);
 async function filesIn(directory: string): Promise<string[]> {
+  // The browser package has its own TypeScript configuration and checks.
+  if (directory === resolve(root, "src/ui")) {
+    return [];
+  }
   const entries = await readdir(directory, { withFileTypes: true });
   const groups = await Promise.all(
     entries.map(async (entry) => {
