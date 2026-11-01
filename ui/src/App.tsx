@@ -28,28 +28,31 @@ export function App() {
   const [mode, setMode] = useState<Mode>("live");
   const [threads, setThreads] = useState<Thread[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
-  const [sessions, setSessions] = useState<Record<string, Session>>({});
+  const [sessions, setSessions] = useState<Map<string, Session>>(
+    () => new Map(),
+  );
   const [threadsLoading, setThreadsLoading] = useState(true);
   const [threadsError, setThreadsError] = useState<string>();
   const [refresh, setRefresh] = useState(0);
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [drafts, setDrafts] = useState<Map<string, string>>(() => new Map());
   const [search, setSearch] = useState("");
   const [mobileNav, setMobileNav] = useState(false);
   const [demoStage, setDemoStage] = useState<DemoStage>("waiting");
   const [demoMessages, setDemoMessages] = useState<string[]>([]);
   const [control, setControl] = useState<
-    Record<string, { busy?: boolean; message?: string; error?: string }>
-  >({});
+    Map<string, { busy?: boolean; message?: string; error?: string }>
+  >(() => new Map());
   const endRef = useRef<HTMLDivElement>(null);
   const navToggleRef = useRef<HTMLButtonElement>(null);
   const navCloseRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const session = selected
-    ? (sessions[selected] ?? emptySession())
+    ? (sessions.get(selected) ?? emptySession())
     : emptySession();
   const pending = pendingTurns(session);
-  const draftKey = mode === "demo" ? "demo" : (selected ?? "new");
-  const draft = drafts[draftKey] ?? "";
+  const draftKey =
+    mode === "demo" ? "demo" : selected ? `thread:${selected}` : "new";
+  const draft = drafts.get(draftKey) ?? "";
   const isDemo = mode === "demo";
   const currentThread = threads.find((thread) => thread.key === selected);
   const title = isDemo
@@ -57,13 +60,12 @@ export function App() {
     : selected
       ? (session.outgoing[0]?.text.slice(0, 70) ?? selected)
       : "A little space to think";
-  const activeControl = selected ? control[selected] : undefined;
+  const activeControl = selected ? control.get(selected) : undefined;
 
   const update = useCallback((key: string, fn: (value: Session) => Session) => {
-    setSessions((previous) => ({
-      ...previous,
-      [key]: fn(previous[key] ?? emptySession()),
-    }));
+    setSessions((previous) =>
+      new Map(previous).set(key, fn(previous.get(key) ?? emptySession())),
+    );
   }, []);
 
   useEffect(() => {
@@ -191,7 +193,7 @@ export function App() {
     event.preventDefault();
     const text = draft.trim();
     if (!text || (!isDemo && pending.length > 0)) return;
-    setDrafts((previous) => ({ ...previous, [draftKey]: "" }));
+    setDrafts((previous) => new Map(previous).set(draftKey, ""));
     if (isDemo) {
       setDemoMessages((messages) => [...messages, text]);
       setDemoStage("running");
@@ -208,25 +210,23 @@ export function App() {
   async function stop() {
     if (!selected) return;
     const key = selected;
-    setControl((previous) => ({ ...previous, [key]: { busy: true } }));
+    setControl((previous) => new Map(previous).set(key, { busy: true }));
     try {
       await api.stop(key);
       update(key, (s) => ({
         ...s,
         outgoing: s.outgoing.map((m) => ({ ...m, status: "stopped" })),
       }));
-      setControl((previous) => ({
-        ...previous,
-        [key]: {
+      setControl((previous) =>
+        new Map(previous).set(key, {
           message:
             "Stop accepted. This is a request, not confirmation that all work has stopped.",
-        },
-      }));
+        }),
+      );
     } catch (error) {
-      setControl((previous) => ({
-        ...previous,
-        [key]: { error: errorMessage(error) },
-      }));
+      setControl((previous) =>
+        new Map(previous).set(key, { error: errorMessage(error) }),
+      );
     }
   }
   function newConversation() {
@@ -350,10 +350,7 @@ export function App() {
           )}
           {filtered.map((thread) => (
             <button
-              key={
-                sessions[thread.key]?.outgoing[0]?.text.slice(0, 45) ??
-                thread.key
-              }
+              key={thread.key}
               className={`thread-item ${selected === thread.key && !isDemo ? "selected" : ""}`}
               onClick={() => chooseThread(thread.key)}
               aria-current={
@@ -364,7 +361,7 @@ export function App() {
                 ↳
               </span>
               <span>
-                {sessions[thread.key]?.outgoing[0]?.text.slice(0, 45) ??
+                {sessions.get(thread.key)?.outgoing[0]?.text.slice(0, 45) ??
                   thread.key}
                 <small>
                   {new Date(thread.createdAt).toLocaleDateString(undefined, {
@@ -473,6 +470,9 @@ export function App() {
           >
             <div
               className="transcript"
+              role="log"
+              aria-live="polite"
+              aria-relevant="additions"
               aria-label="Messages"
               aria-busy={!isDemo && !!selected && hasThread && !session.loaded}
             >
@@ -528,10 +528,9 @@ export function App() {
                             <button
                               key={text}
                               onClick={() => {
-                                setDrafts((values) => ({
-                                  ...values,
-                                  [draftKey]: text,
-                                }));
+                                setDrafts((values) =>
+                                  new Map(values).set(draftKey, text),
+                                );
                                 inputRef.current?.focus();
                               }}
                             >
@@ -600,10 +599,9 @@ export function App() {
                   }
                   value={draft}
                   onChange={(event) =>
-                    setDrafts((values) => ({
-                      ...values,
-                      [draftKey]: event.target.value,
-                    }))
+                    setDrafts((values) =>
+                      new Map(values).set(draftKey, event.target.value),
+                    )
                   }
                   onKeyDown={(event) => {
                     if (

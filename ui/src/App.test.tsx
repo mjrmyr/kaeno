@@ -146,6 +146,26 @@ describe("workspace", () => {
     await waitFor(() => expect(posted).toHaveLength(2));
     expect(posted[0]).toBe(posted[1]);
   });
+  it.each(["constructor", "__proto__", "new"])(
+    "treats %s as a thread key, not an object property or new-draft slot",
+    async (key) => {
+      setupFetch([{ ...thread, key }]);
+      render(<App />);
+      await userEvent.click(
+        await screen.findByRole("button", { name: new RegExp(`^${key}`) }),
+      );
+      await screen.findByText("A fresh page in this conversation.");
+      fireEvent.change(screen.getByRole("textbox", { name: "Message Kaeno" }), {
+        target: { value: "Thread-specific draft" },
+      });
+      await userEvent.click(
+        screen.getByRole("button", { name: /New conversation/ }),
+      );
+      expect(
+        screen.getByRole("textbox", { name: "Message Kaeno" }),
+      ).toHaveValue("");
+    },
+  );
   it("filters threads and keeps drafts separate", async () => {
     setupFetch([thread]);
     render(<App />);

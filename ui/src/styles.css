@@ -1492,3 +1492,9 @@ small {
     font-size: 9px;
   }
 }
+
+@media (max-width: 420px) {
+  .context {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
