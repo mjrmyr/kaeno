@@ -65,6 +65,10 @@ does not change Docker images, expose a server, or deploy anything.
 - Show activity-result replies with the host-provided label or activity ID.
 - Send `POST /v1/threads/:key/stop`. Acceptance is explicitly **not** proof that
   all work has stopped. Stop remains available on restored threads too.
+  A stop request releases the local one-message composer gate; it does not mark
+  messages completed. New turns may still be refused while the host's durable
+  stop fence is active. Those can be retried with the same request ID. Waiting
+  for a terminal-stop event would deadlock the UI: the API exposes no such event.
 - The API exposes assistant replies, not historical owner messages. Outgoing
   messages, submission status, and per-thread drafts are **in memory only** and
   lost on reload. They are not a second durable conversation store.

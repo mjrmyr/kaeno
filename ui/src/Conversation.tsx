@@ -73,7 +73,7 @@ function UserMessage({
               sending: "Sending…",
               submitted: "Accepted · awaiting reply",
               uncertain: "Delivery uncertain",
-              stopped: "Stop requested",
+              "stop-requested": "Stop requested (not confirmed)",
             }[outgoing.status]
       }
     >

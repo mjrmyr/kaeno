@@ -3,7 +3,7 @@ import type { Reply } from "./api";
 export type Outgoing = {
   requestId: string;
   text: string;
-  status: "sending" | "submitted" | "uncertain" | "stopped";
+  status: "sending" | "submitted" | "uncertain" | "stop-requested";
 };
 export type Session = {
   outgoing: Outgoing[];
@@ -25,9 +25,27 @@ export function pendingTurns(session: Session): Outgoing[] {
       .map((r) => r.requestId),
   );
   return session.outgoing.filter(
-    (m) => !answered.has(m.requestId) && m.status !== "stopped",
+    (m) => !answered.has(m.requestId) && m.status !== "stop-requested",
   );
 }
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Could not connect to Kaeno.";
+}
+
+/** Stop admission is owner intent, not terminal-state evidence. */
+export function markStopRequested(
+  session: Session,
+  requestIds: ReadonlySet<string>,
+): Session {
+  const pending = new Set(
+    pendingTurns(session).map((message) => message.requestId),
+  );
+  return {
+    ...session,
+    outgoing: session.outgoing.map((message) =>
+      requestIds.has(message.requestId) && pending.has(message.requestId)
+        ? { ...message, status: "stop-requested" }
+        : message,
+    ),
+  };
 }

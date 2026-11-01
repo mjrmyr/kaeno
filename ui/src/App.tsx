@@ -12,6 +12,7 @@ import {
   emptySession,
   errorMessage,
   pendingTurns,
+  markStopRequested,
   type Session,
   type Outgoing,
 } from "./model";
@@ -192,7 +193,8 @@ export function App() {
   function send(event: FormEvent) {
     event.preventDefault();
     const text = draft.trim();
-    if (!text || (!isDemo && pending.length > 0)) return;
+    if (!text || (!isDemo && (pending.length > 0 || activeControl?.busy)))
+      return;
     setDrafts((previous) => new Map(previous).set(draftKey, ""));
     if (isDemo) {
       setDemoMessages((messages) => [...messages, text]);
@@ -210,13 +212,11 @@ export function App() {
   async function stop() {
     if (!selected) return;
     const key = selected;
+    const stopping = new Set(pending.map((message) => message.requestId));
     setControl((previous) => new Map(previous).set(key, { busy: true }));
     try {
       await api.stop(key);
-      update(key, (s) => ({
-        ...s,
-        outgoing: s.outgoing.map((m) => ({ ...m, status: "stopped" })),
-      }));
+      update(key, (s) => markStopRequested(s, stopping));
       setControl((previous) =>
         new Map(previous).set(key, {
           message:
@@ -638,7 +638,8 @@ export function App() {
                       type="submit"
                       aria-label={isDemo ? "Send demo message" : "Send message"}
                       disabled={
-                        !draft.trim() || (!isDemo && pending.length > 0)
+                        !draft.trim() ||
+                        (!isDemo && (pending.length > 0 || activeControl?.busy))
                       }
                     >
                       Send <span aria-hidden="true">↑</span>
