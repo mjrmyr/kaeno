@@ -220,7 +220,6 @@ export class ApiServer {
           );
         }
         if (match[2] === "reset") {
-          // The router is one long-lived context for every thread: reset compacts it.
           await core.router.compact(BACKGROUND_CONTEXT);
           return json(202, { compacting: true });
         }

@@ -2,9 +2,10 @@ import { expect, it } from "vitest";
 import {
   LIMITS,
   recallThread,
+  recallTicket,
   renderReport,
   renderTrigger,
-  spill,
+  truncateWithRecall,
   stub,
 } from "./index.ts";
 
@@ -27,7 +28,8 @@ const ticket = {
   updatedAt: 0,
   origin: "t1",
   conversation: 9,
-  threads: ["telegram:1/topic:5"],
+  ownThread: "telegram:1/topic:5",
+  followed: [],
   replyThread: "telegram:1",
   status: "running" as const,
   assignments: [],
@@ -36,11 +38,11 @@ const ticket = {
 };
 
 it("spills long text behind a pointer that recall can follow", () => {
-  expect(spill("short", 10, "t1")).toBe("short");
-  expect(spill("abcdefghij", 4, "t1")).toBe(
+  expect(truncateWithRecall("short", 10, "t1")).toBe("short");
+  expect(truncateWithRecall("abcdefghij", 4, "t1")).toBe(
     "abcd… [6 more characters: recall t1 offset=4]",
   );
-  expect(spill("abcdefghij", 4, "t1", 4)).toBe(
+  expect(truncateWithRecall("abcdefghij", 4, "t1", 4)).toBe(
     "efgh… [2 more characters: recall t1 offset=8]",
   );
   expect(stub("one\n two   three", 7)).toBe("one two…");
@@ -99,4 +101,21 @@ it("renders a report with its ticket's thread, and recalls a thread newest first
   expect(recalled.indexOf("t2 [accept k2]: new")).toBeLessThan(
     recalled.indexOf("t1: old"),
   );
+});
+
+it("continues a long report from the ticket's recall pointer", () => {
+  const long = {
+    ...ticket,
+    reports: [
+      {
+        state: "ready" as const,
+        summary: "a".repeat(10) + "b".repeat(5),
+        at: 0,
+      },
+    ],
+  };
+  expect(recallTicket(long, undefined, [], 0, 10)).toContain(
+    `${"a".repeat(10)}… [5 more characters: recall k2 offset=10]`,
+  );
+  expect(recallTicket(long, undefined, [], 10, 10)).toContain("- ready: bbbbb");
 });

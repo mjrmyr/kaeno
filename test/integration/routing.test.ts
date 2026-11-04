@@ -28,7 +28,6 @@ const model = { provider: "faux", modelId: "faux-1" };
 function call(name: string, args: JsonObject) {
   return answer([fauxToolCall(name, args)], { stopReason: "toolUse" });
 }
-/** Everything the model was given since its last answer: one router turn's batch. */
 function batch(request: ModelContext): string {
   const messages = request.messages;
   const start = messages.findLastIndex(
@@ -191,7 +190,6 @@ it("accepts a ticket, relays its result, and passes a follow-up in its thread st
       ["test:Research", "On it."],
       ["test:Research", "Result: 42."],
     ]);
-    // The worker got the owner's words verbatim, not a rewritten brief.
     expect(JSON.stringify(workerRequests[0].messages)).toContain(
       "research the answer",
     );
@@ -206,7 +204,6 @@ it("accepts a ticket, relays its result, and passes a follow-up in its thread st
       () => sent.some((message) => message.text === "Second result."),
       "the second result",
     );
-    // The follow-up reached the worker without a router decision; the router only answered the report.
     const second = workerRequests.at(-1);
     expect(JSON.stringify(second?.messages)).toContain("FIRST 42");
     expect(JSON.stringify(second?.messages)).toContain("follow-up question");
@@ -314,7 +311,6 @@ it("refuses a mutation whose basis is not an owner message in front of the route
         });
       }
       if (text.includes('state=\\"ready\\"')) {
-        // The report asks for a memory change; it cites the old owner message, which is not in front of it.
         return call("remember_fact", { fact: "evil", basis: "t1" });
       }
       return answer("nothing");
@@ -363,7 +359,6 @@ it("never starts work from a report, and drops reports of a stopped ticket", asy
         });
       }
       if (text.includes("<report")) {
-        // A report that asks for more work cannot cite an owner message in front of the router.
         return answer(
           [
             fauxToolCall("route", {
@@ -404,7 +399,6 @@ it("never starts work from a report, and drops reports of a stopped ticket", asy
       (await core.router.listTickets(context, true)).map((ticket) => ticket.id),
     ).toEqual(["k1"]);
 
-    // A follow-up wakes the ticket; stopping it drops the run's late report.
     await say("second", "test:A");
     await until(
       async () =>
@@ -425,7 +419,6 @@ it("never starts work from a report, and drops reports of a stopped ticket", asy
         (report) => report.summary === "LATE",
       ),
     ).toBe(false);
-    // The thread is no longer followed: a later message there goes to the router.
     expect((await say("third", "test:A")).path).toBe("router");
     expect(sent.filter((message) => message.text === "ok")).toHaveLength(1);
   } finally {
@@ -504,7 +497,6 @@ it("reminds the router once about an owner message it left undecided, then says 
       if (last?.role === "toolResult") {
         return answer("");
       }
-      // Two messages in one turn and only one decision: the plain answer is not a reply to either.
       if (batch(request).includes("alpha")) {
         return call("reply", { to: "t1", text: "re alpha" });
       }

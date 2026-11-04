@@ -99,7 +99,7 @@ Back up both together.
 
 Definitions used by admitted work are frozen. On restart, missing saved native definitions, incompatible work plans, or a changed execution environment identity fail closed rather than silently changing running work. Finish or cancel work with its original backend before switching. Older unfinished work without an environment identity must be drained with the previous release before upgrading. Take a consistent SQLite backup before opening a changed release; opening the harness writes recovery reconciliation state. External side effects are not transactional with SQLite and may be uncertain after a crash.
 
-This cut intentionally does not migrate the prior WORK/Telegram database, the per-chat conversations of releases before the router, or legacy JSON configuration. Define/select a catalog agent in `KAENO_CONFIG`; do not rely on `.kaeno/AGENT.md` as an assistant override. Use a fresh database for this release unless the previous workload has been deliberately drained/migrated and backed up.
+This cut intentionally does not migrate the prior WORK/Telegram database, the per-chat conversations of releases before the router, or legacy JSON configuration. Define/select a catalog agent in `KAENO_CONFIG`; do not rely on `.kaeno/AGENT.md` as an assistant override. Start this release with a fresh data directory: both `durable.sqlite` and `kaeno.sqlite` (owner memory and routines) must be new.
 
 See the [core entry point](src/core/application/index.ts), [WORK implementation](src/core/work/work.ts) and [extension composition tests](test/integration/extensions.test.ts).
 

@@ -1,4 +1,3 @@
-// The router's tools and a ticket root's thread tools. Every router decision cites the trigger it disposes of.
 import type { Context } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
 import {
@@ -6,7 +5,7 @@ import {
   type ToolExecutionApi,
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
-import { LIMITS } from "./model.ts";
+import { LIMITS, ticketThreads } from "./model.ts";
 import type { Engine } from "./engine.ts";
 import {
   FOLLOW_THREAD,
@@ -32,7 +31,6 @@ function text(value: string) {
   return { content: [{ type: "text" as const, text: value }] };
 }
 
-/** Chain of Recall: one object, its inlined neighbours and the IDs to follow next. */
 export async function recall(
   engine: Engine,
   ref: string,
@@ -51,7 +49,7 @@ export async function recall(
   if (/^k[0-9]+$/.test(ref)) {
     const ticket = await engine.ticket(ref, context);
     const triggers = [];
-    for (const key of ticket.threads) {
+    for (const key of ticketThreads(ticket)) {
       const thread = await engine.thread(key, context);
       for (const id of thread?.recent ?? []) {
         if (id !== ticket.origin) {
@@ -65,7 +63,7 @@ export async function recall(
     const origin = await engine
       .trigger(ticket.origin, context)
       .catch(() => undefined);
-    return recallTicket(ticket, origin, triggers);
+    return recallTicket(ticket, origin, triggers, offset, limit);
   }
   if (ref === "recent") {
     const lines = [];
@@ -176,7 +174,6 @@ export function routerTools(engine: Engine): ToolRegistration[] {
     context: Context,
   ): Promise<string> {
     const trigger = await engine.trigger(item.trigger, context);
-    // A replayed call finds its own decision.
     if (trigger.disposition?.kind === item.kind) {
       return `already ${item.kind}${trigger.disposition.tickets?.length ? ` (${trigger.disposition.tickets.join(", ")})` : ""}`;
     }
@@ -316,7 +313,6 @@ export function routerTools(engine: Engine): ToolRegistration[] {
   return [route, reply, recallTool, list, message, stop];
 }
 
-/** A ticket root's tools for the threads it follows. */
 export function ticketTools(engine: Engine): ToolRegistration[] {
   async function ticketOf(
     api: ToolExecutionApi,

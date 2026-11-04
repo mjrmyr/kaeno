@@ -155,7 +155,6 @@ function setup(
       },
     });
     try {
-      // A read-only tool needs no owner basis; the final text answers the one trigger.
       expect(await ask(core, "Read")).toBe("Done");
       if (error) {
         throw new Error(output);

@@ -5,7 +5,6 @@ export const INSPECT_WORK = "inspect_work";
 export const MESSAGE_WORK = "message_work";
 export const CANCEL_WORK = "cancel_work";
 export const MESSAGE_PARENT = "message_parent";
-/** A ticket root's report to the router: progress, a question, an obstacle, or nothing to do. */
 export const REPORT = "report";
 export const WORK_EXTENSION = "kaeno-work";
 

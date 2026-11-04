@@ -10,10 +10,11 @@ import {
 } from "../../src/extensions/telegram/index.ts";
 
 async function sent(core: Kaeno): Promise<Readonly<Record<string, string>>> {
-  return (await core.harness.snapshot(TelegramState, context))?.sent ?? {};
+  return (
+    (await core.harness.snapshot(TelegramState, context))?.threadOfSent ?? {}
+  );
 }
 
-/** The extension started in a real Kaeno; Telegram's own document holds the sent-message map. */
 async function started(options: { topics?: boolean } = {}) {
   const client = {
     fetchUpdates: vi.fn<TelegramTransport["fetchUpdates"]>().mockImplementation(
@@ -102,7 +103,6 @@ it("does not deliver to removed, malformed or unapproved addresses", async () =>
       "reply",
       {},
     );
-    // A reply into a topic that quotes the owner's message; the sent ID maps back to its thread.
     await delivery.send(
       { channel: "telegram", address: "111:7", replyTo: "5" },
       "in topic",
@@ -129,7 +129,6 @@ it("opens a ticket's thread as a topic when enabled, otherwise as a reply chain 
       route: { channel: "telegram", address: "111:77" },
     });
     expect(topics.client.createTopic).toHaveBeenCalledWith(111, "Research");
-    // Topic creation can fail (no threaded mode): the reply chain still works.
     const unavailable = new Error("topics unavailable");
     topics.client.createTopic.mockRejectedValueOnce(unavailable);
     expect(await topics.delivery.openThread(route, "Research")).toEqual({
@@ -140,7 +139,6 @@ it("opens a ticket's thread as a topic when enabled, otherwise as a reply chain 
     expect(await topics.state.sent).toEqual({
       "111:5": "telegram:111/reply:5",
     });
-    // Inside a topic already, a ticket's thread is a reply chain there.
     topics.client.createTopic.mockClear();
     expect(
       await topics.delivery.openThread(
@@ -162,7 +160,6 @@ it("opens a ticket's thread as a topic when enabled, otherwise as a reply chain 
       route,
     });
     expect(chains.client.createTopic).not.toHaveBeenCalled();
-    // Nothing to anchor a chain at: the ticket has no own thread.
     expect(
       await chains.delivery.openThread(
         { channel: "telegram", address: "111" },

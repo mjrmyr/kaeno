@@ -36,7 +36,6 @@ it("another thread sees preferences in full and memories by title, and reads a b
   faux.setResponses([
     fauxAssistantMessage(
       [
-        // Saving cites the owner's message that asks for it.
         fauxToolCall("memory_save", {
           kind: "preference",
           text: "Prefers replies in German",
@@ -53,7 +52,6 @@ it("another thread sees preferences in full and memories by title, and reads a b
     ),
     fauxAssistantMessage([fauxText("Noted")]),
     async (request) => {
-      // The router is one conversation, so the first exchange is in its history; memory itself is in the prompt.
       otherThreadPrompt = getCurrentSystemPrompt(request.messages);
       const id = /- (m\d+) \(\d{4}-\d{2}-\d{2}\): Partner/.exec(
         otherThreadPrompt,
@@ -114,7 +112,6 @@ it("a work report cannot plant a memory", async () => {
       }
       const text = JSON.stringify(last?.content);
       if (text.includes("<report")) {
-        // The report asks for a memory; the only owner message it can cite is no longer in front of the router.
         return fauxAssistantMessage(
           [
             fauxToolCall("memory_save", {

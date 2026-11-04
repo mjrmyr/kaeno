@@ -52,7 +52,6 @@ it("rejects malformed updates, unsuccessful HTTP responses and Telegram API erro
   const fetch = vi
     .fn<typeof globalThis.fetch>()
     .mockResolvedValueOnce(response([{ update_id: "bad" }]))
-    // Every message needs its ID: replies to it are mapped back to its thread.
     .mockResolvedValueOnce(
       response([
         {

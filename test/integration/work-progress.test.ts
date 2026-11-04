@@ -50,10 +50,8 @@ function environment(release: WorkEnvironment["release"]): WorkEnvironment {
     executionEnvironment: async () => undefined,
   };
 }
-/** A host-started ticket with one worker; the router records every batch it is woken for. */
 async function fixture(options: {
   worker: FauxResponseFactory;
-  /** The router answers a worker's question itself, from context, with message_ticket. */
   replyOnQuestion?: boolean;
 }) {
   const faux = fauxProvider();
@@ -135,7 +133,6 @@ async function fixture(options: {
     }
     return core.harness.getTask(workId, context);
   }
-  /** What the WORK directory shows for the Assignment, and the question and progress its scope keeps. */
   async function inspect() {
     const router = await core.router.routerConversation(context);
     const view = (await listWork(() => core.harness, router)).find(
@@ -199,7 +196,6 @@ it("delivers nonblocking progress while WORK keeps running, then completes", asy
     expect(JSON.stringify((await lifecycle.record())?.state)).not.toContain(
       '"awaiting":"reply"',
     );
-    // Progress is a passive entry: it does not wake the router.
     await settle(lifecycle.core);
     expect(lifecycle.routerBatches).toEqual([]);
     lifecycle.busy.release();
@@ -215,7 +211,6 @@ it("delivers nonblocking progress while WORK keeps running, then completes", asy
         },
       }),
     );
-    // One progress entry and one final report; progress is never redelivered.
     await vi.waitFor(() => expect(lifecycle.routerBatches).toHaveLength(1));
     expect(lifecycle.routerBatches[0]).toContain('state=\\"ready\\"');
     expect(lifecycle.routerBatches[0]).toContain("publishing now");
@@ -282,7 +277,6 @@ it.each([
           summary: "Which branch should I publish?",
         });
         expect(turn).toBe(1);
-        // The owner answers in the ticket's thread; it reaches the worker without a router decision.
         expect(
           (
             await receive(lifecycle.core, "User answer: main", {
@@ -303,7 +297,6 @@ it.each([
           outcome: { result: { text: "Verified final result" } },
         }),
       );
-      // The question was answered inside the same Assignment.
       const done = await ticketWhen(
         lifecycle.core,
         "k1",

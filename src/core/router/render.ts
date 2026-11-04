@@ -1,11 +1,10 @@
-// Inline & Spill: what the router sees of each object. Inline what is likely needed next, cap the rest
-// and leave a pointer to it, and name related objects by ID so recall can follow them hop by hop.
 import type { UserInput } from "@earendil-works/pi-durable";
 import type { Stored } from "../durable/index.ts";
 import {
   LIMITS,
   latestReport,
   ticketState,
+  ticketThreads,
   type ThreadRecord,
   type TicketRecord,
   type TicketReport,
@@ -39,8 +38,7 @@ function images(content: Stored<UserInput> | UserInput) {
           : [],
       );
 }
-/** Text from `offset`, capped at `limit`, with a pointer to the rest. */
-export function spill(
+export function truncateWithRecall(
   text: string,
   limit: number,
   ref: string,
@@ -52,7 +50,6 @@ export function spill(
   }
   return `${text.slice(offset, end)}… [${text.length - end} more characters: recall ${ref} offset=${end}]`;
 }
-/** One line: the start of a text, for an object the model only needs to recognise. */
 export function stub(text: string, limit: number = LIMITS.stub): string {
   const line = text.replace(/\s+/g, " ").trim();
   return line.length <= limit ? line : `${line.slice(0, limit)}…`;
@@ -64,7 +61,6 @@ function attribute(name: string, value: string | undefined): string {
   return value === undefined ? "" : ` ${name}="${value.replaceAll('"', "'")}"`;
 }
 
-/** A trigger as the router receives it: ID, where it came from, who follows its thread, and its content. */
 export function renderTrigger(
   trigger: Trigger,
   followers: readonly Ticket[],
@@ -90,7 +86,7 @@ export function renderTrigger(
     );
   }
   lines.push(
-    spill(contentText(trigger.content), LIMITS.text, trigger.id),
+    truncateWithRecall(contentText(trigger.content), LIMITS.text, trigger.id),
     "</trigger>",
   );
   const text = lines.join("\n");
@@ -98,17 +94,15 @@ export function renderTrigger(
   return attached.length ? [{ type: "text", text }, ...attached] : text;
 }
 
-/** A worker report relayed to the router. Report text is data from the worker, never instructions. */
 export function renderReport(ticket: Ticket, report: TicketReport): string {
   return [
-    `<report${attribute("ticket", ticket.id)}${attribute("title", ticket.title)}${attribute("state", report.state)}${attribute("thread", ticket.threads[0] ?? ticket.replyThread)}>`,
-    spill(report.summary, LIMITS.near, ticket.id),
+    `<report${attribute("ticket", ticket.id)}${attribute("title", ticket.title)}${attribute("state", report.state)}${attribute("thread", ticket.ownThread ?? ticket.replyThread)}>`,
+    truncateWithRecall(report.summary, LIMITS.near, ticket.id),
     "</report>",
   ].join("\n");
 }
 
-/** A trigger that went straight to its subscribers: the router sees it without being asked to act. */
-export function renderPassed(
+export function renderPassThroughNote(
   trigger: Trigger,
   tickets: readonly Ticket[],
 ): string {
@@ -116,12 +110,14 @@ export function renderPassed(
 }
 
 function renderReports(
-  reports: readonly Readonly<Stored<TicketReport>>[],
+  ticket: Ticket,
+  offset: number,
+  limit: number,
 ): string[] {
-  const shown = reports.slice(-5);
+  const shown = ticket.reports.slice(-5);
   return shown.map(
     (report, index) =>
-      `- ${report.state}: ${index === shown.length - 1 ? spill(report.summary, LIMITS.near, "") : stub(report.summary, LIMITS.mid)}`,
+      `- ${report.state}: ${index === shown.length - 1 ? truncateWithRecall(report.summary, limit, ticket.id, offset) : stub(report.summary, LIMITS.mid)}`,
   );
 }
 
@@ -129,11 +125,13 @@ export function recallTicket(
   ticket: Ticket,
   origin: Trigger | undefined,
   inputs: readonly Trigger[],
+  offset = 0,
+  limit: number = LIMITS.text,
 ): string {
   const report = latestReport(ticket);
   return [
     `<ticket${attribute("id", ticket.id)}${attribute("title", ticket.title)}${attribute("state", ticketState(ticket))}${attribute("agent", ticket.agent)}>`,
-    `threads: ${ticket.threads.join(", ") || `(none; replies go to ${ticket.replyThread})`}`,
+    `threads: ${ticketThreads(ticket).join(", ") || `(none; replies go to ${ticket.replyThread})`}`,
     `origin: ${origin ? `${origin.id} "${stub(contentText(origin.content))}"` : ticket.origin}`,
     ...(inputs.length
       ? [
@@ -151,7 +149,7 @@ export function recallTicket(
       ? [`ended by ${ticket.ended.by}: ${ticket.ended.reason}`]
       : []),
     ...(report
-      ? ["reports (newest last):", ...renderReports(ticket.reports)]
+      ? ["reports (newest last):", ...renderReports(ticket, offset, limit)]
       : []),
     "</ticket>",
   ].join("\n");
@@ -169,10 +167,9 @@ export function recallThread(
     "recent events (newest first):",
     ...newest.map((trigger, index) => {
       const text = contentText(trigger.content);
-      // Locality: the newest events in full, the next ones shortened, the rest as stubs.
       let body = stub(text);
       if (index < 2) {
-        body = spill(text, LIMITS.near, trigger.id);
+        body = truncateWithRecall(text, LIMITS.near, trigger.id);
       } else if (index < 7) {
         body = stub(text, LIMITS.mid);
       }
@@ -196,7 +193,7 @@ export function recallTrigger(
     ...(trigger.quote === undefined
       ? []
       : [`replying to: "${stub(trigger.quote, LIMITS.mid)}"`]),
-    spill(contentText(trigger.content), limit, trigger.id, offset),
+    truncateWithRecall(contentText(trigger.content), limit, trigger.id, offset),
     "</trigger>",
   ].join("\n");
 }

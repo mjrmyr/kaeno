@@ -129,7 +129,6 @@ faux.setResponses(
         fauxText(`Verified command ran in the ${provider} sandbox.`),
       ]);
     }
-    // The router: everything it was given since its last answer is one batch.
     const batch = JSON.stringify(
       request.messages.slice(
         request.messages.findLastIndex(
@@ -192,8 +191,6 @@ const server = new ApiServer(core, {
 await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 try {
   const thread = "smoke";
-  // The owner's message reaches the router, which accepts it as a ticket; the worker runs it and the router
-  // relays the report back to this thread.
   await core.harness.commit(
     (tx) =>
       core.router.receive(tx, {

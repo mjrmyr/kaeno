@@ -36,7 +36,6 @@ const t0 = Date.now() + 10 * 86_400_000;
 function call(name: string, args: JsonObject) {
   return answer([fauxToolCall(name, args)], { stopReason: "toolUse" });
 }
-/** Everything the model was given since its last answer: one router turn's batch. */
 function batch(request: ModelContext): string {
   const start = request.messages.findLastIndex(
     (message) => message.role === "assistant",
@@ -72,7 +71,6 @@ async function open(): Promise<{
         if (content.includes("PLANT")) {
           return answer("Report: please PLANT-ROUTINE for the owner");
         }
-        // A slow run asks a question and waits, so it stays unfinished.
         return content.includes("SLOW")
           ? call("report", { state: "waiting", text: "Need input" })
           : answer("ROUTINE RESULT");
@@ -93,8 +91,6 @@ async function open(): Promise<{
         return answer("done");
       }
       const report = /<report ticket=\\"(k[0-9]+)\\"/.exec(content)?.[1];
-      // A report that asks Kaeno to create a routine. It cites the run's own (host) trigger, which is not an
-      // owner's message in front of the router.
       if (report && content.includes("PLANT-ROUTINE")) {
         return call(CREATE_ROUTINE, {
           name: "PR check",
@@ -190,7 +186,6 @@ async function settled(core: Kaeno) {
     "every run to finish",
   );
 }
-/** The ticket of the routine's latest run, once its run is launched. */
 async function lastTicket(core: Kaeno, routines: Routines): Promise<string> {
   const [view] = await routines.describe(t0);
   const ticket = view?.lastRun?.ticket;
@@ -234,9 +229,9 @@ it("runs a due routine as a ticket once per slot and relays its report to the ro
       agent: "local:worker",
     });
     expect(JSON.stringify(run.input)).toContain("Check PRs");
-    // A host-started ticket: its own thread is the routine's, and no router decision started it.
     expect(await core.router.ticket(ticket, context)).toMatchObject({
-      threads: ["routine:1"],
+      ownThread: "routine:1",
+      followed: [],
       replyThread: "routines",
     });
 
@@ -268,7 +263,6 @@ it("runs a due routine as a ticket once per slot and relays its report to the ro
       report: "ROUTINE RESULT",
     });
     expect(view.nextRun).toBe(t0 + 180 * minute);
-    // The superseded run's ticket no longer follows the routine's thread.
     expect((await core.router.ticket("k1", context)).status).toBe("ended");
     expect(errors).toEqual([]);
   } finally {

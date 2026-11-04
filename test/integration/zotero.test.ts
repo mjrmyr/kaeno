@@ -88,7 +88,6 @@ async function call(
     },
   });
   try {
-    // A read-only tool needs no owner basis; the final text answers the one trigger.
     expect(await ask(core, "Read")).toBe("Done");
     return { output, error };
   } finally {

@@ -106,7 +106,6 @@ export function resolveExtensions(options: {
       }
     }
   }
-  // WORK and the router register these in core; their name catalogs also define the standard policy.
   for (const name of new Set([
     ...options.assistantTools,
     ...options.workerTools,

@@ -141,8 +141,6 @@ it("offers and launches every configured worker even when none delegate to each 
           ),
         `the ${name} report`,
       );
-      // Only Kaeno's acknowledgment and summary reach the owner;
-      // "Verified worker result." is internal worker data, not a reply.
       expect((await replies(core, thread)).map((reply) => reply.text)).toEqual([
         "STARTED",
         "WORK_REPORT",

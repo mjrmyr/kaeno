@@ -583,7 +583,6 @@ it("rejects changed private scope in frozen WORK before provisioning, reconcilia
     work: { ...config.work, environment },
   });
   try {
-    // A ticket's root WORK freezes the worker's private binding; provisioning hangs until the host stops.
     await startTicket(core, {
       agent: config.work.agents[0].id,
       content: "Wait",
@@ -671,7 +670,6 @@ it("recovers a pending router run's native skill snapshot without its producer o
   const models = createModels();
   models.setProvider(faux.provider);
   const path = join(root, "db.sqlite");
-  // The router's turn is in flight when the host stops: its run, with the saved skill snapshot, must resume.
   const hanging = hangingResponse();
   faux.setResponses([hanging.response]);
   const first = await openKaeno({

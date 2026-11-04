@@ -1,4 +1,3 @@
-// The router's standing instructions: what it decides, what it never does, and how it speaks per channel.
 export function routerInstructions(options: {
   assistant: string;
   agents: string;

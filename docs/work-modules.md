@@ -38,7 +38,7 @@ Application composition still runs saved compatibility checks before environment
 
 ## Migration and scope
 
-Task `kaeno.work` is v4: its input names a `ticket` parent and the ticket's `conversation`, and its brief may hold image blocks. There is no migration from v3 (CHAT parents); recovery fails closed on older unfinished work. `kaeno.work-node` gained additive `messageState`/`outcome` fields that older scopes lack and readers treat as absent.
+Task `kaeno.work` is v4: its input names a `ticket` parent, its `conversation` (`owned` by the WORK, or the `ticket`'s that every Assignment continues), and a brief that may hold image blocks. There is no migration from v3 (CHAT parents); recovery fails closed on older unfinished work. `kaeno.work-node` holds an unsent message to the parent as `mailbox` (its text and report state) and records `outcome`.
 
 Progress does not change question/reply semantics: a question still ends the turn and waits in the same checkpoint, and an omitted `kind` keeps that behavior for existing calls. A committed steering intent is not a promise of reply consumption if completion races it, and the single-snapshot child stopping behavior is unchanged. Changes to those guarantees require separate lifecycle work and tests.
 

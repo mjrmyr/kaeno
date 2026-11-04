@@ -107,7 +107,6 @@ it("runs all-to-all delegation through core-only agents, keeps frozen children, 
       title: "Parent",
       content: "Coordinate",
     });
-    // The root's final answer reaches the router as the ticket's ready report.
     const done = await ticketWhen(
       core,
       ticket,
@@ -138,7 +137,6 @@ it("runs all-to-all delegation through core-only agents, keeps frozen children, 
           setup.tools.length === 0,
       ),
     ).toBe(true);
-    // kaeno.work v4 input keeps `agent` and `plan.participants`; a ticket root records its parent ticket.
     const record = (
       await core.harness.commit((tx) => tx.scanTasks({}, 100), context)
     ).items.find(
@@ -150,7 +148,7 @@ it("runs all-to-all delegation through core-only agents, keeps frozen children, 
     expect(record?.input).toMatchObject({
       agent: "parent",
       parent: { kind: "ticket", ticket },
-      conversation: done.conversation,
+      conversation: { kind: "ticket", id: done.conversation },
       plan: {
         root: "parent",
         participants: {
@@ -236,7 +234,6 @@ it("keeps the router usable and explains a failed ticket without configured agen
       "the router's answer",
     );
     expect(observedFailure).toBe(true);
-    // A host-started ticket fails loudly instead of queueing work no agent can run.
     await expect(
       startTicket(core, { agent: "broken", content: "Delegate" }),
     ).rejects.toThrow(/Unknown agent "broken"/);

@@ -35,7 +35,6 @@ const updateSchema = z.object({
 export type TelegramUpdate = z.infer<typeof updateSchema>;
 const sentSchema = z.object({ message_id: z.number().int().positive().safe() });
 export interface SendOptions {
-  /** A topic of the chat. */
   threadId?: number;
   /** The message this one answers; sent anyway if it is gone. */
   replyTo?: number;

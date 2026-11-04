@@ -107,10 +107,9 @@ it("preserves the durable task and document identities behind the public API", (
     maxDepth: null,
     agent: null,
     plan: null,
-    message: null,
+    mailbox: null,
     question: null,
     progress: null,
-    messageState: null,
     outcome: null,
   });
   expect(work.extension.tools).toEqual([

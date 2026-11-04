@@ -47,7 +47,7 @@ export {
   recallTrigger,
   renderReport,
   renderTrigger,
-  spill,
+  truncateWithRecall,
   stub,
   ticketLine,
 } from "./render.ts";

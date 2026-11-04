@@ -31,7 +31,6 @@ import {
 import { assignment, replies, ticketWhen } from "../mocks/router.ts";
 
 type Message = NonNullable<TelegramUpdate["message"]>;
-/** The owner's message in a private chat; its message ID is its update ID. */
 function message(
   update_id: number,
   chatId: number,
@@ -49,7 +48,6 @@ function message(
     },
   };
 }
-/** A message in one of the chat's topics. */
 function inTopic(
   update_id: number,
   topic: number,
@@ -62,8 +60,7 @@ function inTopic(
 }
 function inbox() {
   const updates: TelegramUpdate[] = [];
-  /** Updates Telegram hands out again although they are behind the requested offset. */
-  const stale: TelegramUpdate[] = [];
+  const behindOffset: TelegramUpdate[] = [];
   let changed = Promise.withResolvers<void>();
   let nextMessage = 9000;
   const client = {
@@ -84,7 +81,7 @@ function inbox() {
       .mockImplementation(async (offset, signal) => {
         while (!signal.aborted) {
           const available = [
-            ...stale.splice(0),
+            ...behindOffset.splice(0),
             ...updates.filter((update) => update.update_id >= offset),
           ];
           if (available.length) {
@@ -116,7 +113,7 @@ function inbox() {
       wake();
     },
     redeliver(...batch: TelegramUpdate[]) {
-      stale.push(...batch);
+      behindOffset.push(...batch);
       wake();
     },
   };
@@ -124,7 +121,6 @@ function inbox() {
 function call(name: string, args: JsonObject) {
   return answer([fauxToolCall(name, args)], { stopReason: "toolUse" });
 }
-/** Everything the model was given since its last answer: one router turn's batch. */
 function batch(request: ModelContext): string {
   const start = request.messages.findLastIndex(
     (entry) => entry.role === "assistant",
@@ -134,10 +130,6 @@ function batch(request: ModelContext): string {
 function lastUserContent(request: ModelContext) {
   return request.messages.findLast((entry) => entry.role === "user")?.content;
 }
-/**
- * A router that accepts "task: <Title>" as a ticket, relays ready reports to their ticket, keeps other reports
- * to itself and answers everything else with HELLO.
- */
 async function routerDefault(request: ModelContext) {
   const last = request.messages.findLast((entry) => entry.role !== "system");
   if (last?.role === "toolResult") {
@@ -165,7 +157,6 @@ async function routerDefault(request: ModelContext) {
   }
   return answer(text.includes("<trigger") ? "HELLO" : "noted");
 }
-/** A worker that finishes with RESULT, answers a follow-up with SECOND, or waits on "wait". */
 async function workerDefault(request: ModelContext) {
   const content = JSON.stringify(lastUserContent(request));
   if (content.includes("follow-up")) {
@@ -326,13 +317,13 @@ it("opens a topic for an accepted ticket and passes later messages there straigh
       111,
       "Research",
     );
-    // The worker got the owner's words verbatim; its result is relayed into the topic.
     await sent(input, 111, "Done: RESULT 42", { threadId: 77 });
     expect(JSON.stringify(workerRequests[0].messages)).toContain(
       "task: Research",
     );
     expect(await core.router.ticket("k1", context)).toMatchObject({
-      threads: ["telegram:111/topic:77"],
+      ownThread: "telegram:111/topic:77",
+      followed: [],
       replyThread: "telegram:111",
     });
     await ticketWhen(core, "k1", (ticket) => ticket.status === "idle");
@@ -345,7 +336,6 @@ it("opens a topic for an accepted ticket and passes later messages there straigh
       route: { channel: "telegram", address: "111:77", replyTo: "2" },
       disposition: { kind: "passed", tickets: ["k1"] },
     });
-    // No router decision: the router only saw a passive note and later the report.
     const later = routerRequests.slice(routerTurns).map(batch).join("\n");
     expect(later).not.toContain('<trigger id=\\"t2\\"');
     expect(later).toContain("<passed");
@@ -368,14 +358,13 @@ it("falls back to a reply chain when no topic can be created; a reply to the ack
   });
   try {
     input.push(message(1, 111, "task: Research"));
-    // The ack answers the owner's message; its message ID is 9001.
     await sent(input, 111, "On it: Research.", { replyTo: 1 });
     expect(input.client.createTopic).toHaveBeenCalledOnce();
     expect(errors).toHaveBeenCalledWith(expect.any(TelegramApiError));
     await sent(input, 111, "Done: RESULT 42", { replyTo: 1 });
-    expect((await core.router.ticket("k1", context)).threads).toEqual([
+    expect((await core.router.ticket("k1", context)).ownThread).toBe(
       "telegram:111/reply:1",
-    ]);
+    );
     await ticketWhen(core, "k1", (ticket) => ticket.status === "idle");
 
     input.push(
@@ -392,7 +381,6 @@ it("falls back to a reply chain when no topic can be created; a reply to the ack
     expect(JSON.stringify(workerRequests.at(-1)?.messages)).toContain(
       "follow-up on the ack",
     );
-    // A reply to the owner's own first message continues the chain too.
     input.push(
       message(3, 111, "another follow-up", {
         reply_to_message: { message_id: 1, text: "task: Research" },
@@ -480,7 +468,6 @@ it("answers commands deterministically: /stop in a topic stops only its ticket, 
     await sent(input, 111, expect.stringMatching(/^Unknown command\. /), {
       replyTo: 10,
     });
-    // Commands never reach the router.
     expect(await core.router.recentTriggers(context)).toEqual(["t1", "t2"]);
   } finally {
     await core.close();
@@ -541,7 +528,6 @@ it("does not send an answer above the 100-word cap and tells the owner instead",
       "⚠️ Kaeno could not handle that message. Please send it again.",
       { replyTo: 1 },
     );
-    // One reminder, then the owner hears about it.
     expect(routerRequests).toHaveLength(2);
     expect(
       input.client.sendMessage.mock.calls.some(([, text]) => text === long),

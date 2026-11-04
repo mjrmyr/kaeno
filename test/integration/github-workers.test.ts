@@ -182,7 +182,6 @@ it("gives the assistant, root worker, and nested worker GitHub discovery by defa
       models,
     });
     try {
-      // The owner's words reach the coder verbatim; the router only routes them.
       await receive(
         core,
         "launch-root: discover projects and delegate a review.",

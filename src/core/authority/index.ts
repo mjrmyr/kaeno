@@ -7,7 +7,6 @@ import {
 } from "@earendil-works/pi-durable";
 import { z } from "zod";
 
-/** The router's check that an action cites an owner's message from the batch in front of it. */
 export interface OwnerBasis {
   requireOwnerBasis(
     basis: string,

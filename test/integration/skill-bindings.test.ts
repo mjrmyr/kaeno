@@ -47,7 +47,6 @@ it("replays a pending router run with its original assigned skill without a cata
     },
   ]);
   try {
-    // The first router turn hangs until the host stops, so the run is still live in storage.
     const hanging = hangingResponse();
     faux.setResponses([hanging.response]);
     const first = await openKaeno({
@@ -112,7 +111,6 @@ it("replays a pending router run with its original assigned skill without a cata
           (await replies(core, "skill-test")).map((reply) => reply.text),
         ).toContain("Read the original reference");
       });
-      // The pending router run kept its saved setup instead of the future one.
       expect(await core.router.routerConversation(context)).toBe(originalId);
       expect(observedList).toContain("home:guide");
       expect(observedList).not.toContain("ORIGINAL SKILL");

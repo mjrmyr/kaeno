@@ -1,7 +1,3 @@
-// WORK: one durable agent conversation, optionally in its own environment. A ticket's Assignment is root WORK on
-// the ticket's conversation; WORK may start child WORK up to maxDepth. Communication follows parent↔child edges
-// only: messages go down, messages and reports go up. Every agent may delegate to every agent in the plan frozen
-// at root admission.
 import type { Context } from "@earendil-works/chord";
 import {
   defineExtension,
@@ -25,7 +21,6 @@ import { WORK_EXTENSION } from "./tools.ts";
 /** Public WORK API and composition; mutable lifecycle state remains in durable records. */
 export class Work {
   readonly extension: Extension;
-  /** Tools for WORK below the depth limit that starts and steers child WORK. */
   readonly orchestrationTools: ToolRegistration[];
   /** Tools every WORK has for talking to its parent. */
   readonly parentTools: ToolRegistration[];
@@ -52,7 +47,6 @@ export class Work {
       tasks: [task],
     });
   }
-  /** Every agent a ticket may run as, for the router's instructions. */
   describeAgents(): string {
     return describeAgents(this.settings.agents);
   }

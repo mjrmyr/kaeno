@@ -14,7 +14,6 @@ import { z } from "zod";
 import type { SetupSurface } from "../conversation/index.ts";
 import { parseConversationId, type Stored } from "../durable/index.ts";
 import type { AgentProfile, WorkEnvironment } from "./plan.ts";
-/** Where messages and the final report go. A ticket's Assignment reports to the router; WORK parents get inputs. */
 const workParentSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("ticket"),
@@ -28,18 +27,38 @@ const workParentSchema = z.discriminatedUnion("kind", [
 export type WorkParent =
   | { kind: "ticket"; ticket: string }
   | { kind: "work"; conversationId: ConversationId };
+export const workBriefSchema = z.union([
+  z.string(),
+  z.array(
+    z.union([
+      z.object({ type: z.literal("text"), text: z.string() }),
+      z.object({
+        type: z.literal("image"),
+        data: z.string(),
+        mimeType: z.string(),
+      }),
+    ]),
+  ),
+]);
+export type WorkBrief = z.infer<typeof workBriefSchema>;
+export const workConversationSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("owned") }),
+  z.object({
+    kind: z.literal("ticket"),
+    id: z.number().int().positive(),
+  }),
+]);
+export type WorkConversation = z.infer<typeof workConversationSchema>;
 export interface WorkInput extends JsonObject {
   title: string;
-  /** The first input: text, or text and image blocks. */
-  brief: JsonValue;
+  brief: WorkBrief;
   agent: string;
   depth: number;
   maxDepth: number;
   parent: JsonValue;
   plan: JsonValue;
   environment: string | null;
-  /** An Assignment continues its ticket's conversation; child WORK owns a new one. */
-  conversation: number | null;
+  conversation: WorkConversation;
 }
 export interface WorkResult {
   status: "completed" | "failed";
@@ -66,8 +85,7 @@ export type WorkState =
       sent: number;
       seen: number;
       message: string;
-      /** How a ticket's root asked: a question, or an obstacle. */
-      state?: "waiting" | "blocked";
+      state: ParentMessage["state"];
     }
   | {
       phase: "report";
@@ -105,7 +123,7 @@ export interface WorkScopeState extends JsonObject {
   agent: string | null;
   plan: JsonValue | null;
   /** commands produces; task atomically clears this while recording the message checkpoint. */
-  message: string | null;
+  mailbox: ParentMessage | null;
   /**
    * The latest blocking question, kept after delivery so inspection can show it. Steering
    * marks it answered. Scopes stored before questions were recorded lack it; read defensively.
@@ -113,10 +131,11 @@ export interface WorkScopeState extends JsonObject {
   question: WorkQuestion | null;
   /** The latest nonblocking progress note; may be missing in older scopes too. */
   progress: string | null;
-  /** A ticket root's report state for the pending `message`. */
-  messageState: "waiting" | "blocked" | null;
-  /** Set when a ticket root reports the request needs no doing; its final answer then ends the ticket. */
   outcome: "dropped" | null;
+}
+interface ParentMessage extends JsonObject {
+  text: string;
+  state: "waiting" | "blocked";
 }
 interface WorkQuestion extends JsonObject {
   /** The message_parent invocation that asked it; replays keep the same question. */
@@ -138,10 +157,9 @@ export const WorkScope = defineDoc<WorkScopeState>({
     maxDepth: null,
     agent: null,
     plan: null,
-    message: null,
+    mailbox: null,
     question: null,
     progress: null,
-    messageState: null,
     outcome: null,
   }),
 });
@@ -173,7 +191,6 @@ export interface WorkSettings {
   /** Unfinished WORK started by one conversation. */
   maxActive?: number;
 }
-/** Where a ticket's Assignments report; implemented by the router's Engine. */
 export interface WorkReports {
   report(
     tx: Tx,
@@ -186,7 +203,6 @@ export interface WorkReports {
       text: string;
     },
   ): Promise<void>;
-  /** The Assignment ended without a report (cancelled). */
   ended(tx: Tx, ticket: string, workId: TaskId): Promise<void>;
 }
 export type WorkTask = Task<WorkInput, WorkState, Stored<WorkResult>, object>;

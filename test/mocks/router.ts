@@ -1,4 +1,3 @@
-// Test helpers for the router: owner messages in, replies and tickets out.
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { FauxResponseFactory } from "@earendil-works/pi-ai/providers/faux";
 import { getCurrentSystemPrompt, type Message } from "@earendil-works/pi-ai";
@@ -17,7 +16,6 @@ import {
 
 let next = 0;
 
-/** Poll until `check` holds; fails with `what` after `ms`. */
 export async function until(
   check: () => boolean | Promise<boolean>,
   what: string,
@@ -32,10 +30,6 @@ export async function until(
   }
 }
 
-/**
- * A model response that never answers: it hangs until its run is aborted, for example by closing Kaeno, so the
- * router run stays live in storage and resumes on the next open. `started` resolves once the model was called.
- */
 export function hangingResponse(): {
   response: FauxResponseFactory;
   started: Promise<void>;
@@ -58,7 +52,6 @@ export function hangingResponse(): {
   };
 }
 
-/** The owner's message on a terminal-like thread (no channel route): replies land in the thread's outbox. */
 export async function receive(
   core: Kaeno,
   text: UserInput,
@@ -82,7 +75,6 @@ export async function receive(
   return { id: received.id, key, thread, path: received.path };
 }
 
-/** Wait until the router and every dispatch and delivery have nothing left to do. */
 export async function settle(core: Kaeno, ms = 10_000): Promise<void> {
   const router = await core.router.routerConversation(context);
   await until(
@@ -107,7 +99,6 @@ export async function settle(core: Kaeno, ms = 10_000): Promise<void> {
   );
 }
 
-/** Replies sent to a thread, oldest first. */
 export async function replies(
   core: Kaeno,
   thread = "test:chat",
@@ -115,7 +106,6 @@ export async function replies(
   return (await core.router.readReplies(thread, 0, context)).replies;
 }
 
-/** Send the owner's message and return the router's direct reply to it, once one exists. */
 export async function ask(
   core: Kaeno,
   text: UserInput,
@@ -136,7 +126,6 @@ export async function ask(
   return found ?? "";
 }
 
-/** A ticket started by the host, without a router decision (as routines start them). */
 export async function startTicket(
   core: Kaeno,
   request: {
@@ -164,7 +153,6 @@ export async function startTicket(
   );
 }
 
-/** The work task of a ticket's `index`th Assignment (0-based), once it is launched. */
 export async function assignment(
   core: Kaeno,
   ticket: string,
@@ -179,7 +167,6 @@ export async function assignment(
   return parseTaskId(workId);
 }
 
-/** The ticket's worker conversation. */
 export async function ticketConversation(
   core: Kaeno,
   ticket: string,
@@ -188,7 +175,6 @@ export async function ticketConversation(
   return parseConversationId(conversation);
 }
 
-/** The ticket once `check` holds for it. */
 export async function ticketWhen(
   core: Kaeno,
   ticket: string,
@@ -206,7 +192,6 @@ export async function ticketWhen(
   return value;
 }
 
-/** The router assistant's selectable tools; assistants in tests list these plus extension tools. */
 export const ROUTER_ASSISTANT_TOOLS = [
   "route",
   "reply",
@@ -216,12 +201,10 @@ export const ROUTER_ASSISTANT_TOOLS = [
   "stop_ticket",
 ] as const;
 
-/** Whether a model request is the router's (its instructions open with "# Routing") rather than a worker's. */
 export function isRouterRequest(request: { messages: Message[] }): boolean {
   return getCurrentSystemPrompt(request.messages).includes("# Routing");
 }
 
-/** Everything the model was given since its last answer, as JSON: one turn's batch of inputs. */
 export function sinceLastAnswer(request: { messages: Message[] }): string {
   const start = request.messages.findLastIndex(
     (message) => message.role === "assistant",

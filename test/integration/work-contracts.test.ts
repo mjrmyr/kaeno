@@ -50,7 +50,6 @@ function agent(id: string, tools: string[]): AgentProfile {
     setup: { model, instructions: `AGENT:${id}`, tools },
   };
 }
-/** Workers follow `respond`; the router acknowledges every report and counts the questions it relays. */
 function scripted(respond: FauxResponseFactory, onQuestion = () => {}) {
   const faux = fauxProvider();
   const models = createModels();
@@ -79,7 +78,6 @@ function required<T>(value: T | undefined): T {
 function launch(agent: string, brief: string) {
   return call("start_work", { agent, title: agent, brief });
 }
-/** A host-started ticket; the owner answers in its thread, `test:ticket:<key>`. */
 async function ticket(core: Kaeno, agent: string, brief: string, key: string) {
   const id = await startTicket(core, {
     agent,
@@ -189,7 +187,6 @@ it("keeps two real question/reply cycles live and reports only the final answer"
     expect(observed[0]).toContain("ORIGINAL BRIEF");
     expect(observed[1]).toContain("ANSWER ONE");
     expect(observed[2]).toContain("ANSWER TWO");
-    // Both questions and the final answer were one Assignment.
     expect(await works(core)).toHaveLength(1);
     expect(
       (await core.router.ticket("k1", ctx)).reports.map(
@@ -198,7 +195,6 @@ it("keeps two real question/reply cycles live and reports only the final answer"
     ).toEqual(["waiting", "waiting", "ready"]);
     // Release is best-effort after the terminal commit.
     await vi.waitFor(() => expect(released).toEqual([workId]));
-    // The report's admission to the router and its next WORK checkpoint must be one storage commit.
     for (const ordinal of [1, 2, "final"]) {
       const reportCommits = commits.mock.calls.filter(([writes]) =>
         writes.some(
@@ -298,7 +294,6 @@ it("reopens an awaiting-reply SQLite checkpoint without repeating the brief or q
     await core.harness.waitForTask(record.id, ctx);
     expect(workerTurns).toBe(2);
     expect(questionReports).toBe(1);
-    // The brief is in the worker's context once per turn: never resubmitted after the reopen.
     expect(briefs).toHaveLength(2);
     expect(await works(core)).toHaveLength(1);
     expect((await works(core))[0]?.state).toMatchObject({
@@ -433,7 +428,6 @@ it("waits for a live child, then cancels the subtree and releases both", async (
     const child = required(records.find((record) => record.id !== parent.id));
     expect(parent.state.status).not.toBe("terminal");
     expect(released).toEqual([]);
-    // Stopping the ticket names its live run; aborting it cancels the subtree.
     const stopped = await core.harness.commit(
       (tx) => core.router.stopTicket(tx, "k1", "owner", "cancel-tree"),
       ctx,
@@ -453,7 +447,6 @@ it("waits for a live child, then cancels the subtree and releases both", async (
     await vi.waitFor(() =>
       expect([...released].sort()).toEqual([child.id, parent.id].sort()),
     );
-    // The ended ticket drops what the cancelled run would have reported.
     const ended = await core.router.ticket("k1", ctx);
     expect(ended.status).toBe("ended");
     expect(ended.reports).toEqual([]);
@@ -483,7 +476,6 @@ it("holds an owner's message until the brief is admitted, then accepts a reply a
     if (inputs.includes("EARLY MESSAGE")) {
       return call("message_parent", { text: "READY FOR REPLY" });
     }
-    // The held message is steered into this run once the brief is in; it arrives after this tool round.
     await held.promise;
     return call("pause", {});
   });
@@ -517,7 +509,6 @@ it("holds an owner's message until the brief is admitted, then accepts a reply a
     await ensuring.promise;
     const record = required((await works(core))[0]);
     await receive(core, "EARLY MESSAGE", { thread });
-    // The message waits for the brief instead of starting the worker without it.
     await until(async () => (await early()) === "running", "the held message");
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(await early()).toBe("running");
@@ -540,7 +531,6 @@ it("holds an owner's message until the brief is admitted, then accepts a reply a
       outcome: { result: { text: "ADMISSION VERIFIED" } },
     });
     expect(workerInputs).toHaveLength(3);
-    // The brief is the worker's first input; the held message comes after it.
     expect(workerInputs[0]).toContain("FIRST BRIEF");
     expect(workerInputs[0]).not.toContain("EARLY MESSAGE");
     expect(workerInputs[1]).toContain("EARLY MESSAGE");

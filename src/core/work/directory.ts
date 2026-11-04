@@ -17,6 +17,7 @@ import {
   WorkIndex,
   WorkScope,
   checkpointSchema,
+  workConversationSchema,
   type WorkDetails,
   type WorkRuntime,
   type WorkView,
@@ -51,16 +52,15 @@ async function latestAnswer(
   }
   return undefined;
 }
-/** The conversation a WORK runs in: its ticket's for an Assignment, otherwise the one it owns. */
 export async function workConversation(
   tx: Tx,
   record: { id: TaskId; input: unknown },
 ): Promise<ConversationId | undefined> {
   const saved = z
-    .object({ conversation: z.number().nullable().optional() })
+    .object({ conversation: workConversationSchema })
     .safeParse(record.input);
-  if (saved.success && typeof saved.data.conversation === "number") {
-    return parseConversationId(saved.data.conversation);
+  if (saved.success && saved.data.conversation.kind === "ticket") {
+    return parseConversationId(saved.data.conversation.id);
   }
   return (await tx.scanConversations({ ownerTaskId: record.id }, 1)).items[0]
     ?.id;
@@ -226,7 +226,7 @@ export async function inspectWork(
       : undefined;
   return {
     ...view,
-    message: question?.text ?? scope?.message ?? undefined,
+    message: question?.text ?? scope?.mailbox?.text ?? undefined,
     pendingQuestion: question && {
       id: question.id,
       text: question.text,

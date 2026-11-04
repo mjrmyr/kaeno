@@ -46,11 +46,11 @@ import {
   Work,
   type AgentProfile,
   type WorkEnvironment,
+  type WorkReports,
 } from "../work/index.ts";
 
 export interface Kaeno {
   harness: Harness;
-  /** Every event goes in here; the router decides, tickets do the work. */
   router: Engine;
   /** Absent when Kaeno runs without WORK: the router can only answer, not accept tickets. */
   work: Work | undefined;
@@ -70,7 +70,6 @@ export interface KaenoExtension {
     /** `thread` is the key the message belongs to, so a source can map replies to it back. */
     send(route: ChannelRoute, text: string, thread: string): Promise<void>;
     typing?(route: ChannelRoute): Promise<void>;
-    /** Hard cap per message for the router (IM: 100 words). */
     maxWords?: number;
     /** A ticket's own thread for an event that arrived on `route`: a topic, or a reply chain. */
     openThread?(
@@ -102,7 +101,6 @@ export interface WorkOptions {
 export interface OpenKaenoOptions {
   storage: Storage;
   models: HarnessOptions["models"];
-  /** Resolved router assistant (Kaeno); core never looks it up by name. */
   assistant: ConversationSetup;
   /** The programmatic gate per trigger source; unlisted sources are explicit. */
   sources?: Readonly<Record<string, GateMode>>;
@@ -200,14 +198,6 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
       await deliveries.get(route.channel)?.typing?.(route);
     },
   };
-  const engine = new Engine({
-    harness: reference.getHarness,
-    gate: (trigger: TriggerDraft) =>
-      options.sources?.[trigger.source] ?? "explicit",
-    channel: (name) => deliveries.get(name),
-    notifier: () => notifier,
-    onReport: options.onReport,
-  });
   const delivery = defineDelivery(() => notifier);
 
   const workOptions = options.work;
@@ -220,31 +210,36 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
   }
   let workerSurface: SetupSurface | undefined;
   const agents = structuredClone(workOptions?.agents ?? []);
+  const reportsToRouter: WorkReports = {
+    report: (tx, reported) => engine.report(tx, reported),
+    ended: (tx, ticket, workId) => engine.assignmentEnded(tx, ticket, workId),
+  };
   const work = workOptions
-    ? new Work(
-        reference.getHarness,
-        {
-          report: (tx, reported) => engine.report(tx, reported),
-          ended: (tx, ticket, workId) =>
-            engine.assignmentEnded(tx, ticket, workId),
+    ? new Work(reference.getHarness, reportsToRouter, {
+        agents,
+        environment: workOptions.environment,
+        onReport: options.onReport,
+        surface: () => {
+          if (!workerSurface) {
+            throw new Error("WORK used before Kaeno was composed");
+          }
+          return workerSurface;
         },
-        {
-          agents,
-          environment: workOptions.environment,
-          onReport: options.onReport,
-          surface: () => {
-            if (!workerSurface) {
-              throw new Error("WORK used before Kaeno was composed");
-            }
-            return workerSurface;
-          },
-          maxDepth: workOptions.maxDepth ?? 2,
-          maxConcurrent: workOptions.maxConcurrent ?? 4,
-        },
-      )
+        maxDepth: workOptions.maxDepth ?? 2,
+        maxConcurrent: workOptions.maxConcurrent ?? 4,
+      })
     : undefined;
+  const engine = new Engine({
+    harness: reference.getHarness,
+    gate: (trigger: TriggerDraft) =>
+      options.sources?.[trigger.source] ?? "explicit",
+    channel: (name) => deliveries.get(name),
+    notifier: () => notifier,
+    delivery,
+    work,
+    onReport: options.onReport,
+  });
   const workEnvironment = workOptions?.environment;
-  engine.compose({ delivery, work });
   const routerExtension = defineExtension({
     name: ROUTER_EXTENSION,
     tools: [...routerTools(engine), ...ticketTools(engine)],
@@ -317,7 +312,6 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
 
   const durable = extensions.map((extension) => extension.durable);
   const tools = durable.flatMap((extension) => extension.tools ?? []);
-  // The router has no WORK tools: it starts work only by accepting tickets.
   const workTools = new Set<string>([
     ...WORK_TOOLS.orchestration,
     ...WORK_TOOLS.parent,
@@ -336,7 +330,6 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
     ],
   );
 
-  // Selection is explicit for the router and WORK. Installed tools are never offered implicitly.
   const installed = surfaceOf(durable, () => true);
   assertSetupFits("Assistant", options.assistant, routerSurface);
   for (const binding of options.assistant.bindings ?? []) {
@@ -356,7 +349,6 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
     // agent definition can select them.
     const surface = surfaceOf(durable, (name) => approved.has(name));
     workerSurface = surface;
-    // Every agent is checked once here, so a misconfigured one fails startup instead of every launch.
     const ids = new Set<string>();
     for (const agent of agents) {
       if (ids.has(agent.id)) {
@@ -392,7 +384,6 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
   const settings: HarnessSettings = {
     extensions: [],
     toolExecution: "parallel",
-    // Events that queue during a router turn are answered together in the next one.
     followUpMode: "all",
     retry: { maxRetries: 4 },
   };

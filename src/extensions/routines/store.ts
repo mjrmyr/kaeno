@@ -33,8 +33,7 @@ export interface RoutineRun {
   routineId: number;
   /** The scheduled instant it ran for; null for a manual run. */
   slot: number | null;
-  /** The run's ticket number: `k<workId>`. The column predates tickets. */
-  workId: number;
+  ticket: string;
   startedAt: number;
 }
 
@@ -98,7 +97,7 @@ const routineRow = z.object({
 const runRow = z.object({
   routine_id: z.number(),
   slot: z.number().nullable(),
-  work_id: z.number(),
+  ticket: z.string(),
   started_at: z.number(),
 });
 
@@ -121,7 +120,7 @@ function runOf(row: unknown): RoutineRun {
   return {
     routineId: parsed.routine_id,
     slot: parsed.slot,
-    workId: parsed.work_id,
+    ticket: parsed.ticket,
     startedAt: parsed.started_at,
   };
 }
@@ -146,7 +145,7 @@ export class RoutineStore {
       id INTEGER PRIMARY KEY,
       routine_id INTEGER NOT NULL,
       slot INTEGER,
-      work_id INTEGER NOT NULL,
+      ticket TEXT NOT NULL,
       started_at INTEGER NOT NULL,
       UNIQUE (routine_id, slot)
     ) STRICT`);
@@ -295,9 +294,9 @@ export class RoutineStore {
   recordRun(run: RoutineRun): void {
     this.database
       .prepare(
-        "INSERT OR IGNORE INTO routine_runs (routine_id, slot, work_id, started_at) VALUES (?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO routine_runs (routine_id, slot, ticket, started_at) VALUES (?, ?, ?, ?)",
       )
-      .run(run.routineId, run.slot, run.workId, run.startedAt);
+      .run(run.routineId, run.slot, run.ticket, run.startedAt);
   }
 
   private values(input: RoutineFields) {

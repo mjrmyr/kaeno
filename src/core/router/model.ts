@@ -1,4 +1,3 @@
-// Router domain records: Triggers, Threads and Tickets. The Engine is their only writer.
 import {
   defineDoc,
   defineDocFamily,
@@ -15,7 +14,6 @@ export type Authority = "owner" | "none";
  */
 export type GateMode = "explicit" | "candidate" | "ignore";
 
-/** An event as a source reports it. */
 export interface TriggerDraft {
   /** Source-scoped idempotency key, for example `telegram:<update_id>`. */
   key: string;
@@ -49,11 +47,8 @@ export interface ThreadRecord {
   key: string;
   createdAt: number;
   lastAt: number;
-  /** Where messages to this thread go; absent until a source names one. */
   route?: ChannelRoute;
-  /** Tickets that follow this thread: its events pass straight through to them. */
   subscribers: string[];
-  /** Newest last, bounded. */
   recent: string[];
 }
 export type TicketStatus = "queued" | "running" | "idle" | "ended";
@@ -66,9 +61,7 @@ export const FINAL_REPORTS: readonly ReportState[] = [
 ];
 export interface TicketInput {
   id: string;
-  /** The trigger this input carries, if any. */
   trigger?: string;
-  /** Text from the router or the host. */
   text?: string;
 }
 export interface TicketReport {
@@ -82,20 +75,14 @@ export interface TicketRecord {
   agent: string;
   createdAt: number;
   updatedAt: number;
-  /** The trigger that started it. */
   origin: string;
-  /** The worker conversation every Assignment continues. */
   conversation: number;
-  /** Subscribed threads, own thread first. */
-  threads: string[];
-  /** Where relays go when the ticket has no own thread. */
+  ownThread: string | null;
+  followed: string[];
   replyThread: string;
   status: TicketStatus;
-  /** One per WORK run, newest last. */
   assignments: { workId: number; startedAt: number; endedAt?: number }[];
-  /** Inputs waiting for the next Assignment. */
   pending: TicketInput[];
-  /** Newest last, bounded. */
   reports: TicketReport[];
   ended?: { at: number; by: "owner" | "worker" | "host"; reason: string };
 }
@@ -103,11 +90,8 @@ export interface RouterState {
   conversation: number | null;
   nextTrigger: number;
   nextTicket: number;
-  /** Tickets that are not ended, oldest first. */
   open: string[];
-  /** Tickets waiting for a worker slot; wakes for an owner input go first. */
   queue: string[];
-  /** Newest last, bounded: what `recall` lists when asked for recent events. */
   recent: string[];
 }
 
@@ -127,7 +111,6 @@ export const RouterDoc = defineDoc<Stored<RouterState>>({
 function missing(kind: string): never {
   throw new Error(`Unknown ${kind}`);
 }
-/** One member per trigger ID (`t<n>`). Reading an absent member without a seed fails the commit. */
 export const TriggerDoc = defineDocFamily<
   Stored<TriggerRecord>,
   Stored<TriggerRecord> | null
@@ -138,7 +121,6 @@ export const TriggerDoc = defineDocFamily<
   family: true,
   initial: (seed) => seed ?? missing("trigger"),
 });
-/** One member per source key: deduplicates redelivered events. */
 export const TriggerKeyDoc = defineDocFamily<{ id: string | null }, null>({
   kind: "kaeno.trigger-key",
   version: 1,
@@ -146,7 +128,6 @@ export const TriggerKeyDoc = defineDocFamily<{ id: string | null }, null>({
   family: true,
   initial: () => ({ id: null }),
 });
-/** One member per thread key. */
 export const ThreadDoc = defineDocFamily<Stored<ThreadRecord>, string>({
   kind: "kaeno.thread",
   version: 1,
@@ -160,7 +141,6 @@ export const ThreadDoc = defineDocFamily<Stored<ThreadRecord>, string>({
     recent: [],
   }),
 });
-/** One member per ticket ID (`k<n>`). Reading an absent member without a seed fails the commit. */
 export const TicketDoc = defineDocFamily<
   Stored<TicketRecord>,
   Stored<TicketRecord> | null
@@ -178,8 +158,7 @@ export const LIMITS = {
   reports: 20,
   assignments: 50,
   pending: 32,
-  /** Idle tickets stop following their threads after this long. */
-  followMs: 14 * 24 * 60 * 60_000,
+  idleTicketEndMs: 14 * 24 * 60 * 60_000,
   text: 4000,
   textMax: 8000,
   list: 20,
@@ -189,12 +168,18 @@ export const LIMITS = {
   mid: 400,
 } as const;
 
+export function ticketThreads(
+  ticket: Readonly<Stored<TicketRecord>>,
+): string[] {
+  return ticket.ownThread === null
+    ? [...ticket.followed]
+    : [ticket.ownThread, ...ticket.followed];
+}
 export function latestReport(
   ticket: Readonly<Stored<TicketRecord>>,
 ): Readonly<Stored<TicketReport>> | undefined {
   return ticket.reports.at(-1);
 }
-/** Display state: a running ticket whose latest report asks something waits for a person. */
 export function ticketState(ticket: Readonly<Stored<TicketRecord>>): string {
   const report = latestReport(ticket);
   if (

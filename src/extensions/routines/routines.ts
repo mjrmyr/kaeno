@@ -63,7 +63,6 @@ const TICK_MS = 30_000;
 /** Long enough to answer "how did it go", short enough for a tool result. */
 const REPORT_CHARS = 2000;
 
-/** A run as its ticket records it; the store keeps only the ticket number. */
 function runOutcome(ticket: Readonly<TicketRecord> | undefined): {
   status: string;
   report?: string;
@@ -241,7 +240,7 @@ export class Routines {
         const last = this.store.lastRun(routine.id);
         const ticket = last
           ? await core.router
-              .ticket(`k${last.workId}`, context)
+              .ticket(last.ticket, context)
               .catch(() => undefined)
           : undefined;
         const next = routine.enabled
@@ -259,7 +258,7 @@ export class Routines {
           ...(last
             ? {
                 lastRun: {
-                  ticket: `k${last.workId}`,
+                  ticket: last.ticket,
                   startedAt: last.startedAt,
                   ...runOutcome(ticket),
                 },
@@ -366,7 +365,7 @@ export class Routines {
           (tx) =>
             core.router.stopTicket(
               tx,
-              `k${last.workId}`,
+              last.ticket,
               "host",
               `timed out after ${routine.timeoutMinutes} minutes`,
             ),
@@ -398,19 +397,12 @@ export class Routines {
     if (!core.work) {
       throw new Error("Routines need WORK, which is not configured");
     }
-    // A slot's key is stable, so a start retried after a crash finds the same ticket.
     const key = `routine:${routine.id}:${slot ?? `manual:${now}`}`;
     const previous = this.store.lastRun(routine.id);
     const ticket = await core.harness.commit(async (tx) => {
-      // The previous run's ticket stops following the routine's thread: the new run takes over.
       if (previous) {
         const ended = await core.router
-          .stopTicket(
-            tx,
-            `k${previous.workId}`,
-            "host",
-            "superseded by the next run",
-          )
+          .stopTicket(tx, previous.ticket, "host", "superseded by the next run")
           .catch(() => []);
         if (ended.length > 0) {
           throw new Error(`Routine ${routine.id} is still running`);
@@ -429,7 +421,7 @@ export class Routines {
     this.store.recordRun({
       routineId: routine.id,
       slot,
-      workId: Number(ticket.slice(1)),
+      ticket,
       startedAt: now,
     });
     return ticket;
@@ -444,7 +436,7 @@ export class Routines {
       return false;
     }
     const ticket = await this.attached()
-      .router.ticket(`k${last.workId}`, context)
+      .router.ticket(last.ticket, context)
       .catch(() => undefined);
     return ticket?.status === "queued" || ticket?.status === "running";
   }

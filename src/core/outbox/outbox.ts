@@ -1,4 +1,3 @@
-// Every message Kaeno sends: one durable delivery per request, at-least-once, with a per-thread reply log.
 import type { Context } from "@earendil-works/chord";
 import {
   defineDocFamily,
@@ -34,7 +33,6 @@ interface OutboxState {
   replies: Reply[];
   receipts: Record<string, "dispatching" | "delivered" | "failed">;
 }
-/** One member per thread key. */
 export const Outbox = defineDocFamily<Stored<OutboxState>, null>({
   kind: "kaeno.outbox",
   version: 1,
@@ -119,7 +117,6 @@ export function defineDelivery(notifier: () => Notifier): DeliveryTask {
           try {
             await notifier().send(route, text, thread);
           } catch (error) {
-            // Recovery retries a send that was in flight: delivery is at-least-once.
             const attempts = (task.state.checkpoint.attempts ?? 0) + 1;
             runtime.report(error);
             if (attempts < 6) {

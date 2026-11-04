@@ -94,7 +94,6 @@ async function fixture(
         if (last?.role === "toolResult") {
           return fauxAssistantMessage("ok");
         }
-        // A final report, verified or failed, is relayed to the owner once.
         return /state=\\"(ready|failed)\\"/.test(sinceLastAnswer(request))
           ? fauxAssistantMessage(
               [fauxToolCall("reply", { to: "k1", text: "FINAL DELIVERED" })],
@@ -198,7 +197,6 @@ async function fixture(
       }
     },
   });
-  // A fixed key: a reopened host finds the same ticket instead of starting another.
   await startTicket(core, {
     agent: "worker",
     title: "Work",

@@ -67,7 +67,6 @@ const configuration = await loadEnvironment({
     ...zoteroTools,
     ...(mcp?.extensions ?? []),
   ],
-  // The router only talks, routes and remembers: every tool that does work belongs to workers.
   policy: (base) => ({
     assistant: {
       available: [...base.assistant.available, memoryTools, routineTools],

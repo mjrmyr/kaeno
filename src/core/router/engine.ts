@@ -1,5 +1,3 @@
-// The router's single writer. Commands take the caller's transaction and change their records in it; external
-// work (router submissions, steering, sends) is admitted as durable tasks in the same commit and performed after.
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
@@ -41,6 +39,7 @@ import {
   TicketDoc,
   TriggerDoc,
   TriggerKeyDoc,
+  ticketThreads,
   type Authority,
   type GateMode,
   type ReportState,
@@ -52,7 +51,7 @@ import {
 } from "./model.ts";
 import {
   contentText,
-  renderPassed,
+  renderPassThroughNote,
   renderReport,
   renderTrigger,
 } from "./render.ts";
@@ -60,7 +59,6 @@ import {
 type Ticket = Stored<TicketRecord>;
 type Trigger = Stored<TriggerRecord>;
 
-/** Which ticket a worker conversation belongs to. Written once, when the ticket is accepted. */
 export const TicketRef = defineDoc<{ ticket: string | null }>({
   kind: "kaeno.ticket-ref",
   version: 1,
@@ -70,7 +68,6 @@ export const TicketRef = defineDoc<{ ticket: string | null }>({
   initial: () => ({ ticket: null }),
 });
 
-/** What the Engine needs from WORK. Assignments are root WORK runs on the ticket's own conversation. */
 export interface TicketWork {
   /**
    * Admit one Assignment; the same key always finds the same work. Throws `NoWorkSlot` when every slot is
@@ -93,9 +90,7 @@ export interface TicketWork {
   /** The configured agent a requested name refers to; throws when unknown or ambiguous. */
   resolveAgent(requested: string): string;
 }
-/** What one channel offers the router. Absent for channels with nothing to add. */
 export interface ChannelInfo {
-  /** Hard cap for messages on this channel (IM: 100 words). */
   maxWords?: number;
   /**
    * A thread of the ticket's own for an event that arrived on `route`: a topic, or a reply chain anchored at the
@@ -112,6 +107,8 @@ export interface EngineOptions {
   gate?: (trigger: TriggerDraft) => GateMode;
   channel: (name: string) => ChannelInfo | undefined;
   notifier: () => Notifier;
+  delivery: DeliveryTask;
+  work: TicketWork | undefined;
   onReport?: (error: unknown) => void;
 }
 type DispatchInput =
@@ -119,20 +116,17 @@ type DispatchInput =
       kind: "router";
       requestId: string;
       content: Stored<UserInput>;
-      /** The trigger this input asks the router to dispose of; the dispatch checks it got an answer. */
       trigger: string | null;
       attempt: number;
     }
   | { kind: "note"; requestId: string; text: string }
-  /** Launch queued tickets once the commit that queued them has landed. */
   | { kind: "pump" }
   | {
       kind: "steer";
-      conversation: number;
+      ticketConversation: number;
       requestId: string;
       content: Stored<UserInput>;
-      /** The live Assignment: a message never overtakes its brief. */
-      work: number | null;
+      afterBriefOf: number | null;
     };
 type DispatchState = { phase: "submit" } | { phase: "wait" };
 export type DispatchTask = Task<DispatchInput, DispatchState, null, object>;
@@ -145,31 +139,23 @@ export interface Reported {
   text: string;
 }
 
+const DAY_MS = 24 * 60 * 60_000;
 const REMINDER =
   "got no reply and no route. Reply to it, or route it (accept or attach). An owner's message is never ignored.";
 
 export class Engine {
   readonly dispatchTask: DispatchTask;
   private readonly options: EngineOptions;
-  private delivery: DeliveryTask | undefined;
-  private work: TicketWork | undefined;
+  private readonly delivery: DeliveryTask;
+  private readonly work: TicketWork | undefined;
   private pumping: Promise<void> = Promise.resolve();
   private pumpQueued = false;
   private timer: NodeJS.Timeout | undefined;
   constructor(options: EngineOptions) {
     this.options = options;
+    this.delivery = options.delivery;
+    this.work = options.work;
     this.dispatchTask = this.defineDispatch();
-  }
-  /** Late binding: WORK and the outbox are composed after the Engine. */
-  compose(parts: {
-    delivery: DeliveryTask;
-    work: TicketWork | undefined;
-  }): void {
-    this.delivery = parts.delivery;
-    this.work = parts.work;
-  }
-  get hasWork(): boolean {
-    return this.work !== undefined;
   }
   private now(): number {
     return Date.now();
@@ -177,8 +163,6 @@ export class Engine {
   private harness(): Harness {
     return this.options.harness();
   }
-
-  // ---------------------------------------------------------------- startup
 
   /** Create the router conversation once; reconfigure it when idle so a changed setup applies. */
   async open(
@@ -225,7 +209,6 @@ export class Engine {
       context,
     );
   }
-  /** Messages sent to a thread, for clients that poll. */
   readReplies(
     thread: string,
     after: number,
@@ -247,8 +230,6 @@ export class Engine {
     }
     return parseConversationId(router.conversation);
   }
-
-  // ---------------------------------------------------------------- sources
 
   /**
    * Record one event. Redelivery finds the first record. Events on a followed thread pass straight to the
@@ -317,7 +298,11 @@ export class Engine {
         tickets: followers.map((ticket) => ticket.id),
         at: now,
       };
-      await this.note(tx, `passed:${id}`, renderPassed(record, followers));
+      await this.note(
+        tx,
+        `passed:${id}`,
+        renderPassThroughNote(record, followers),
+      );
       return { id, duplicate: false, path: "tickets" };
     }
     await this.toRouter(tx, {
@@ -388,9 +373,6 @@ export class Engine {
     return ticket.id;
   }
 
-  // ---------------------------------------------------------------- router decisions
-
-  /** Trigger IDs the router's current run was given, so a tool can only cite what it was actually asked. */
   async currentBatch(context: Context): Promise<Set<string>> {
     const conversation = await this.routerConversation(context);
     const live = await this.harness().snapshot(LiveDoc, conversation, context);
@@ -438,7 +420,6 @@ export class Engine {
     const thread = await this.harness().snapshot(ThreadDoc, key, context);
     return thread?.createdAt ? thread : undefined;
   }
-  /** The thread of the owner's latest message, where a new routine reports by default. */
   async lastOwnerThread(context: Context): Promise<string | undefined> {
     for (const id of (await this.recentTriggers(context)).toReversed()) {
       const trigger = await this.harness().snapshot(TriggerDoc, id, context);
@@ -460,7 +441,6 @@ export class Engine {
     }
     return ticket;
   }
-  /** A thread of the ticket's own for its origin event, when that event's channel offers one. */
   async openOwnThread(
     triggerId: string,
     title: string,
@@ -493,7 +473,6 @@ export class Engine {
     const agent = this.requireWork().resolveAgent(request.agent);
     const trigger = await tx.doc(TriggerDoc, request.trigger, null);
     this.assertUndecided(trigger);
-    // A client waiting for its request ID gets the acknowledgement, unless a reply already answered it.
     const direct = trigger.disposition ? undefined : trigger.requestId;
     const ticket = await this.createTicket(tx, {
       trigger,
@@ -570,15 +549,11 @@ export class Engine {
     } else if (/^k[0-9]+$/.test(request.to)) {
       const ticket = await tx.doc(TicketDoc, request.to, null);
       ticketId = ticket.id;
-      // The ticket's own thread when it can be reached, otherwise where it was started.
-      thread = ticket.replyThread;
-      for (const key of ticket.threads) {
-        const own = await tx.doc(ThreadDoc, key, key);
-        if (own.route) {
-          thread = key;
-          break;
-        }
-      }
+      const own =
+        ticket.ownThread === null
+          ? undefined
+          : await tx.doc(ThreadDoc, ticket.ownThread, ticket.ownThread);
+      thread = own?.route ? own.key : ticket.replyThread;
       route = (await tx.doc(ThreadDoc, thread, thread)).route;
     } else {
       const known = await tx.doc(ThreadDoc, request.to, request.to);
@@ -606,7 +581,6 @@ export class Engine {
     });
     return { thread };
   }
-  /** Router text for a ticket's worker: a relayed answer or cross-ticket context. */
   async messageTicket(
     tx: Tx,
     ticketId: string,
@@ -648,7 +622,7 @@ export class Engine {
       const ticket = await tx.doc(TicketDoc, id, null);
       if (
         thread !== undefined &&
-        !ticket.threads.includes(thread) &&
+        !ticketThreads(ticket).includes(thread) &&
         ticket.replyThread !== thread
       ) {
         continue;
@@ -686,9 +660,6 @@ export class Engine {
     return tickets;
   }
 
-  // ---------------------------------------------------------------- worker side
-
-  /** The ticket a worker conversation runs for, if any. */
   async ticketOf(
     conversation: ConversationId,
     context: Context,
@@ -736,7 +707,6 @@ export class Engine {
       trigger: null,
     });
   }
-  /** An Assignment ended without a report: cancelled, or failed in recovery. */
   async assignmentEnded(
     tx: Tx,
     ticketId: string,
@@ -761,7 +731,6 @@ export class Engine {
     }
     await this.pumpAfterCommit(tx);
   }
-  /** Return an event that is not this ticket's business to the router. */
   async handback(
     tx: Tx,
     ticketId: string,
@@ -791,7 +760,10 @@ export class Engine {
   }
   async unsubscribe(tx: Tx, ticketId: string, thread: string): Promise<void> {
     const ticket = await tx.doc(TicketDoc, ticketId, null);
-    ticket.threads = ticket.threads.filter((key) => key !== thread);
+    if (ticket.ownThread === thread) {
+      ticket.ownThread = null;
+    }
+    ticket.followed = ticket.followed.filter((key) => key !== thread);
     const record = await tx.doc(ThreadDoc, thread, thread);
     record.subscribers = record.subscribers.filter((id) => id !== ticketId);
   }
@@ -801,17 +773,14 @@ export class Engine {
     if (!record.createdAt) {
       throw new Error(`Unknown thread ${thread}`);
     }
-    if (!ticket.threads.includes(thread)) {
-      ticket.threads.push(thread);
+    if (!ticketThreads(ticket).includes(thread)) {
+      ticket.followed.push(thread);
     }
     if (!record.subscribers.includes(ticketId)) {
       record.subscribers.push(ticketId);
     }
   }
 
-  // ---------------------------------------------------------------- slots
-
-  /** A pump that runs after the caller's commit, so it sees what that commit queued. */
   private async pumpAfterCommit(tx: Tx): Promise<void> {
     if (this.work) {
       await this.dispatch(tx, { kind: "pump" });
@@ -846,7 +815,7 @@ export class Engine {
       return;
     }
     const owner = parseConversationId(router.conversation);
-    await this.expire(router.open, context);
+    await this.endIdleTickets(router.open, context);
     for (const id of router.queue) {
       const ticket = await this.harness().snapshot(TicketDoc, id, context);
       if (!ticket || ticket.status !== "queued") {
@@ -875,7 +844,6 @@ export class Engine {
         );
       } catch (error) {
         if (work.isNoSlot(error)) {
-          // Wakes for an owner's message are first and may use the reserved slot; the rest wait in order.
           if (ticket.assignments.length > 0) {
             continue;
           }
@@ -918,25 +886,28 @@ export class Engine {
       }, context);
     }
   }
-  /** Idle tickets stop following their threads after a while; a later event there goes to the router. */
-  private async expire(
+  private async endIdleTickets(
     open: readonly string[],
     context: Context,
   ): Promise<void> {
-    const cutoff = this.now() - LIMITS.followMs;
+    const cutoff = this.now() - LIMITS.idleTicketEndMs;
     for (const id of open) {
       const ticket = await this.harness().snapshot(TicketDoc, id, context);
       if (ticket?.status === "idle" && ticket.updatedAt < cutoff) {
         await this.harness().commit(async (tx) => {
           const current = await tx.doc(TicketDoc, id, null);
           if (current.status === "idle" && current.updatedAt < cutoff) {
-            await this.end(tx, current, "host", "no activity for 14 days");
+            await this.end(
+              tx,
+              current,
+              "host",
+              `no activity for ${LIMITS.idleTicketEndMs / DAY_MS} days`,
+            );
           }
         }, context);
       }
     }
   }
-  /** The first input of an Assignment: the events and notes that woke it, verbatim. */
   private async briefing(
     ticket: Readonly<Ticket>,
     context: Context,
@@ -969,8 +940,6 @@ export class Engine {
     }
     return blocks;
   }
-
-  // ---------------------------------------------------------------- internals
 
   private requireWork(): TicketWork {
     if (!this.work) {
@@ -1017,7 +986,8 @@ export class Engine {
       updatedAt: now,
       origin: request.trigger.id,
       conversation: conversation.id,
-      threads: request.own ? [request.own.key] : [],
+      ownThread: request.own?.key ?? null,
+      followed: [],
       replyThread: request.replyThread,
       status: "queued",
       assignments: [],
@@ -1070,7 +1040,6 @@ export class Engine {
       const live = ticket.assignments.findLast(
         (assignment) => assignment.endedAt === undefined,
       );
-      // The input answers a question the worker is waiting on, as message_work does for child WORK.
       const scope = await tx.doc(
         WorkScope,
         parseConversationId(ticket.conversation),
@@ -1080,10 +1049,10 @@ export class Engine {
       }
       await this.dispatch(tx, {
         kind: "steer",
-        conversation: ticket.conversation,
+        ticketConversation: ticket.conversation,
         requestId: `input:${ticket.id}:${input.id}`,
         content: blocks,
-        work: live?.workId ?? null,
+        afterBriefOf: live?.workId ?? null,
       });
       return;
     }
@@ -1101,7 +1070,6 @@ export class Engine {
       await this.pumpAfterCommit(tx);
     }
   }
-  /** After a final report: wait for the next event, or run again at once if input arrived meanwhile. */
   private async idleOrWake(tx: Tx, ticket: Ticket): Promise<void> {
     const conversation = parseConversationId(ticket.conversation);
     const busy =
@@ -1128,7 +1096,7 @@ export class Engine {
     ticket.ended = { at: this.now(), by, reason };
     ticket.updatedAt = this.now();
     ticket.pending = [];
-    for (const key of ticket.threads) {
+    for (const key of ticketThreads(ticket)) {
       const thread = await tx.doc(ThreadDoc, key, key);
       thread.subscribers = thread.subscribers.filter((id) => id !== ticket.id);
     }
@@ -1146,9 +1114,6 @@ export class Engine {
       ticket: string | null;
     },
   ): Promise<void> {
-    if (!this.delivery) {
-      throw new Error("The outbox is not composed");
-    }
     await admitDelivery(tx, this.delivery, await this.routerIn(tx), {
       ...message,
       route: message.route && copyRoute(message.route),
@@ -1181,14 +1146,10 @@ export class Engine {
     context: Context,
   ): Promise<ConversationId> {
     return input.kind === "steer"
-      ? parseConversationId(input.conversation)
+      ? parseConversationId(input.ticketConversation)
       : this.routerConversation(context);
   }
-  /**
-   * After the router answered a batch: did this trigger get a decision? An answer that is the only one an owner
-   * message got becomes its reply; otherwise remind once, then give up loudly.
-   */
-  private async settled(
+  private async ensureDecided(
     input: Extract<DispatchInput, { kind: "router" }>,
     settled: SettledSubmissionRecord,
     context: Context,
@@ -1197,64 +1158,85 @@ export class Engine {
     if (triggerId === null) {
       return;
     }
-    const failure = failureOf(settled);
     await this.harness().commit(async (tx) => {
       const trigger = await tx.doc(TriggerDoc, triggerId, null);
       if (trigger.disposition) {
         return;
       }
-      if (
-        settled.status === "done" &&
-        settled.type === "input" &&
-        trigger.authority === "owner"
-      ) {
-        const text = answerText(await tx.entry(AssistantEntry, settled.answer));
-        const route = trigger.route;
-        const cap = route
-          ? this.options.channel(route.channel)?.maxWords
-          : undefined;
-        if (
-          text &&
-          (cap === undefined || text.split(/\s+/).length <= cap) &&
-          (await this.soleUndecided(tx, settled.answer)) === trigger.id
-        ) {
-          trigger.disposition = { kind: "reply", at: this.now() };
-          await this.send(tx, {
-            thread: trigger.threads[0],
-            route: route ?? null,
-            requestId: trigger.requestId ?? `answer:${trigger.id}`,
-            text,
-            ticket: null,
-          });
-          return;
-        }
-      }
-      if (failure !== undefined || input.attempt > 0) {
-        trigger.disposition = { kind: "unrouted", at: this.now() };
-        if (trigger.authority === "owner") {
-          await this.send(tx, {
-            thread: trigger.threads[0],
-            route: trigger.route ?? null,
-            requestId: trigger.requestId ?? `unrouted:${trigger.id}`,
-            text:
-              failure === undefined
-                ? "⚠️ Kaeno could not handle that message. Please send it again."
-                : `⚠️ Kaeno could not answer: ${failure}`,
-            ticket: null,
-          });
-        }
+      if (await this.replyWithSoleAnswer(tx, trigger, settled)) {
         return;
       }
-      await this.dispatch(tx, {
-        kind: "router",
-        requestId: `remind:${trigger.id}`,
-        content: `${trigger.id} ${REMINDER}`,
-        trigger: trigger.id,
-        attempt: 1,
-      });
+      const failure = failureOf(settled);
+      if (failure === undefined && input.attempt === 0) {
+        await this.remindOnce(tx, trigger);
+        return;
+      }
+      await this.failUnrouted(tx, trigger, failure);
     }, context);
   }
-  /** The one undecided owner trigger a router answer belongs to, if exactly one does. */
+  private async replyWithSoleAnswer(
+    tx: Tx,
+    trigger: Trigger,
+    settled: SettledSubmissionRecord,
+  ): Promise<boolean> {
+    if (
+      settled.status !== "done" ||
+      settled.type !== "input" ||
+      trigger.authority !== "owner"
+    ) {
+      return false;
+    }
+    const text = answerText(await tx.entry(AssistantEntry, settled.answer));
+    const route = trigger.route;
+    const cap = route
+      ? this.options.channel(route.channel)?.maxWords
+      : undefined;
+    if (
+      !text ||
+      (cap !== undefined && text.split(/\s+/).length > cap) ||
+      (await this.soleUndecided(tx, settled.answer)) !== trigger.id
+    ) {
+      return false;
+    }
+    trigger.disposition = { kind: "reply", at: this.now() };
+    await this.send(tx, {
+      thread: trigger.threads[0],
+      route: route ?? null,
+      requestId: trigger.requestId ?? `answer:${trigger.id}`,
+      text,
+      ticket: null,
+    });
+    return true;
+  }
+  private async remindOnce(tx: Tx, trigger: Trigger): Promise<void> {
+    await this.dispatch(tx, {
+      kind: "router",
+      requestId: `remind:${trigger.id}`,
+      content: `${trigger.id} ${REMINDER}`,
+      trigger: trigger.id,
+      attempt: 1,
+    });
+  }
+  private async failUnrouted(
+    tx: Tx,
+    trigger: Trigger,
+    failure: string | undefined,
+  ): Promise<void> {
+    trigger.disposition = { kind: "unrouted", at: this.now() };
+    if (trigger.authority !== "owner") {
+      return;
+    }
+    await this.send(tx, {
+      thread: trigger.threads[0],
+      route: trigger.route ?? null,
+      requestId: trigger.requestId ?? `unrouted:${trigger.id}`,
+      text:
+        failure === undefined
+          ? "⚠️ Kaeno could not handle that message. Please send it again."
+          : `⚠️ Kaeno could not answer: ${failure}`,
+      ticket: null,
+    });
+  }
   private async soleUndecided(
     tx: Tx,
     answer: EntryId,
@@ -1277,10 +1259,9 @@ export class Engine {
     }
     return found.length === 1 ? found[0] : undefined;
   }
-  /** Wait until an Assignment's brief is admitted, or the Assignment is gone (then the next one takes the input). */
-  private async briefed(
+  private async untilBriefedOrEnded(
     conversation: ConversationId,
-    work: TaskId,
+    assignment: TaskId,
     clock: {
       sleep(until: number, context: Context): Promise<void>;
       now(): number;
@@ -1288,14 +1269,14 @@ export class Engine {
     context: Context,
   ): Promise<void> {
     for (;;) {
-      const admitted = await this.harness().commit(
-        (tx) => tx.submissionByRequest(conversation, `work:${work}`),
+      const briefed = await this.harness().commit(
+        (tx) => tx.submissionByRequest(conversation, `work:${assignment}`),
         context,
       );
-      if (admitted) {
+      if (briefed) {
         return;
       }
-      const record = await this.harness().getTask(work, context);
+      const record = await this.harness().getTask(assignment, context);
       if (!record || record.state.status === "terminal") {
         return;
       }
@@ -1328,7 +1309,6 @@ export class Engine {
             context,
           );
           if (input.kind === "note") {
-            // A passive entry: the router reads it on its next turn without being woken for it.
             const full = await requireConversation(
               this.harness(),
               conversation.id,
@@ -1352,10 +1332,10 @@ export class Engine {
               context,
             );
           } else {
-            if (input.kind === "steer" && input.work !== null) {
-              await this.briefed(
-                parseConversationId(input.conversation),
-                parseTaskId(input.work),
+            if (input.kind === "steer" && input.afterBriefOf !== null) {
+              await this.untilBriefedOrEnded(
+                parseConversationId(input.ticketConversation),
+                parseTaskId(input.afterBriefOf),
                 runtime,
                 context,
               );
@@ -1391,7 +1371,6 @@ export class Engine {
             await this.routerConversation(context),
             context,
           );
-          // Resubmitting the same request ID finds the admitted submission.
           const submission = await conversation.submit(
             {
               type: "input",
@@ -1429,7 +1408,7 @@ export class Engine {
           } finally {
             clearInterval(typing);
           }
-          await this.settled(input, settled, context);
+          await this.ensureDecided(input, settled, context);
           await runtime.commit(
             () => ({
               status: "terminal",
@@ -1483,7 +1462,6 @@ function trim<T>(values: T[], limit: number): void {
     values.splice(0, values.length - limit);
   }
 }
-/** A trigger as a worker receives it: its source and thread, then its content verbatim. */
 function inputBlocks(
   trigger: Readonly<Trigger>,
   origin: boolean,

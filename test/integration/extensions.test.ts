@@ -164,7 +164,6 @@ it("composes native tools/tasks/docs, transactional channel ingress and delivery
       extensions: [extension, service("second")],
     });
     const opened = core;
-    // The authenticated adapter owns its cursor and records the trigger in the SAME native transaction.
     await expect(
       opened.harness.commit(async (tx) => {
         (await tx.doc(Ingress)).cursor = 1;
@@ -186,7 +185,6 @@ it("composes native tools/tasks/docs, transactional channel ingress and delivery
       (await tx.doc(Ingress)).cursor = 1;
       return opened.router.receive(tx, event("execute", "channel-event:1"));
     }, context);
-    // The rolled-back event took no trigger ID.
     expect(received).toEqual({ id: "t1", duplicate: false, path: "router" });
     await settle(opened);
     expect(await replies(opened, "channel:room")).toEqual([
@@ -242,7 +240,6 @@ it("composes native tools/tasks/docs, transactional channel ingress and delivery
       (await replies(core, "channel:room")).map((reply) => reply.text),
     ).toEqual(["DONE"]);
     const reopened = core;
-    // Redelivery of the same channel event finds the first trigger and runs nothing again.
     const duplicate = await reopened.harness.commit(
       (tx) => reopened.router.receive(tx, event("execute", "channel-event:1")),
       context,
@@ -273,7 +270,6 @@ it("rejects a removed delivery capability before resuming its pending delivery",
             durable,
             delivery: { channel: "removed", send: async () => {} },
             start: async (core) => {
-              // A reply to a message from the channel is queued for delivery, then startup stops.
               await core.harness.commit(async (tx) => {
                 const { id } = await core.router.receive(tx, {
                   key: "removed:1",

@@ -35,20 +35,21 @@ interface Pending {
   threadId?: number;
   replyTo?: number;
 }
+function sentMessageKey(chatId: number, messageId: number): string {
+  return `${chatId}:${messageId}`;
+}
 interface TelegramStateShape {
   offset: number;
   pending?: Pending;
-  /** `<chat>:<message>` → thread key, for every message Kaeno sent and every reply-chain anchor. Bounded. */
-  sent: Record<string, string>;
+  threadOfSent: Record<string, string>;
 }
-/** Telegram's cursor, single-slot command outbox and sent-message map. */
 export const TelegramState = defineDoc<Stored<TelegramStateShape>>({
   kind: "kaeno.telegram",
   version: 2,
   scope: "session",
-  initial: () => ({ offset: 0, sent: {} }),
+  initial: () => ({ offset: 0, threadOfSent: {} }),
 });
-const SENT_LIMIT = 2000;
+const MAX_REMEMBERED_SENT = 2000;
 const TOPIC_RETRY_MS = 10 * 60_000;
 const maxImageBytes = 5 * 1024 * 1024;
 const imageTypes = new Set([
@@ -67,7 +68,6 @@ export interface TelegramExtensionOptions {
   onError?(error: unknown): void;
 }
 
-/** Thread keys: the chat itself, one topic of it, or a reply chain anchored at one message. */
 function mainThread(chatId: number): string {
   return `telegram:${chatId}`;
 }
@@ -78,7 +78,6 @@ function chainThread(chatId: number, anchor: number): string {
   return `telegram:${chatId}/reply:${anchor}`;
 }
 
-/** Each allowed private chat is the owner's main thread; topics and reply chains are threads of tickets. */
 export function telegramExtension(
   options: TelegramExtensionOptions,
 ): KaenoExtension {
@@ -91,7 +90,6 @@ export function telegramExtension(
     }
     return attached;
   }
-  /** `<chat>` or `<chat>:<topic>`; only allowed private chats. */
   function address(value: string): { chatId: number; threadId?: number } {
     const [chat, topic, ...rest] = value.split(":");
     const chatId = Number(chat);
@@ -114,17 +112,20 @@ export function telegramExtension(
     return Number.isSafeInteger(id) && id > 0 ? id : undefined;
   }
   function remember(
-    state: { sent: Record<string, string> },
+    state: Pick<TelegramStateShape, "threadOfSent">,
     chatId: number,
     messageIds: readonly number[],
     thread: string,
   ): void {
     for (const id of messageIds) {
-      state.sent[`${chatId}:${id}`] = thread;
+      state.threadOfSent[sentMessageKey(chatId, id)] = thread;
     }
-    const keys = Object.keys(state.sent);
-    for (const key of keys.slice(0, Math.max(0, keys.length - SENT_LIMIT))) {
-      delete state.sent[key];
+    const keys = Object.keys(state.threadOfSent);
+    for (const key of keys.slice(
+      0,
+      Math.max(0, keys.length - MAX_REMEMBERED_SENT),
+    )) {
+      delete state.threadOfSent[key];
     }
   }
   async function advance(
@@ -158,14 +159,15 @@ export function telegramExtension(
       { type: "image", data: data.toString("base64"), mimeType },
     ];
   }
-  /** A reply to one of Kaeno's messages continues that message's thread; a topic is its own thread. */
   function threadOf(
     message: Message,
-    sent: Readonly<Record<string, string>>,
+    threadOfSent: TelegramStateShape["threadOfSent"],
   ): string {
     const chatId = message.chat.id;
     const replied = message.reply_to_message
-      ? sent[`${chatId}:${message.reply_to_message.message_id}`]
+      ? threadOfSent[
+          sentMessageKey(chatId, message.reply_to_message.message_id)
+        ]
       : undefined;
     if (replied) {
       return replied;
@@ -175,7 +177,6 @@ export function telegramExtension(
     }
     return mainThread(chatId);
   }
-  /** Owner commands are deterministic: no model decides them. */
   async function command(
     tx: Tx,
     text: string,
@@ -278,7 +279,7 @@ export function telegramExtension(
         if (state.offset > update.update_id) {
           return undefined;
         }
-        const thread = threadOf(message, state.sent);
+        const thread = threadOf(message, state.threadOfSent);
         let result: Awaited<ReturnType<typeof command>> | undefined;
         if (text.startsWith("/")) {
           result = await command(tx, text, thread, chatId);
@@ -306,7 +307,6 @@ export function telegramExtension(
         return result;
       }, context);
       if (outcome) {
-        // The command is committed; its effects run after it and fail without un-accepting it.
         try {
           await core().router.abortWorks(outcome.abort, context);
           if (outcome.compact) {
@@ -437,7 +437,6 @@ export function telegramExtension(
           return undefined;
         }
         const key = chainThread(chatId, anchor);
-        // A reply to the owner's own message continues the chain too.
         await core().harness.commit(async (tx) => {
           remember(await tx.doc(TelegramState), chatId, [anchor], key);
         }, context);

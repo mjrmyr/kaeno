@@ -135,7 +135,6 @@ it.each([false, true])(
           state: "ready",
           summary: "PARENT REPORT",
         });
-        // The report wakes the router, which has the skill tools too.
         await until(() => prompts.has("chat"), "the router's turn");
         expect(lists.size).toBe(2);
         expect(lists.get("parent")).toContain('"text":"[]"');

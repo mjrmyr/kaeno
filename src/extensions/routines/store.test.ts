@@ -14,18 +14,18 @@ it("records each scheduled slot once and keeps manual runs out of the schedule",
   const { id } = store.create(input, 1);
   expect(store.lastScheduledSlot(id)).toBeUndefined();
 
-  store.recordRun({ routineId: id, slot: 100, workId: 7, startedAt: 101 });
-  store.recordRun({ routineId: id, slot: 100, workId: 8, startedAt: 102 });
+  store.recordRun({ routineId: id, slot: 100, ticket: "k7", startedAt: 101 });
+  store.recordRun({ routineId: id, slot: 100, ticket: "k8", startedAt: 102 });
   expect(store.lastRun(id)).toEqual({
     routineId: id,
     slot: 100,
-    workId: 7,
+    ticket: "k7",
     startedAt: 101,
   });
 
-  store.recordRun({ routineId: id, slot: null, workId: 9, startedAt: 200 });
-  store.recordRun({ routineId: id, slot: null, workId: 10, startedAt: 201 });
-  expect(store.lastRun(id)?.workId).toBe(10);
+  store.recordRun({ routineId: id, slot: null, ticket: "k9", startedAt: 200 });
+  store.recordRun({ routineId: id, slot: null, ticket: "k10", startedAt: 201 });
+  expect(store.lastRun(id)?.ticket).toBe("k10");
   expect(store.lastScheduledSlot(id)).toBe(100);
 });
 
@@ -55,7 +55,7 @@ it("round-trips routines, applies defaults, and deletes a routine with its runs"
   store.recordRun({
     routineId: created.id,
     slot: 5,
-    workId: 1,
+    ticket: "k1",
     startedAt: 5,
   });
   expect(store.remove(created.id)).toBe(true);
