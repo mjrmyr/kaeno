@@ -65,7 +65,7 @@ it("boots the actual core entrypoint and shuts down cleanly", async () => {
       },
       { timeout: 10000, interval: 50 },
     );
-    const response = await fetch(`${base}/v1/threads`, {
+    const response = await fetch(`${base}/v1/tickets`, {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(response.status).toBe(200);

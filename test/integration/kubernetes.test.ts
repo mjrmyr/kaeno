@@ -41,6 +41,7 @@ import {
   type AgentProfile,
 } from "../../src/core/application/index.ts";
 import type { WorkInstance } from "../../src/core/work/index.ts";
+import { ROUTER_ASSISTANT_TOOLS, startTicket } from "../mocks/router.ts";
 
 const resources = {
   requests: { cpu: "100m", memory: "128Mi" },
@@ -1132,16 +1133,6 @@ it("runs WORK through a pod execution environment and rejects child admission wh
         });
       }
       if (!worker) {
-        if (
-          last?.role === "user" &&
-          JSON.stringify(last.content).includes("launch-root")
-        ) {
-          return call("start_work", {
-            agent: "coder",
-            title: "Code",
-            brief: "Exercise the environment, then try to delegate.",
-          });
-        }
         return fauxAssistantMessage("REPORTED");
       }
       if (last?.role === "toolResult" && last.toolName === "probe") {
@@ -1162,7 +1153,11 @@ it("runs WORK through a pod execution environment and rejects child admission wh
   const core = await openKaeno({
     storage: new MemoryStorage(),
     models,
-    assistant: { model, instructions: "CHAT", tools: ["start_work"] },
+    assistant: {
+      model,
+      instructions: "ROUTER",
+      tools: [...ROUTER_ASSISTANT_TOOLS],
+    },
     extensions: [
       extension.extension,
       { durable: defineExtension({ name: "probe", tools: [probe] }) },
@@ -1175,13 +1170,11 @@ it("runs WORK through a pod execution environment and rejects child admission wh
     },
   });
   cleanups.push(() => core.close());
-  const conversation =
-    await core.threads.getOrCreateConversation("kubernetes-worker");
-  const task = await core.harness.commit(
-    (tx) => core.turns.admitUserTurn(tx, conversation, "launch-root", "root"),
-    context,
-  );
-  await core.harness.waitForTask(task, context);
+  await startTicket(core, {
+    agent: "coder",
+    title: "Code",
+    content: "Exercise the environment, then try to delegate.",
+  });
   await vi.waitFor(
     () => {
       expect(proof).toContain("pod workspace");

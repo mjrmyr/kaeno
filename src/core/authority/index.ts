@@ -1,24 +1,32 @@
+import { Type, type TSchema } from "@earendil-works/pi-ai";
 import {
   defineExtension,
   wrapTool,
   type Extension,
-  type Harness,
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
-import { activeTurn, TurnLedger } from "../turns/index.ts";
+import { z } from "zod";
+
+/** The router's check that an action cites an owner's message from the batch in front of it. */
+export interface OwnerBasis {
+  requireOwnerBasis(
+    basis: string,
+    context: Parameters<ToolRegistration["execute"]>[2],
+  ): Promise<void>;
+}
+
+const basisSchema = z.object({ basis: z.string() }).passthrough();
 
 /**
- * Wrap the complete selected CHAT tool surface, not WORK's delegated tools.
- * Unlisted read names do not grant authority to any tool added later.
- * Explicit activity-result tools may mutate without a new user turn, but remain epoch-fenced.
- * This is an invocation gate, not an atomic external-effect boundary: durable
- * mutations must recheck origin epoch/control in their effect-admission commit.
+ * Wrap the router's extension tools that change something: each call must name `basis`, the ID of the owner's
+ * message asking for it, so a worker report or a candidate event can never change memory or routines. Read-only
+ * tools and the router's own tools (which check their triggers themselves) are left as they are. Unlisted read
+ * names do not grant authority to any tool added later.
  */
-export function assistantToolPolicy(
-  getHarness: () => Harness,
+export function routerToolPolicy(
+  owner: OwnerBasis,
   tools: readonly ToolRegistration[],
-  readOnlyNames: readonly string[] = [],
-  activityResultTools: readonly string[] = [],
+  exempt: readonly string[],
 ): Extension {
   const names = new Set<string>();
   for (const tool of tools) {
@@ -27,35 +35,41 @@ export function assistantToolPolicy(
     }
     names.add(tool.name);
   }
-  const reads = new Set(readOnlyNames);
-  const autonomous = new Set(activityResultTools);
+  const free = new Set(exempt);
   return defineExtension({
     name: "kaeno-tool-authority",
-    wraps: tools.map((selected) =>
-      wrapTool(selected, (tool) => ({
-        ...tool,
-        async execute(args, api, context) {
-          if (!reads.has(tool.name)) {
-            const { origin, source } = await activeTurn(
-              getHarness(),
-              api.conversationId,
-              context,
-            );
-            if (source.kind !== "user" && !autonomous.has(tool.name)) {
-              throw new Error("Assistant mutation requires a user turn");
-            }
-            const ledger = await api.snapshot(
-              TurnLedger,
-              origin.conversationId,
-              context,
-            );
-            if (!ledger || ledger.control || ledger.epoch !== origin.epoch) {
-              throw new Error("Assistant mutation origin is fenced");
-            }
-          }
-          return tool.execute(args, api, context);
-        },
-      })),
-    ),
+    wraps: tools
+      .filter((selected) => !free.has(selected.name))
+      .map((selected) =>
+        wrapTool(selected, (tool) => ({
+          ...tool,
+          parameters: withBasis(tool.parameters),
+          async execute(args, api, context) {
+            const { basis, ...rest } = basisSchema.parse(args);
+            await owner.requireOwnerBasis(basis, context);
+            return tool.execute(rest, api, context);
+          },
+        })),
+      ),
+  });
+}
+
+function withBasis(parameters: TSchema): TSchema {
+  const { properties } = z
+    .object({
+      properties: z
+        .record(
+          z.string(),
+          z.custom<TSchema>(() => true),
+        )
+        .default({}),
+    })
+    .parse(parameters);
+  return Type.Object({
+    ...properties,
+    basis: Type.String({
+      description:
+        "ID of the owner's message that asks for this, e.g. t12. Reports and other events cannot authorise it.",
+    }),
   });
 }

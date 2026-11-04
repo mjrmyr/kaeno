@@ -6,16 +6,17 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import {
   fauxProvider,
   fauxAssistantMessage,
-  fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import {
-  defineExtension,
-  defineTool,
-  type ConversationId,
-} from "@earendil-works/pi-durable";
+import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { afterEach, expect, it, vi } from "vitest";
+import {
+  hangingResponse,
+  receive,
+  replies,
+  startTicket,
+} from "../mocks/router.ts";
 import {
   openKaeno,
   type WorkEnvironment,
@@ -574,19 +575,6 @@ it("rejects changed private scope in frozen WORK before provisioning, reconcilia
   const faux = fauxProvider();
   const models = createModels();
   models.setProvider(faux.provider);
-  faux.setResponses([
-    fauxAssistantMessage(
-      [
-        fauxToolCall("start_work", {
-          agent: "worker",
-          title: "Pending",
-          brief: "Wait",
-        }),
-      ],
-      { stopReason: "toolUse" },
-    ),
-    fauxAssistantMessage("STARTED"),
-  ]);
   const path = join(root, "db.sqlite");
   const core = await openKaeno({
     ...config,
@@ -595,14 +583,12 @@ it("rejects changed private scope in frozen WORK before provisioning, reconcilia
     work: { ...config.work, environment },
   });
   try {
-    const id = await core.threads.getOrCreateConversation(
-      "pending-private-binding",
-    );
-    const task = await core.harness.commit(
-      (tx) => core.turns.admitUserTurn(tx, id, "launch", "launch"),
-      context,
-    );
-    await core.harness.waitForTask(task, context);
+    // A ticket's root WORK freezes the worker's private binding; provisioning hangs until the host stops.
+    await startTicket(core, {
+      agent: config.work.agents[0].id,
+      content: "Wait",
+      title: "Pending",
+    });
     await vi.waitFor(() => expect(ensuring).toBe(true));
     await core.close();
     provisions = 0;
@@ -669,7 +655,7 @@ it("derives real discovered Browser worker contributions and rejects an assistan
   );
 });
 
-it("recovers a pending CHAT's native skill snapshot without its producer or source files", async () => {
+it("recovers a pending router run's native skill snapshot without its producer or source files", async () => {
   const { root, configFile } = await fixture("tools: []\n");
   const mixed = feature("guides").extension;
   const guides: AgentExtension = {
@@ -685,34 +671,23 @@ it("recovers a pending CHAT's native skill snapshot without its producer or sour
   const models = createModels();
   models.setProvider(faux.provider);
   const path = join(root, "db.sqlite");
-  let conversation: ConversationId | undefined;
-  await expect(
-    openKaeno({
-      ...config,
-      storage: await openNodeSqliteStorage(path),
-      models,
-      extensions: [
-        ...config.extensions,
-        {
-          durable: defineExtension({ name: "interrupt" }),
-          start: async (core) => {
-            conversation =
-              await core.threads.getOrCreateConversation("native-skill");
-            const id = conversation;
-            await core.harness.commit(
-              (tx) =>
-                core.turns.admitUserTurn(tx, id, "Read guidance", "request"),
-              context,
-            );
-            throw new Error("interrupted");
-          },
-        },
-      ],
-    }),
-  ).rejects.toThrow("interrupted");
-  const id = conversation;
-  if (id === undefined) {
-    throw new Error("Expected saved conversation");
+  // The router's turn is in flight when the host stops: its run, with the saved skill snapshot, must resume.
+  const hanging = hangingResponse();
+  faux.setResponses([hanging.response]);
+  const first = await openKaeno({
+    ...config,
+    storage: await openNodeSqliteStorage(path),
+    models,
+  });
+  const id = await first.router.routerConversation(context);
+  try {
+    await receive(first, "Read guidance", {
+      thread: "native-skill",
+      key: "request",
+    });
+    await hanging.started;
+  } finally {
+    await first.close();
   }
   await rm(join(root, "agents"), { recursive: true });
   await rm(join(root, "skills"), { recursive: true });
@@ -738,11 +713,10 @@ it("recovers a pending CHAT's native skill snapshot without its producer or sour
   try {
     await vi.waitFor(async () =>
       expect(
-        (await core.turns.readReplies(id, 0)).replies.map(
-          (reply) => reply.text,
-        ),
+        (await replies(core, "native-skill")).map((reply) => reply.text),
       ).toContain("Recovered guidance"),
     );
+    expect(await core.router.routerConversation(context)).toBe(id);
     expect(observed).toContain("ORIGINAL guide KNOWLEDGE");
     expect(observed).not.toContain("ORIGINAL hidden KNOWLEDGE");
     expect(observed).not.toContain("Use read_skill");

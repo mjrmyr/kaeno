@@ -1,5 +1,6 @@
 import {
   bindingSchema,
+  ROUTER_EXTENSION,
   WORK_EXTENSION,
   type Binding,
   type KaenoExtension,
@@ -71,7 +72,7 @@ export function resolveExtensions(options: {
   );
   const names = new Set([
     WORK_EXTENSION,
-    "kaeno-channels",
+    ROUTER_EXTENSION,
     "kaeno-tool-authority",
   ]);
   const tools = new Set<string>();
@@ -105,7 +106,7 @@ export function resolveExtensions(options: {
       }
     }
   }
-  // WORK registers these in core; its single name catalog also defines the standard policy.
+  // WORK and the router register these in core; their name catalogs also define the standard policy.
   for (const name of new Set([
     ...options.assistantTools,
     ...options.workerTools,

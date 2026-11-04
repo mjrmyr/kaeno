@@ -158,9 +158,7 @@ it("reads later worker reports", async () => {
   const base = await serve((_req, res) =>
     res.end(
       JSON.stringify({
-        replies: [
-          { id: 3, requestId: "activity-result:work", text: "worker finished" },
-        ],
+        replies: [{ id: 3, requestId: "reply:41", text: "worker finished" }],
         next: 3,
         truncated: false,
       }),

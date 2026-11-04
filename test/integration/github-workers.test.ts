@@ -2,7 +2,6 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
@@ -10,9 +9,10 @@ import {
   fauxProvider,
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import { MemoryStorage } from "@earendil-works/pi-durable";
+import { MemoryStorage, type JsonObject } from "@earendil-works/pi-durable";
 import { expect, it, vi } from "vitest";
 import { openKaeno } from "../../src/core/application/index.ts";
+import { receive } from "../mocks/router.ts";
 import {
   loadEnvironment,
   type LoadEnvironmentOptions,
@@ -107,7 +107,7 @@ it("gives the assistant, root worker, and nested worker GitHub discovery by defa
     models.setProvider(faux.provider);
     const results = new Map<string, string>();
     const prompts = new Map<string, string>();
-    function call(name: string, args: Record<string, string>) {
+    function call(name: string, args: JsonObject) {
       return fauxAssistantMessage([fauxToolCall(name, args)], {
         stopReason: "toolUse",
       });
@@ -131,10 +131,16 @@ it("gives the assistant, root worker, and nested worker GitHub discovery by defa
             last.toolName === "github_list_repositories"
           ) {
             results.set("chat", JSON.stringify(last));
-            return call("start_work", {
-              agent: "coder",
-              title: "Code",
-              brief: "Discover projects and delegate a review.",
+            return call("route", {
+              items: [
+                {
+                  trigger: "t1",
+                  kind: "accept",
+                  agent: "coder",
+                  title: "Code",
+                  ack: "On it.",
+                },
+              ],
             });
           }
           return fauxAssistantMessage("REPORTED");
@@ -176,12 +182,11 @@ it("gives the assistant, root worker, and nested worker GitHub discovery by defa
       models,
     });
     try {
-      const id = await core.threads.getOrCreateConversation("github-workers");
-      const task = await core.harness.commit(
-        (tx) => core.turns.admitUserTurn(tx, id, "launch-root", "root"),
-        context,
+      // The owner's words reach the coder verbatim; the router only routes them.
+      await receive(
+        core,
+        "launch-root: discover projects and delegate a review.",
       );
-      await core.harness.waitForTask(task, context);
       await vi.waitFor(
         () => {
           expect(results.get("coder")).toContain("owner/private");

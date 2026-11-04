@@ -22,6 +22,13 @@ import {
   openKaeno,
   type WorkEnvironment,
 } from "../../src/core/application/index.ts";
+import {
+  isRouterRequest,
+  replies,
+  ROUTER_ASSISTANT_TOOLS,
+  sinceLastAnswer,
+  startTicket,
+} from "../mocks/router.ts";
 
 async function fixture(
   mode: "final" | "paused" | "busy" | "tree",
@@ -79,10 +86,22 @@ async function fixture(
     },
   });
   faux.setResponses(
-    Array.from({ length: 40 }, () => async (request) => {
+    Array.from({ length: 80 }, () => async (request) => {
       const last = request.messages.findLast(
         (message) => message.role !== "system",
       );
+      if (isRouterRequest(request)) {
+        if (last?.role === "toolResult") {
+          return fauxAssistantMessage("ok");
+        }
+        // A final report, verified or failed, is relayed to the owner once.
+        return /state=\\"(ready|failed)\\"/.test(sinceLastAnswer(request))
+          ? fauxAssistantMessage(
+              [fauxToolCall("reply", { to: "k1", text: "FINAL DELIVERED" })],
+              { stopReason: "toolUse" },
+            )
+          : fauxAssistantMessage("ACK");
+      }
       if (
         getCurrentSystemPrompt(request.messages).includes("You are Kaeno WORK")
       ) {
@@ -120,32 +139,17 @@ async function fixture(
           { stopReason: "toolUse" },
         );
       }
-      if (
-        last?.role === "user" &&
-        JSON.stringify(last.content).includes("launch-work")
-      ) {
-        return fauxAssistantMessage(
-          [
-            fauxToolCall("start_work", {
-              agent: "worker",
-              title: "Work",
-              brief: "Do work",
-            }),
-          ],
-          { stopReason: "toolUse" },
-        );
-      }
-      return fauxAssistantMessage(
-        JSON.stringify(last?.content).includes("finished")
-          ? "FINAL DELIVERED"
-          : "ACK",
-      );
+      throw new Error("Unexpected model request");
     }),
   );
   const core = await openKaeno({
     storage: storage ?? new MemoryStorage(),
     models,
-    assistant: { model, instructions: "CHAT", tools: ["start_work"] },
+    assistant: {
+      model,
+      instructions: "ROUTER",
+      tools: [...ROUTER_ASSISTANT_TOOLS],
+    },
     extensions: [
       { durable: defineExtension({ name: "lifecycle-test", tools: [block] }) },
     ],
@@ -194,14 +198,13 @@ async function fixture(
       }
     },
   });
-  const conversationId =
-    await core.threads.getOrCreateConversation("lifecycle");
-  const turn = await core.harness.commit(
-    (tx) =>
-      core.turns.admitUserTurn(tx, conversationId, "launch-work", "launch"),
-    context,
-  );
-  await core.harness.waitForTask(turn, context);
+  // A fixed key: a reopened host finds the same ticket instead of starting another.
+  await startTicket(core, {
+    agent: "worker",
+    title: "Work",
+    content: "Do work",
+    key: "lifecycle",
+  });
   async function id() {
     await vi.waitFor(() => expect(workId).toBeDefined());
     if (workId === undefined) {
@@ -211,7 +214,8 @@ async function fixture(
   }
   return {
     core,
-    conversationId,
+    delivered: async () =>
+      (await replies(core)).filter((reply) => reply.text === "FINAL DELIVERED"),
     release,
     check,
     errors,
@@ -241,12 +245,7 @@ it.each([false, true])(
         expect(String(rig.errors[0])).toContain("cleanup deferred");
       });
       await vi.waitFor(async () => {
-        const replies = (
-          await rig.core.turns.readReplies(rig.conversationId, 0)
-        ).replies;
-        expect(
-          replies.filter((reply) => reply.text === "FINAL DELIVERED"),
-        ).toHaveLength(1);
+        expect(await rig.delivered()).toHaveLength(1);
       });
     } finally {
       await rig.core.close();
@@ -308,12 +307,7 @@ it.each(["paused", "busy"] as const)(
       }
       expect(rig.release).toHaveBeenCalledTimes(1);
       await vi.waitFor(async () => {
-        const replies = (
-          await rig.core.turns.readReplies(rig.conversationId, 0)
-        ).replies;
-        expect(
-          replies.filter((reply) => reply.text === "FINAL DELIVERED"),
-        ).toHaveLength(1);
+        expect(await rig.delivered()).toHaveLength(1);
       });
     } finally {
       await rig.core.close();
@@ -396,11 +390,7 @@ it("settles descendants before reporting parent sandbox loss even when every rel
     expect(rig.toolStopped()).toBe(true);
     expect(rig.release).toHaveBeenCalledTimes(2);
     await vi.waitFor(async () => {
-      expect(
-        (
-          await rig.core.turns.readReplies(rig.conversationId, 0)
-        ).replies.filter((reply) => reply.text === "FINAL DELIVERED"),
-      ).toHaveLength(1);
+      expect(await rig.delivered()).toHaveLength(1);
     });
   } finally {
     await rig.core.close();
@@ -417,11 +407,7 @@ it("commits and delivers the report before a stuck cleanup backend returns", asy
     ).toContain("VERIFIED FINAL REPORT");
     await vi.waitFor(async () => {
       expect(rig.release).toHaveBeenCalledTimes(1);
-      expect(
-        (
-          await rig.core.turns.readReplies(rig.conversationId, 0)
-        ).replies.filter((reply) => reply.text === "FINAL DELIVERED"),
-      ).toHaveLength(1);
+      expect(await rig.delivered()).toHaveLength(1);
     });
     expect(rig.errors).toHaveLength(0);
   } finally {
@@ -448,11 +434,7 @@ it("does not duplicate an already committed final report after SQLite reopen wit
             String(error).includes("cleanup deferred"),
           ),
         ).toBe(true);
-        expect(
-          (
-            await first.core.turns.readReplies(first.conversationId, 0)
-          ).replies.filter((reply) => reply.text === "FINAL DELIVERED"),
-        ).toHaveLength(1);
+        expect(await first.delivered()).toHaveLength(1);
       });
     } finally {
       await first.core.close();
@@ -465,11 +447,7 @@ it("does not duplicate an already committed final report after SQLite reopen wit
     );
     try {
       expect(reopened.release).not.toHaveBeenCalled();
-      expect(
-        (
-          await reopened.core.turns.readReplies(reopened.conversationId, 0)
-        ).replies.filter((reply) => reply.text === "FINAL DELIVERED"),
-      ).toHaveLength(1);
+      expect(await reopened.delivered()).toHaveLength(1);
     } finally {
       await reopened.core.close();
     }

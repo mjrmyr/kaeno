@@ -4,7 +4,7 @@ An always-on agent has to remember who it works for and keep what it was working
 
 | Part                     | Means                                                          | Status            |
 | ------------------------ | -------------------------------------------------------------- | ----------------- |
-| Owner memory             | Preferences and facts, shared by every thread                  | **Phase 1 (now)** |
+| Owner memory             | Preferences and facts, held by the router for every channel    | **Phase 1 (now)** |
 | Persistent working state | Files, checkouts and browser logins that outlive a single WORK | Phase 2 proposal  |
 
 Ownership (goals, commitments), activation (schedules, events) and delegated authority (approvals) are separate pieces of work. They build on this, but are not part of it.
@@ -22,7 +22,7 @@ The prompt carries an **index**: every preference, plus the title of every memor
 
 - **State.** A `memory_entries` table in Kaeno's own database, `kaeno.sqlite` in `KAENO_DATA_DIR`, not a pi-durable document. It is independent of threads, so it survives `reset` and is shared by every client. See [forgetting](#forgetting) for why it lives outside pi-durable.
 - **Tools.** `memory_save({ kind, title?, text, replaces? })`, `memory_forget({ id })` and the read-only `memory_read({ ids })`. Preferences are one line of at most 300 characters, and there are at most 30 of them. Memories need a one-line title of at most 80 characters, keep a body of up to 4000 characters, and there are at most 200 of them. A full kind refuses new saves until an entry is replaced or forgotten, instead of silently evicting.
-- **Prompt.** A `memory` section renders the index before each request, so an entry saved in one thread is in the next request of every other thread. It only changes when memory changes, which keeps provider prompt caches warm. Bodies never enter the prompt except as `memory_read` results.
+- **Prompt.** A `memory` section renders the index before each router request, so an entry saved from one channel applies to every other. It only changes when memory changes, which keeps provider prompt caches warm. Bodies never enter the prompt except as `memory_read` results.
 - **Idempotency.** An entry's ID is `m<tool task id>`. A replayed `memory_save` finds its entry and changes nothing, including a replayed `replaces`. Forgetting an absent ID reports it instead of failing.
 
 ### HTTP API
@@ -42,10 +42,10 @@ Like the rest of the API, these routes are unauthenticated: keep the listener on
 
 Memory steers every future turn, so a write is a durable prompt injection if the wrong party can make it. Existing structure enforces the rules; nothing new is needed:
 
-- `memory_save` and `memory_forget` are mutating, so `assistantToolPolicy` admits them only on **user turns** that are not fenced by stop/reset. A work report, which is untrusted data, cannot save or forget an entry. If a report contains something worth keeping, Kaeno can save it on the owner's next message.
+- `memory_save` and `memory_forget` are mutating, so the router's tool policy (`routerToolPolicy`) admits them only with a **basis**: the ID of an owner message in the batch in front of the router (see [routing](routing.md#authority)). A work report, which is untrusted data, cannot save or forget an entry. If a report contains something worth keeping, Kaeno can save it on the owner's next message.
 - The host (`src/host/main.ts`) makes the memory extension available to and default for the **assistant** only. It is not in worker availability, so a worker profile that lists a memory tool fails startup. Workers also never see the index. They browse untrusted sites inside sandboxes, so the orchestrator copies only the facts a task needs into its brief.
 
-The fence check runs when the tool is invoked. Because memory is outside pi-durable, it is not in the same transaction as the write: a save racing an exact stop/reset can still land. For memory that is harmless.
+The basis check runs when the tool is invoked. Because memory is outside pi-durable, it is not in the same transaction as the write.
 
 An assistant profile with an explicit `tools:` list must name the memory tools to get them, like any other tool.
 
@@ -59,7 +59,7 @@ pi-durable storage is append-only: a change is a new revision, and older revisio
 
 A test checks that a forgotten entry's text is absent from every file in the data directory. With `secure_delete` off, that test fails.
 
-What forgetting cannot reach is the conversation history in `durable.sqlite`: the `memory_save` call that stored the entry, Kaeno's replies about it, and the index as rendered into each existing thread. In an existing thread, Kaeno may still see an older index above the current one until that thread is reset or compacted. New threads only ever see the current index.
+What forgetting cannot reach is the conversation history in `durable.sqlite`: the `memory_save` call that stored the entry, Kaeno's replies about it, and the index as rendered into each existing thread. The router may still see an older index above the current one until its context is compacted (`/new`).
 
 ### Not in phase 1
 

@@ -22,6 +22,7 @@ import {
   openKaeno,
   type WorkEnvironment,
 } from "../../src/core/application/index.ts";
+import { ROUTER_ASSISTANT_TOOLS, startTicket } from "../mocks/router.ts";
 
 it.each([
   { environment: undefined, reason: "no execution environment identity" },
@@ -37,7 +38,7 @@ it.each([
     const model = { provider: "faux", modelId: "faux-1" };
     const task = defineTask<object, { phase: "start" }, null>({
       name: "kaeno.work",
-      version: 3,
+      version: 4,
       initial: () => ({ phase: "start" }),
       phases: {
         start: async () => {
@@ -168,29 +169,11 @@ it.each(["test:docker", "test:microsandbox", undefined])(
     faux.setResponses(
       Array.from({ length: 30 }, () => async (request) => {
         const system = getCurrentSystemPrompt(request.messages);
-        const last = request.messages.findLast(
-          (message) => message.role !== "system",
-        );
         if (system.includes("You are Kaeno WORK")) {
           return fauxAssistantMessage(
             [
               fauxToolCall("message_parent", {
                 text: "Waiting for a decision.",
-              }),
-            ],
-            { stopReason: "toolUse" },
-          );
-        }
-        if (
-          last?.role === "user" &&
-          JSON.stringify(last.content).includes("launch-work")
-        ) {
-          return fauxAssistantMessage(
-            [
-              fauxToolCall("start_work", {
-                agent: "worker",
-                title: "Pending",
-                brief: "Ask for input",
               }),
             ],
             { stopReason: "toolUse" },
@@ -203,7 +186,11 @@ it.each(["test:docker", "test:microsandbox", undefined])(
       return openKaeno({
         storage: await openNodeSqliteStorage(databaseFile),
         models,
-        assistant: { model, instructions: "CHAT", tools: ["start_work"] },
+        assistant: {
+          model,
+          instructions: "ROUTER",
+          tools: [...ROUTER_ASSISTANT_TOOLS],
+        },
         work: {
           agents: [
             {
@@ -224,14 +211,11 @@ it.each(["test:docker", "test:microsandbox", undefined])(
     }
     const core = await open(identity);
     try {
-      const conversationId =
-        await core.threads.getOrCreateConversation("pending");
-      const turn = await core.harness.commit(
-        (tx) =>
-          core.turns.admitUserTurn(tx, conversationId, "launch-work", "launch"),
-        context,
-      );
-      await core.harness.waitForTask(turn, context);
+      await startTicket(core, {
+        agent: "worker",
+        title: "Pending",
+        content: "Ask for input",
+      });
       await vi.waitFor(async () => {
         const tasks = (await core.harness.inspect(context)).tasks;
         expect(

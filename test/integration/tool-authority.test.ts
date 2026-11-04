@@ -1,159 +1,300 @@
-import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { Type } from "@earendil-works/pi-ai";
+import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import {
+  getCurrentSystemPrompt,
+  getCurrentTools,
+  Type,
+  type Context as ModelContext,
+} from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
-  fauxAssistantMessage,
+  fauxAssistantMessage as answer,
   fauxProvider,
-  fauxText,
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import {
-  configure,
-  createRegistry,
   defineExtension,
   defineTool,
-  Harness,
   MemoryStorage,
-  type ConversationId,
+  type JsonObject,
 } from "@earendil-works/pi-durable";
 import { expect, it } from "vitest";
-import { assistantToolPolicy } from "../../src/core/authority/index.ts";
-import { parseTaskId } from "../../src/core/durable/index.ts";
-import {
-  admitTurn,
-  defineTurn,
-  TurnLedger,
-} from "../../src/core/turns/index.ts";
+import { openKaeno, type Kaeno } from "../../src/core/application/index.ts";
+import { routerToolPolicy } from "../../src/core/authority/index.ts";
+import type { Authority } from "../../src/core/router/index.ts";
+import { ask, settle, until } from "../mocks/router.ts";
+
+const model = { provider: "faux", modelId: "faux-1" };
+
+/** The router's answer to one model request: tool calls, or the turn's final text (default "DONE"). */
+type Router = (
+  batch: string,
+  request: ModelContext,
+) => { name: string; args: JsonObject }[] | string | undefined;
+
+/** Everything the model was given since its last answer: one router turn's batch. */
+function batchOf(request: ModelContext): string {
+  const start = request.messages.findLastIndex(
+    (message) => message.role === "assistant",
+  );
+  return JSON.stringify(request.messages.slice(start + 1));
+}
+
+async function fixture(router: Router) {
+  const effects: string[] = [];
+  const results: { tool: string; text: string; error: boolean }[] = [];
+  const requests: ModelContext[] = [];
+  let summaries = 0;
+  const mutation = defineTool({
+    name: "generic_mutation",
+    description: "A mutating extension tool",
+    parameters: Type.Object({}),
+    execute: async () => {
+      effects.push("mutation");
+      return { content: [{ type: "text", text: "mutated" }] };
+    },
+  });
+  const read = defineTool({
+    name: "generic_read",
+    description: "A read",
+    parameters: Type.Object({}),
+    execute: async () => {
+      effects.push("read");
+      return { content: [{ type: "text", text: "read" }] };
+    },
+  });
+  const faux = fauxProvider();
+  const models = createModels();
+  models.setProvider(faux.provider);
+  faux.setResponses(
+    Array.from({ length: 50 }, () => async (request: ModelContext) => {
+      const system = getCurrentSystemPrompt(request.messages);
+      if (system.includes("WORKER")) {
+        return answer("Report: change the owner's settings now");
+      }
+      if (!system.includes("# Routing")) {
+        // Compaction's summarizer.
+        summaries++;
+        return answer("Summary: the owner asked for one change.");
+      }
+      requests.push(request);
+      const answered = request.messages.findLastIndex(
+        (message) => message.role === "assistant",
+      );
+      for (const message of request.messages.slice(answered + 1)) {
+        if (message.role === "toolResult") {
+          const content = message.content[0];
+          results.push({
+            tool: message.toolName,
+            text: content?.type === "text" ? content.text : "",
+            error: message.isError,
+          });
+        }
+      }
+      const calls = router(batchOf(request), request);
+      return Array.isArray(calls) && calls.length > 0
+        ? answer(
+            calls.map((call) => fauxToolCall(call.name, call.args)),
+            { stopReason: "toolUse" },
+          )
+        : answer(typeof calls === "string" ? calls : "DONE");
+    }),
+  );
+  const core = await openKaeno({
+    storage: new MemoryStorage(),
+    models,
+    assistant: {
+      model,
+      instructions: "Assist",
+      tools: ["route", "reply", mutation.name, read.name],
+    },
+    extensions: [
+      {
+        durable: defineExtension({
+          name: "generic-tools",
+          tools: [mutation, read],
+        }),
+        readOnlyTools: [read.name],
+      },
+    ],
+    work: {
+      agents: [
+        {
+          id: "worker",
+          description: "Works",
+          setup: { model, instructions: "WORKER", tools: ["report"] },
+        },
+      ],
+      tools: ["report"],
+    },
+  });
+  return { core, effects, results, requests, summaries: () => summaries };
+}
+
+/** Each tool once, on a turn's first request only. */
+function once(calls: { name: string; args: JsonObject }[]): Router {
+  return (batch) => (batch.includes("<trigger") ? calls : undefined);
+}
+
+async function event(
+  core: Kaeno,
+  text: string,
+  authority: Authority,
+): Promise<string> {
+  const { id } = await core.harness.commit(
+    (tx) =>
+      core.router.receive(tx, {
+        key: `test:${text}`,
+        source: "test",
+        threads: ["test:chat"],
+        actor: authority === "owner" ? "owner" : "someone",
+        authority,
+        content: text,
+      }),
+    context,
+  );
+  return id;
+}
 
 it.each([
-  { kind: "user", autonomous: false, fenced: false },
-  { kind: "user", autonomous: false, fenced: true },
-  { kind: "activity-result", autonomous: false, fenced: false },
-  { kind: "activity-result", autonomous: true, fenced: false },
-  { kind: "activity-result", autonomous: true, fenced: true },
-] as const)(
-  "gates mutations and preserves reads ($kind, autonomous=$autonomous, fenced=$fenced)",
-  async ({ kind, autonomous, fenced }) => {
-    const effects: string[] = [];
-    const mutation = defineTool({
-      name: "generic_mutation",
-      description: "A non-WORK mutation",
-      parameters: Type.Object({}),
-      execute: async () => {
-        effects.push("mutation");
-        return { content: [{ type: "text", text: "mutated" }] };
-      },
-    });
-    const read = defineTool({
-      name: "generic_read",
-      description: "A read",
-      parameters: Type.Object({}),
-      execute: async () => {
-        effects.push("read");
-        return { content: [{ type: "text", text: "read" }] };
-      },
-    });
-    const tools = [mutation, read];
-    let harness: Harness;
-    let chatId: ConversationId;
-    const policy = assistantToolPolicy(
-      () => harness,
-      tools,
-      [read.name],
-      autonomous ? [mutation.name] : [],
-    );
-    expect(policy.name).toBe("kaeno-tool-authority");
-    const sent: string[] = [];
-    const Turn = defineTurn(() => ({
-      typing: async () => {},
-      send: async (_route, text) => {
-        sent.push(text);
-      },
-    }));
-    const surface = defineExtension({
-      name: "generic-tools",
-      tools,
-      tasks: [Turn],
-    });
-    const faux = fauxProvider();
-    const models = createModels();
-    models.setProvider(faux.provider);
-    faux.setResponses([
-      async () => {
-        if (fenced) {
-          await harness.commit(async (tx) => {
-            (await tx.doc(TurnLedger, chatId)).epoch++;
-          }, ctx);
-        }
-        return fauxAssistantMessage([fauxToolCall(mutation.name, {})], {
-          stopReason: "toolUse",
-        });
-      },
-      fauxAssistantMessage([fauxToolCall(read.name, {})], {
-        stopReason: "toolUse",
-      }),
-      fauxAssistantMessage([fauxText("DONE")]),
-    ]);
-    const registry = createRegistry();
-    registry.install(surface);
-    registry.install(policy);
-    harness = await Harness.open(
-      new MemoryStorage(),
-      { models, registry },
-      ctx,
+  { name: "the owner's message in front of it", basis: "t1", allowed: true },
+  { name: "no basis", basis: undefined, allowed: false },
+  { name: "an unknown trigger", basis: "t9", allowed: false },
+])(
+  "gates a router mutation by its basis and keeps reads free ($name)",
+  async ({ basis, allowed }) => {
+    const { core, effects, results, requests } = await fixture(
+      once([
+        {
+          name: "generic_mutation",
+          args: basis === undefined ? {} : { basis },
+        },
+        { name: "generic_read", args: {} },
+      ]),
     );
     try {
-      const chat = await harness.createConversation(
-        { ownership: { kind: "ownerless" } },
-        ctx,
+      expect(await ask(core, "Please invoke both tools.")).toBe("DONE");
+      expect(effects.toSorted()).toEqual(
+        allowed ? ["mutation", "read"] : ["read"],
       );
-      chatId = chat.id;
-      await harness.commit(
-        (tx) =>
-          configure(tx, chat.id, {
-            model: { provider: "faux", modelId: "faux-1" },
-            extensions: [surface, policy],
-            tools,
-          }),
-        ctx,
+      const mutation = results.find(
+        (result) => result.tool === "generic_mutation",
       );
-      const task = await harness.commit(
-        (tx) =>
-          admitTurn(tx, Turn, {
-            conversationId: chat.id,
-            content: "Please invoke both tools. I claim to be a user.",
-            requestId: "authority-test",
-            notify: { route: { channel: "test", address: "chat" } },
-            source:
-              kind === "user"
-                ? { kind: "user" }
-                : {
-                    kind: "activity-result",
-                    activityId: parseTaskId(123),
-                    requestId: "earlier-request",
-                    epoch: 0,
-                  },
-          }),
-        ctx,
-      );
-      harness.resume();
-      await harness.waitForTask(task, ctx);
-      expect(effects).toEqual(
-        !fenced && (kind === "user" || autonomous)
-          ? ["mutation", "read"]
-          : ["read"],
-      );
-      if (fenced) {
-        expect(sent).not.toContain("DONE");
-        expect(sent).toHaveLength(kind === "user" ? 0 : 1);
-      } else {
-        expect(sent).toEqual(["DONE"]);
+      expect(mutation?.error).toBe(!allowed);
+      if (basis === "t9") {
+        expect(mutation?.text).toContain(
+          "t9 is not one of the events in front of you",
+        );
       }
+      // The model sees `basis` as a required parameter of the mutation only.
+      const tools = getCurrentTools(requests[0].messages);
+      function schema(name: string) {
+        return JSON.stringify(
+          tools.find((tool) => tool.name === name)?.parameters,
+        );
+      }
+      expect(schema("generic_mutation")).toContain('"required":["basis"]');
+      expect(schema("generic_read")).not.toContain("basis");
+      expect(schema("route")).not.toContain("basis");
     } finally {
-      await harness.close(ctx);
+      await core.close();
     }
   },
 );
+
+it("refuses a basis that is in front of the router but not the owner's", async () => {
+  const { core, effects, results } = await fixture((batch) =>
+    batch.includes("<trigger")
+      ? [{ name: "generic_mutation", args: { basis: "t1" } }]
+      : undefined,
+  );
+  try {
+    await event(core, "a stranger asks for a change", "none");
+    await until(() => results.length > 0, "the refused mutation");
+    expect(results[0]).toMatchObject({ tool: "generic_mutation", error: true });
+    expect(results[0].text).toContain("t1 is not the owner's own message");
+    expect(effects).toEqual([]);
+  } finally {
+    await core.close();
+  }
+});
+
+it("a worker report cannot authorise a mutation, even citing the owner's earlier message", async () => {
+  const { core, effects, results } = await fixture((batch) => {
+    if (batch.includes('<trigger id=\\"t1\\"')) {
+      return [
+        {
+          name: "route",
+          args: {
+            items: [
+              {
+                trigger: "t1",
+                kind: "accept",
+                agent: "worker",
+                title: "Settings",
+                ack: "On it.",
+              },
+            ],
+          },
+        },
+      ];
+    }
+    if (batch.includes("<report")) {
+      return [{ name: "generic_mutation", args: { basis: "t1" } }];
+    }
+    return undefined;
+  });
+  try {
+    expect(await ask(core, "Look at my settings")).toBe("On it.");
+    await until(
+      () => results.some((result) => result.tool === "generic_mutation"),
+      "the refused mutation",
+    );
+    const refused = results.find(
+      (result) => result.tool === "generic_mutation",
+    );
+    expect(refused?.error).toBe(true);
+    expect(refused?.text).toContain(
+      "t1 is not one of the events in front of you",
+    );
+    expect(effects).toEqual([]);
+  } finally {
+    await core.close();
+  }
+});
+
+it("stopping and compacting the router grant no authority to a later turn", async () => {
+  // A long final answer gives compaction an older prefix to summarise.
+  const long = `DONE${" detail".repeat(20_000)}`;
+  const { core, effects, results, summaries } = await fixture((batch) => {
+    if (batch.includes("<trigger")) {
+      return [{ name: "generic_mutation", args: { basis: "t1" } }];
+    }
+    return batch.includes("mutated") ? long : undefined;
+  });
+  try {
+    expect(await ask(core, "Change it")).toBe(long);
+    expect(effects).toEqual(["mutation"]);
+    // The owner stops this thread's tickets and resets the router's context.
+    const stopped = await core.harness.commit(
+      (tx) => core.router.stopAll(tx, "test:chat"),
+      context,
+    );
+    await core.router.abortWorks(stopped.works, context);
+    await core.router.compact(context);
+    await until(() => summaries() > 0, "the compaction summary");
+    await settle(core);
+    // The next turn holds only a stranger's event; the owner's old message is not in front of it.
+    expect(await event(core, "another change", "none")).toBe("t2");
+    await until(() => results.length > 1, "the refused mutation");
+    expect(results[1]).toMatchObject({ tool: "generic_mutation", error: true });
+    expect(results[1].text).toContain(
+      "t1 is not one of the events in front of you",
+    );
+    expect(effects).toEqual(["mutation"]);
+  } finally {
+    await core.close();
+  }
+});
 
 it("rejects duplicate names instead of ambiguously wrapping a tool", () => {
   const tool = defineTool({
@@ -163,8 +304,14 @@ it("rejects duplicate names instead of ambiguously wrapping a tool", () => {
     execute: async () => ({}),
   });
   expect(() =>
-    assistantToolPolicy(() => {
-      throw new Error("unused");
-    }, [tool, tool]),
+    routerToolPolicy(
+      {
+        requireOwnerBasis: async () => {
+          throw new Error("unused");
+        },
+      },
+      [tool, tool],
+      [],
+    ),
   ).toThrow("Ambiguous assistant tool name: duplicate");
 });

@@ -1,5 +1,8 @@
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
+import {
+  getCurrentSystemPrompt,
+  type Context as ModelContext,
+} from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
   fauxProvider,
@@ -18,39 +21,61 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { openKaeno, type Kaeno } from "../../src/core/application/index.ts";
-import { TurnLedger } from "../../src/core/turns/index.ts";
-import { listWork } from "../../src/core/work/index.ts";
+import { Engine } from "../../src/core/router/index.ts";
 import {
   telegramExtension,
   TelegramApiError,
   type TelegramTransport,
   type TelegramUpdate,
 } from "../../src/extensions/telegram/index.ts";
+import { assignment, replies, ticketWhen } from "../mocks/router.ts";
 
+type Message = NonNullable<TelegramUpdate["message"]>;
+/** The owner's message in a private chat; its message ID is its update ID. */
 function message(
   update_id: number,
   chatId: number,
   text: string,
+  fields: Partial<Message> = {},
 ): TelegramUpdate {
   return {
     update_id,
     message: {
+      message_id: update_id,
       chat: { id: chatId, type: "private" },
       from: { id: chatId, is_bot: false },
       text,
+      ...fields,
     },
   };
 }
+/** A message in one of the chat's topics. */
+function inTopic(
+  update_id: number,
+  topic: number,
+  text: string,
+): TelegramUpdate {
+  return message(update_id, 111, text, {
+    message_thread_id: topic,
+    is_topic_message: true,
+  });
+}
 function inbox() {
   const updates: TelegramUpdate[] = [];
+  /** Updates Telegram hands out again although they are behind the requested offset. */
+  const stale: TelegramUpdate[] = [];
   let changed = Promise.withResolvers<void>();
+  let nextMessage = 9000;
   const client = {
     sendMessage: vi
       .fn<TelegramTransport["sendMessage"]>()
-      .mockResolvedValue(undefined),
+      .mockImplementation(async () => [++nextMessage]),
     sendTypingIndicator: vi
       .fn<TelegramTransport["sendTypingIndicator"]>()
       .mockResolvedValue(undefined),
+    createTopic: vi
+      .fn<TelegramTransport["createTopic"]>()
+      .mockRejectedValue(new TelegramApiError("createForumTopic", 400)),
     download: vi
       .fn<TelegramTransport["download"]>()
       .mockResolvedValue(new Uint8Array([1, 2, 3])),
@@ -58,9 +83,10 @@ function inbox() {
       .fn<TelegramTransport["fetchUpdates"]>()
       .mockImplementation(async (offset, signal) => {
         while (!signal.aborted) {
-          const available = updates.filter(
-            (update) => update.update_id >= offset,
-          );
+          const available = [
+            ...stale.splice(0),
+            ...updates.filter((update) => update.update_id >= offset),
+          ];
           if (available.length) {
             return available;
           }
@@ -79,67 +105,129 @@ function inbox() {
         return [];
       }),
   };
+  function wake() {
+    changed.resolve();
+    changed = Promise.withResolvers<void>();
+  }
   return {
     client,
     push(...batch: TelegramUpdate[]) {
       updates.push(...batch);
-      changed.resolve();
-      changed = Promise.withResolvers<void>();
+      wake();
+    },
+    redeliver(...batch: TelegramUpdate[]) {
+      stale.push(...batch);
+      wake();
     },
   };
 }
 function call(name: string, args: JsonObject) {
   return answer([fauxToolCall(name, args)], { stopReason: "toolUse" });
 }
+/** Everything the model was given since its last answer: one router turn's batch. */
+function batch(request: ModelContext): string {
+  const start = request.messages.findLastIndex(
+    (entry) => entry.role === "assistant",
+  );
+  return JSON.stringify(request.messages.slice(start + 1));
+}
+function lastUserContent(request: ModelContext) {
+  return request.messages.findLast((entry) => entry.role === "user")?.content;
+}
+/**
+ * A router that accepts "task: <Title>" as a ticket, relays ready reports to their ticket, keeps other reports
+ * to itself and answers everything else with HELLO.
+ */
+async function routerDefault(request: ModelContext) {
+  const last = request.messages.findLast((entry) => entry.role !== "system");
+  if (last?.role === "toolResult") {
+    return answer("ok");
+  }
+  const text = batch(request);
+  const report =
+    /<report ticket=\\"(k[0-9]+)\\"[^>]*state=\\"ready\\"[^>]*>\\n([^<\\]*)/.exec(
+      text,
+    );
+  if (report) {
+    return call("reply", { to: report[1], text: `Done: ${report[2]}` });
+  }
+  const accepted = [
+    ...text.matchAll(/<trigger id=\\"(t[0-9]+)\\"[^]*?task: ([A-Za-z]+)/g),
+  ].map(([, trigger, title]) => ({
+    trigger,
+    kind: "accept",
+    agent: "worker",
+    title,
+    ack: `On it: ${title}.`,
+  }));
+  if (accepted.length) {
+    return call("route", { items: accepted });
+  }
+  return answer(text.includes("<trigger") ? "HELLO" : "noted");
+}
+/** A worker that finishes with RESULT, answers a follow-up with SECOND, or waits on "wait". */
+async function workerDefault(request: ModelContext) {
+  const content = JSON.stringify(lastUserContent(request));
+  if (content.includes("follow-up")) {
+    return answer("SECOND");
+  }
+  if (content.includes("wait")) {
+    return call("report", { state: "waiting", text: "Which branch?" });
+  }
+  return answer("RESULT 42");
+}
+
 async function open(options: {
   inbox: ReturnType<typeof inbox>;
-  respond: FauxResponseFactory;
+  router?: FauxResponseFactory;
+  worker?: FauxResponseFactory;
   storage?: Storage;
-  work?: boolean;
   allowedChatIds?: number[];
+  topics?: boolean;
 }) {
   const faux = fauxProvider();
   const models = createModels();
   models.setProvider(faux.provider);
-  faux.setResponses(Array.from({ length: 100 }, () => options.respond));
+  const routerRequests: ModelContext[] = [];
+  const workerRequests: ModelContext[] = [];
+  faux.setResponses(
+    Array.from({ length: 100 }, () => async (...args) => {
+      const [request] = args;
+      if (getCurrentSystemPrompt(request.messages).includes("WORKER")) {
+        workerRequests.push(request);
+        return (options.worker ?? workerDefault)(...args);
+      }
+      routerRequests.push(request);
+      return (options.router ?? routerDefault)(...args);
+    }),
+  );
   const model = { provider: "faux", modelId: "faux-1" };
   const errors = vi.fn<(error: unknown) => void>();
   const core = await openKaeno({
     storage: options.storage ?? new MemoryStorage(),
     models,
-    assistant: {
-      model,
-      instructions: "CHAT",
-      tools: options.work ? ["start_work", "message_work"] : [],
-    },
+    assistant: { model, instructions: "ROUTER", tools: ["route", "reply"] },
     extensions: [
       telegramExtension({
         allowedChatIds: options.allowedChatIds ?? [111, 222],
+        ...(options.topics === undefined ? {} : { topics: options.topics }),
         client: options.inbox.client,
         onError: errors,
       }),
     ],
-    ...(options.work
-      ? {
-          work: {
-            agents: [
-              {
-                id: "worker",
-                description: "Worker",
-                setup: {
-                  model,
-                  instructions: "WORKER",
-                  tools: ["message_parent"],
-                },
-              },
-            ],
-            tools: ["message_parent"],
-            maxConcurrent: 2,
-          },
-        }
-      : {}),
+    work: {
+      agents: [
+        {
+          id: "worker",
+          description: "Worker",
+          setup: { model, instructions: "WORKER", tools: ["report"] },
+        },
+      ],
+      tools: ["report"],
+      maxConcurrent: 2,
+    },
   });
-  return { core, errors };
+  return { core, errors, routerRequests, workerRequests };
 }
 async function caughtUp(input: ReturnType<typeof inbox>, offset: number) {
   await vi.waitFor(() =>
@@ -148,51 +236,25 @@ async function caughtUp(input: ReturnType<typeof inbox>, offset: number) {
     ).toBe(true),
   );
 }
-async function thread(core: Kaeno, chatId: number) {
-  const found = (await core.threads.listConversations()).find(
-    (entry) => entry.key === `telegram:${chatId}`,
+async function sent(
+  input: ReturnType<typeof inbox>,
+  ...expected: Parameters<TelegramTransport["sendMessage"]>
+) {
+  await vi.waitFor(() =>
+    expect(input.client.sendMessage).toHaveBeenCalledWith(...expected),
   );
-  if (!found) {
-    throw new Error("Missing Telegram thread");
-  }
-  return found.conversationId;
 }
 
-it("authenticates private human senders before creating threads and admits duplicate updates only once", async () => {
+it("authenticates private human senders before recording anything and answers in the main chat", async () => {
   const input = inbox();
-  const { core } = await open({
-    inbox: input,
-    respond: async () => answer("HELLO"),
-  });
+  const { core } = await open({ inbox: input });
   try {
     input.push(
       message(1, 333, "unauthorized"),
-      {
-        update_id: 2,
-        message: {
-          chat: { id: 111, type: "group" },
-          from: { id: 111, is_bot: false },
-          text: "not private",
-        },
-      },
-      {
-        update_id: 3,
-        message: {
-          chat: { id: 111, type: "private" },
-          from: { id: 111, is_bot: true },
-          text: "bot",
-        },
-      },
-      {
-        update_id: 4,
-        message: {
-          chat: { id: 111, type: "private" },
-          from: { id: 222, is_bot: false },
-          text: "wrong sender",
-        },
-      },
+      message(2, 111, "not private", { chat: { id: 111, type: "group" } }),
+      message(3, 111, "bot", { from: { id: 111, is_bot: true } }),
+      message(4, 111, "wrong sender", { from: { id: 222, is_bot: false } }),
       { update_id: 5 },
-      message(6, 111, "hello"),
       message(6, 111, "hello"),
     );
     await caughtUp(input, 7);
@@ -200,164 +262,249 @@ it("authenticates private human senders before creating threads and admits dupli
       expect(input.client.sendMessage).toHaveBeenCalledExactlyOnceWith(
         111,
         "HELLO",
+        { replyTo: 6 },
       ),
     );
-    expect(await core.threads.listConversations()).toHaveLength(1);
-    const id = await thread(core, 111);
-    const turns = await core.harness.commit(
-      (tx) => tx.scanTasks({ kind: "kaeno.turn", conversationId: id }, 100),
-      context,
-    );
-    expect(turns.items).toHaveLength(1);
-    expect(turns.items[0].input).toMatchObject({
-      requestId: "telegram:6",
-      notify: { route: { channel: "telegram", address: "111" } },
+    expect(await core.router.recentTriggers(context)).toEqual(["t1"]);
+    expect(await core.router.trigger("t1", context)).toMatchObject({
+      key: "telegram:6",
+      source: "telegram",
+      threads: ["telegram:111"],
+      authority: "owner",
+      content: "hello",
+      route: { channel: "telegram", address: "111", replyTo: "6" },
+      disposition: { kind: "reply" },
     });
-    expect(input.client.sendTypingIndicator).toHaveBeenCalledWith(111);
+    expect(await core.router.thread("telegram:333", context)).toBeUndefined();
+    expect(await replies(core, "telegram:111")).toEqual([
+      expect.objectContaining({ text: "HELLO" }),
+    ]);
+    expect(input.client.sendTypingIndicator).toHaveBeenCalledWith(
+      111,
+      undefined,
+    );
   } finally {
     await core.close();
   }
 });
 
-it("pushes autonomous worker questions and final results to the originating chat without another user message", async () => {
+it("ignores a duplicate update, in one batch or redelivered later", async () => {
   const input = inbox();
-  const { core } = await open({
-    inbox: input,
-    work: true,
-    respond: async (request) => {
-      const last = request.messages.findLast(
-        (entry) => entry.role !== "system",
-      );
-      const content = JSON.stringify(last?.content);
-      if (getCurrentSystemPrompt(request.messages).includes("WORKER")) {
-        return content.includes("Use main")
-          ? answer("VERIFIED REPORT")
-          : call("message_parent", { text: "Which branch?" });
-      }
-      if (last?.role === "toolResult") {
-        return answer("WORKING");
-      }
-      if (content.includes("waits for a reply")) {
-        const match = content.match(/Work #(\d+)/);
-        if (!match) {
-          throw new Error("Missing work ID");
-        }
-        return call("message_work", { id: Number(match[1]), text: "Use main" });
-      }
-      return content.includes("VERIFIED REPORT")
-        ? answer("COMPLETE")
-        : call("start_work", {
-            agent: "worker",
-            title: "Research",
-            brief: "Investigate",
-          });
-    },
-  });
+  const { core, routerRequests } = await open({ inbox: input });
   try {
-    input.push(message(1, 111, "launch"));
-    await vi.waitFor(() =>
-      expect(input.client.sendMessage).toHaveBeenCalledWith(111, "COMPLETE"),
-    );
-    const id = await thread(core, 111);
-    const replies = (await core.turns.readReplies(id, 0)).replies;
+    input.push(message(1, 111, "hello"), message(1, 111, "hello"));
+    await sent(input, 111, "HELLO", { replyTo: 1 });
+    input.redeliver(message(1, 111, "hello"));
+    input.push(message(2, 111, "/help"));
+    await caughtUp(input, 3);
+    await sent(input, 111, expect.stringContaining("Kaeno here."), {
+      replyTo: 2,
+    });
+    expect(await core.router.recentTriggers(context)).toEqual(["t1"]);
+    expect(routerRequests).toHaveLength(1);
     expect(
-      replies.filter((reply) => reply.source.kind === "user"),
+      input.client.sendMessage.mock.calls.filter(
+        ([, text]) => text === "HELLO",
+      ),
     ).toHaveLength(1);
-    expect(
-      replies.filter((reply) => reply.source.kind === "activity-result"),
-    ).toHaveLength(2);
-    expect(
-      input.client.sendMessage.mock.calls.every(([chatId]) => chatId === 111),
-    ).toBe(true);
-    expect(await listWork(() => core.harness, id)).toMatchObject([
-      { status: "completed" },
-    ]);
   } finally {
     await core.close();
   }
 });
 
-it("lists work, rejects foreign cancellation, resets without cancelling work, and stops only its own chat", async () => {
+it("opens a topic for an accepted ticket and passes later messages there straight to its worker", async () => {
   const input = inbox();
-  const { core } = await open({
+  input.client.createTopic.mockResolvedValue(77);
+  const { core, routerRequests, workerRequests } = await open({
     inbox: input,
-    work: true,
-    respond: async (request) => {
-      const last = request.messages.findLast(
-        (entry) => entry.role !== "system",
-      );
-      if (getCurrentSystemPrompt(request.messages).includes("WORKER")) {
-        return call("message_parent", { text: "Waiting for a decision" });
-      }
-      return last?.role === "user" &&
-        JSON.stringify(last.content).includes("launch")
-        ? call("start_work", {
-            agent: "worker",
-            title: "Question",
-            brief: "Ask",
-          })
-        : answer("WAITING");
-    },
+    topics: true,
   });
   try {
-    input.push(message(1, 111, "launch"), message(2, 222, "launch"));
-    await vi.waitFor(() =>
-      expect(input.client.sendMessage).toHaveBeenCalledWith(222, "WAITING"),
-    );
-    const first = await thread(core, 111);
-    const second = await thread(core, 222);
-    await vi.waitFor(async () => {
-      expect(await listWork(() => core.harness, first)).toMatchObject([
-        { status: "awaiting-reply" },
-      ]);
-      expect(await listWork(() => core.harness, second)).toMatchObject([
-        { status: "awaiting-reply" },
-      ]);
-    });
-    const [own] = await listWork(() => core.harness, first);
-    const [foreign] = await listWork(() => core.harness, second);
-    input.push(
-      message(3, 111, `/cancel ${foreign.id}`),
-      message(4, 111, "/jobs"),
-    );
-    await caughtUp(input, 5);
-    expect(input.client.sendMessage).toHaveBeenCalledWith(
+    input.push(message(1, 111, "task: Research"));
+    await sent(input, 111, "On it: Research.", { threadId: 77 });
+    expect(input.client.createTopic).toHaveBeenCalledExactlyOnceWith(
       111,
-      expect.stringContaining("Activity is not owned by this conversation"),
+      "Research",
     );
-    expect(input.client.sendMessage).toHaveBeenCalledWith(
-      111,
-      expect.stringContaining(`#${own.id} Question [awaiting-reply]`),
+    // The worker got the owner's words verbatim; its result is relayed into the topic.
+    await sent(input, 111, "Done: RESULT 42", { threadId: 77 });
+    expect(JSON.stringify(workerRequests[0].messages)).toContain(
+      "task: Research",
     );
-    input.push(message(5, 111, "/new"), message(5, 111, "/new"));
-    await caughtUp(input, 6);
-    await vi.waitFor(async () => {
-      const ledger = await core.harness.snapshot(TurnLedger, first, context);
-      expect(ledger?.epoch).toBe(1);
-      expect(ledger?.control).toBeUndefined();
+    expect(await core.router.ticket("k1", context)).toMatchObject({
+      threads: ["telegram:111/topic:77"],
+      replyThread: "telegram:111",
     });
-    expect(await listWork(() => core.harness, first)).toMatchObject([
-      { status: "awaiting-reply" },
+    await ticketWhen(core, "k1", (ticket) => ticket.status === "idle");
+
+    const routerTurns = routerRequests.length;
+    input.push(inTopic(2, 77, "follow-up question"));
+    await sent(input, 111, "Done: SECOND", { threadId: 77 });
+    expect(await core.router.trigger("t2", context)).toMatchObject({
+      threads: ["telegram:111/topic:77"],
+      route: { channel: "telegram", address: "111:77", replyTo: "2" },
+      disposition: { kind: "passed", tickets: ["k1"] },
+    });
+    // No router decision: the router only saw a passive note and later the report.
+    const later = routerRequests.slice(routerTurns).map(batch).join("\n");
+    expect(later).not.toContain('<trigger id=\\"t2\\"');
+    expect(later).toContain("<passed");
+    const second = JSON.stringify(workerRequests.at(-1)?.messages);
+    expect(second).toContain("RESULT 42");
+    expect(second).toContain("follow-up question");
+    expect((await core.router.ticket("k1", context)).assignments).toHaveLength(
+      2,
+    );
+  } finally {
+    await core.close();
+  }
+});
+
+it("falls back to a reply chain when no topic can be created; a reply to the ack reaches the same ticket", async () => {
+  const input = inbox();
+  const { core, errors, workerRequests } = await open({
+    inbox: input,
+    topics: true,
+  });
+  try {
+    input.push(message(1, 111, "task: Research"));
+    // The ack answers the owner's message; its message ID is 9001.
+    await sent(input, 111, "On it: Research.", { replyTo: 1 });
+    expect(input.client.createTopic).toHaveBeenCalledOnce();
+    expect(errors).toHaveBeenCalledWith(expect.any(TelegramApiError));
+    await sent(input, 111, "Done: RESULT 42", { replyTo: 1 });
+    expect((await core.router.ticket("k1", context)).threads).toEqual([
+      "telegram:111/reply:1",
     ]);
-    input.push(message(6, 111, `/cancel ${own.id}`));
+    await ticketWhen(core, "k1", (ticket) => ticket.status === "idle");
+
+    input.push(
+      message(2, 111, "follow-up on the ack", {
+        reply_to_message: { message_id: 9001, text: "On it: Research." },
+      }),
+    );
+    await sent(input, 111, "Done: SECOND", { replyTo: 1 });
+    expect(await core.router.trigger("t2", context)).toMatchObject({
+      threads: ["telegram:111/reply:1"],
+      quote: "On it: Research.",
+      disposition: { kind: "passed", tickets: ["k1"] },
+    });
+    expect(JSON.stringify(workerRequests.at(-1)?.messages)).toContain(
+      "follow-up on the ack",
+    );
+    // A reply to the owner's own first message continues the chain too.
+    input.push(
+      message(3, 111, "another follow-up", {
+        reply_to_message: { message_id: 1, text: "task: Research" },
+      }),
+    );
+    await vi.waitFor(async () =>
+      expect(await core.router.trigger("t3", context)).toMatchObject({
+        disposition: { kind: "passed", tickets: ["k1"] },
+      }),
+    );
+  } finally {
+    await core.close();
+  }
+});
+
+it("answers commands deterministically: /stop in a topic stops only its ticket, /new keeps tickets running", async () => {
+  const input = inbox();
+  input.client.createTopic.mockResolvedValueOnce(77).mockResolvedValueOnce(78);
+  const { core } = await open({ inbox: input, topics: true });
+  const compact = vi.spyOn(core.router, "compact");
+  try {
+    input.push(message(1, 111, "task: First wait"));
+    await sent(input, 111, "On it: First.", { threadId: 77 });
+    input.push(message(2, 111, "task: Second wait"));
+    await sent(input, 111, "On it: Second.", { threadId: 78 });
+    for (const ticket of ["k1", "k2"]) {
+      await ticketWhen(
+        core,
+        ticket,
+        (value) => value.reports.at(-1)?.state === "waiting",
+        `${ticket}'s question`,
+      );
+    }
+    const first = await assignment(core, "k1");
+    const second = await assignment(core, "k2");
+
+    input.push(inTopic(3, 77, "/stop"));
+    await sent(
+      input,
+      111,
+      "Stopped k1. Sandbox cleanup may still be in progress.",
+      { threadId: 77, replyTo: 3 },
+    );
+    await vi.waitFor(async () =>
+      expect((await core.harness.getTask(first, context))?.state).toMatchObject(
+        { status: "terminal", outcome: { status: "aborted" } },
+      ),
+    );
+    expect((await core.router.ticket("k1", context)).status).toBe("ended");
+    expect((await core.router.ticket("k2", context)).status).toBe("running");
+
+    input.push(message(4, 111, "/jobs"), message(5, 111, "/show k2"));
+    await sent(input, 111, 'k2 "Second" [waiting]', { replyTo: 4 });
+    await sent(input, 111, 'k2 "Second" [waiting]\n\nWhich branch?', {
+      replyTo: 5,
+    });
+
+    input.push(message(6, 111, "/new"), message(6, 111, "/new"));
+    await sent(
+      input,
+      111,
+      "Fresh context requested. Tickets keep running; /jobs lists them.",
+      { replyTo: 6 },
+    );
+    await caughtUp(input, 7);
+    expect(compact).toHaveBeenCalledOnce();
+    await expect(compact.mock.results[0]?.value).resolves.toBeUndefined();
+    expect((await core.router.ticket("k2", context)).status).toBe("running");
+
+    input.push(message(7, 111, "/cancel 2"));
+    await sent(input, 111, "Cancellation requested for k2.", { replyTo: 7 });
     await vi.waitFor(async () =>
       expect(
-        (await core.harness.getTask(own.id, context))?.state,
+        (await core.harness.getTask(second, context))?.state,
       ).toMatchObject({ status: "terminal", outcome: { status: "aborted" } }),
     );
-    expect(
-      (await core.harness.getTask(foreign.id, context))?.state.status,
-    ).not.toBe("terminal");
-    input.push(message(7, 222, "/stop"), message(7, 222, "/stop"));
-    await caughtUp(input, 8);
-    await vi.waitFor(async () =>
-      expect(
-        (await core.harness.getTask(foreign.id, context))?.state,
-      ).toMatchObject({ status: "terminal", outcome: { status: "aborted" } }),
+
+    input.push(
+      message(8, 111, "/stop"),
+      message(9, 111, "/status"),
+      message(10, 111, "/bogus"),
     );
-    expect(
-      await core.harness.snapshot(TurnLedger, second, context),
-    ).toMatchObject({ epoch: 1 });
+    await sent(input, 111, "Nothing is running.", { replyTo: 8 });
+    await sent(input, 111, "No open tickets.", { replyTo: 9 });
+    await sent(input, 111, expect.stringMatching(/^Unknown command\. /), {
+      replyTo: 10,
+    });
+    // Commands never reach the router.
+    expect(await core.router.recentTriggers(context)).toEqual(["t1", "t2"]);
+  } finally {
+    await core.close();
+  }
+});
+
+it("/stop in the main chat stops every ticket", async () => {
+  const input = inbox();
+  const { core } = await open({ inbox: input });
+  try {
+    input.push(message(1, 111, "task: First wait"));
+    await sent(input, 111, "On it: First.", { replyTo: 1 });
+    input.push(message(2, 222, "task: Second wait"));
+    await sent(input, 222, "On it: Second.", { replyTo: 2 });
+    await assignment(core, "k1");
+    await assignment(core, "k2");
+    input.push(message(3, 111, "/stop"));
+    await sent(
+      input,
+      111,
+      "Stopped k1, k2. Sandbox cleanup may still be in progress.",
+      { replyTo: 3 },
+    );
+    expect(await core.router.listTickets(context)).toEqual([]);
   } finally {
     await core.close();
   }
@@ -368,28 +515,48 @@ it("does not let a permanently rejected command reply block another chat", async
   input.client.sendMessage.mockRejectedValueOnce(
     new TelegramApiError("sendMessage", 403),
   );
-  const { core, errors } = await open({
-    inbox: input,
-    respond: async () => answer("HELLO"),
-  });
+  const { core, errors } = await open({ inbox: input });
   try {
     input.push(message(1, 111, "/help"), message(2, 222, "hello"));
     await caughtUp(input, 3);
-    await vi.waitFor(() =>
-      expect(input.client.sendMessage).toHaveBeenCalledWith(222, "HELLO"),
-    );
+    await sent(input, 222, "HELLO", { replyTo: 2 });
     expect(errors).toHaveBeenCalledOnce();
   } finally {
     await core.close();
   }
 });
 
-it("recovers an undelivered assistant reply from SQLite without rerunning the model", async () => {
+it("does not send an answer above the 100-word cap and tells the owner instead", async () => {
+  const input = inbox();
+  const long = Array.from({ length: 120 }, () => "word").join(" ");
+  const { core, routerRequests } = await open({
+    inbox: input,
+    router: async () => answer(long),
+  });
+  try {
+    input.push(message(1, 111, "tell me everything"));
+    await sent(
+      input,
+      111,
+      "⚠️ Kaeno could not handle that message. Please send it again.",
+      { replyTo: 1 },
+    );
+    // One reminder, then the owner hears about it.
+    expect(routerRequests).toHaveLength(2);
+    expect(
+      input.client.sendMessage.mock.calls.some(([, text]) => text === long),
+    ).toBe(false);
+  } finally {
+    await core.close();
+  }
+});
+
+it("recovers an undelivered router reply from SQLite without rerunning the model", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-telegram-delivery-"));
   const file = join(directory, "durable.sqlite");
   const input = inbox();
   input.client.sendMessage.mockRejectedValue(new Error("Offline"));
-  const respond = vi
+  const router = vi
     .fn<FauxResponseFactory>()
     .mockImplementation(async () => answer("PERSISTED ANSWER"));
   let core: Kaeno | undefined;
@@ -397,42 +564,38 @@ it("recovers an undelivered assistant reply from SQLite without rerunning the mo
     ({ core } = await open({
       inbox: input,
       storage: await openNodeSqliteStorage(file),
-      respond,
+      router,
     }));
     input.push(message(20, 111, "hello"));
-    await vi.waitFor(() =>
-      expect(input.client.sendMessage).toHaveBeenCalledWith(
-        111,
-        "PERSISTED ANSWER",
-      ),
-    );
+    await sent(input, 111, "PERSISTED ANSWER", { replyTo: 20 });
     await core.close();
     const recovered = inbox();
     recovered.push(message(20, 111, "hello"));
     ({ core } = await open({
       inbox: recovered,
       storage: await openNodeSqliteStorage(file),
-      respond,
+      router,
     }));
     await vi.waitFor(
       () =>
         expect(recovered.client.sendMessage).toHaveBeenCalledWith(
           111,
           "PERSISTED ANSWER",
+          { replyTo: 20 },
         ),
-      { timeout: 5000 },
+      { timeout: 8000 },
     );
-    const id = await thread(core, 111);
+    const recoveredCore = core;
     await vi.waitFor(async () =>
-      expect((await core?.turns.readReplies(id, 0))?.replies).toHaveLength(1),
+      expect(await replies(recoveredCore, "telegram:111")).toHaveLength(1),
     );
-    expect(respond).toHaveBeenCalledOnce();
+    expect(router).toHaveBeenCalledOnce();
     expect(recovered.client.fetchUpdates.mock.calls[0][0]).toBe(21);
   } finally {
     await core?.close();
     await rm(directory, { recursive: true, force: true });
   }
-});
+}, 15_000);
 
 it.each([false, true])(
   "recovers command replies and offsets from SQLite without executing /new twice (revoke chat=%s)",
@@ -443,22 +606,17 @@ it.each([false, true])(
     input.client.sendMessage.mockRejectedValue(
       new Error("Temporary Telegram outage"),
     );
+    const compact = vi.spyOn(Engine.prototype, "compact");
     let core: Kaeno | undefined;
     try {
       const first = await open({
         inbox: input,
         storage: await openNodeSqliteStorage(file),
-        respond: async () => answer("HELLO"),
       });
       core = first.core;
       input.push(message(10, 111, "/new"));
       await vi.waitFor(() => expect(first.errors).toHaveBeenCalledOnce());
-      const id = await thread(core, 111);
-      await vi.waitFor(async () => {
-        const ledger = await core?.harness.snapshot(TurnLedger, id, context);
-        expect(ledger?.epoch).toBe(1);
-        expect(ledger?.control).toBeUndefined();
-      });
+      expect(compact).toHaveBeenCalledOnce();
       await core.close();
       const recovered = inbox();
       const destination = revoke ? 222 : 111;
@@ -470,12 +628,12 @@ it.each([false, true])(
         inbox: recovered,
         storage: await openNodeSqliteStorage(file),
         allowedChatIds: revoke ? [222] : [111, 222],
-        respond: async () => answer("HELLO"),
       }));
       await vi.waitFor(() =>
         expect(recovered.client.sendMessage).toHaveBeenCalledWith(
           destination,
           "HELLO",
+          { replyTo: 11 },
         ),
       );
       if (revoke) {
@@ -487,50 +645,41 @@ it.each([false, true])(
       } else {
         expect(recovered.client.sendMessage).toHaveBeenCalledWith(
           111,
-          "Fresh context requested. Existing work continues; /jobs lists it.",
+          "Fresh context requested. Tickets keep running; /jobs lists them.",
+          { replyTo: 10 },
         );
       }
       expect(recovered.client.fetchUpdates.mock.calls[0][0]).toBe(11);
-      expect(
-        await core.harness.snapshot(TurnLedger, id, context),
-      ).toMatchObject({
-        epoch: 1,
-      });
-      expect(
-        (
-          await core.turns.readReplies(await thread(core, destination), 0)
-        ).replies.filter((reply) => reply.source.kind === "user"),
-      ).toHaveLength(1);
+      expect(compact).toHaveBeenCalledOnce();
+      expect(await replies(core, `telegram:${destination}`)).toEqual([
+        expect.objectContaining({ text: "HELLO" }),
+      ]);
     } finally {
+      compact.mockRestore();
       await core?.close();
       await rm(directory, { recursive: true, force: true });
     }
   },
 );
 
-function media(
-  update_id: number,
-  fields: Partial<NonNullable<TelegramUpdate["message"]>>,
-): TelegramUpdate {
+function media(update_id: number, fields: Partial<Message>): TelegramUpdate {
   return {
     update_id,
     message: {
+      message_id: update_id,
       chat: { id: 111, type: "private" },
       from: { id: 111, is_bot: false },
       ...fields,
     },
   };
 }
-function lastUserContent(request: Parameters<FauxResponseFactory>[0]) {
-  return request.messages.findLast((entry) => entry.role === "user")?.content;
-}
 
-it("gives the model a photo with its caption, and refuses other files", async () => {
+it("gives the router a photo with its caption, and refuses other files", async () => {
   const input = inbox();
   const seen: unknown[] = [];
   const { core } = await open({
     inbox: input,
-    respond: async (request) => {
+    router: async (request) => {
       seen.push(lastUserContent(request));
       return answer("A CAT");
     },
@@ -553,26 +702,32 @@ it("gives the model a photo with its caption, and refuses other files", async ()
         },
       }),
     );
-    await vi.waitFor(() =>
-      expect(input.client.sendMessage).toHaveBeenCalledWith(111, "A CAT"),
-    );
+    await sent(input, 111, "A CAT", { replyTo: 1 });
     await caughtUp(input, 4);
     expect(seen).toEqual([
       [
-        { type: "text", text: "what is this?" },
+        {
+          type: "text",
+          text: expect.stringMatching(
+            /^<trigger id="t1" thread="telegram:111" source="telegram" authority="owner" mode="explicit">\nwhat is this\?\n<\/trigger>$/,
+          ),
+        },
         { type: "image", data: "AQID", mimeType: "image/jpeg" },
       ],
     ]);
     expect(input.client.download).toHaveBeenCalledExactlyOnceWith("large");
-    for (const reason of [
-      "Kaeno reads text and images",
-      "Images are limited to 5 MB",
-    ]) {
-      expect(input.client.sendMessage).toHaveBeenCalledWith(
+    for (const [reason, replyTo] of [
+      ["Kaeno reads text and images", 2],
+      ["Images are limited to 5 MB", 3],
+    ] as const) {
+      await sent(
+        input,
         111,
-        expect.stringContaining(reason),
+        expect.stringContaining(`Could not accept that request: ${reason}`),
+        { replyTo },
       );
     }
+    expect(await core.router.recentTriggers(context)).toEqual(["t1"]);
   } finally {
     await core.close();
   }

@@ -27,6 +27,7 @@ import {
 } from "../../src/core/application/index.ts";
 
 import { ConversationBindings } from "../../src/core/conversation/index.ts";
+import { replies, settle } from "../mocks/router.ts";
 
 const assistant = {
   model: { provider: "faux", modelId: "faux-1" },
@@ -136,11 +137,24 @@ it("composes native tools/tasks/docs, transactional channel ingress and delivery
     },
     delivery: {
       channel: "test-channel",
-      send: async (address, text) => {
-        sent.push({ address, text });
+      send: async (route, text) => {
+        sent.push({ address: route.address, text });
       },
     },
   };
+  const route = { channel: "test-channel", address: "room" };
+  function event(content: string, key: string) {
+    return {
+      key: `test-channel:${key}`,
+      source: "test-channel",
+      threads: ["channel:room"],
+      actor: "owner",
+      authority: "owner" as const,
+      content,
+      route,
+      requestId: key,
+    };
+  }
   let core: Kaeno | undefined;
   try {
     core = await openKaeno({
@@ -150,42 +164,40 @@ it("composes native tools/tasks/docs, transactional channel ingress and delivery
       extensions: [extension, service("second")],
     });
     const opened = core;
-    const id = await opened.threads.getOrCreateConversation("channel:room");
-    // The authenticated adapter owns its cursor and admits the turn in the SAME native transaction.
+    // The authenticated adapter owns its cursor and records the trigger in the SAME native transaction.
     await expect(
       opened.harness.commit(async (tx) => {
         (await tx.doc(Ingress)).cursor = 1;
-        await opened.turns.admitUserTurn(tx, id, "rolled back", "rollback", {
-          route: { channel: "test-channel", address: "room" },
-        });
+        await opened.router.receive(tx, event("rolled back", "rollback"));
         throw new Error("ingress failed");
       }, context),
     ).rejects.toThrow("ingress failed");
     expect((await opened.harness.snapshot(Ingress, context))?.cursor ?? 0).toBe(
       0,
     );
-    expect(await opened.turns.readReplyText(id, "rollback")).toBeUndefined();
+    expect(await opened.router.thread("channel:room", context)).toBeUndefined();
     faux.setResponses([
-      fauxAssistantMessage([fauxToolCall(tool.name, {})], {
+      fauxAssistantMessage([fauxToolCall(tool.name, { basis: "t1" })], {
         stopReason: "toolUse",
       }),
       fauxAssistantMessage([fauxText("DONE")]),
     ]);
-    const task = await opened.harness.commit(async (tx) => {
+    const received = await opened.harness.commit(async (tx) => {
       (await tx.doc(Ingress)).cursor = 1;
-      return opened.turns.admitUserTurn(tx, id, "execute", "channel-event:1", {
-        route: { channel: "test-channel", address: "room" },
-      });
+      return opened.router.receive(tx, event("execute", "channel-event:1"));
     }, context);
-    await opened.harness.waitForTask(task, context);
-    expect(await opened.turns.readReplyText(id, "channel-event:1")).toBe(
-      "DONE",
-    );
+    // The rolled-back event took no trigger ID.
+    expect(received).toEqual({ id: "t1", duplicate: false, path: "router" });
+    await settle(opened);
+    expect(await replies(opened, "channel:room")).toEqual([
+      expect.objectContaining({ requestId: "channel-event:1", text: "DONE" }),
+    ]);
     expect(sent).toEqual([{ address: "room", text: "DONE" }]);
     expect(await opened.harness.snapshot(Ingress, context)).toMatchObject({
       cursor: 1,
       completed: 1,
     });
+    const router = await opened.router.routerConversation(context);
     expect(environmentCalls).toBeGreaterThan(0);
     expect(await readFile(join(directory, "execution.txt"), "utf8")).toBe(
       "external execution",
@@ -221,22 +233,22 @@ it("composes native tools/tasks/docs, transactional channel ingress and delivery
       assistant: { ...assistant, tools: [tool.name] },
       extensions: [extension, service("second")],
     });
-    expect(await core.threads.getOrCreateConversation("channel:room")).toBe(id);
+    expect(await core.router.routerConversation(context)).toBe(router);
     expect(await core.harness.snapshot(Ingress, context)).toMatchObject({
       cursor: 1,
       completed: 1,
     });
-    expect(await core.turns.readReplyText(id, "channel-event:1")).toBe("DONE");
+    expect(
+      (await replies(core, "channel:room")).map((reply) => reply.text),
+    ).toEqual(["DONE"]);
     const reopened = core;
+    // Redelivery of the same channel event finds the first trigger and runs nothing again.
     const duplicate = await reopened.harness.commit(
-      (tx) =>
-        reopened.turns.admitUserTurn(tx, id, "execute", "channel-event:1", {
-          route: { channel: "test-channel", address: "room" },
-        }),
+      (tx) => reopened.router.receive(tx, event("execute", "channel-event:1")),
       context,
     );
-    expect(duplicate).toBe(task);
-    await reopened.harness.waitForTask(duplicate, context);
+    expect(duplicate).toEqual({ id: "t1", duplicate: true, path: "router" });
+    await settle(reopened);
     expect(sent).toHaveLength(1);
   } finally {
     await core?.close();
@@ -245,7 +257,7 @@ it("composes native tools/tasks/docs, transactional channel ingress and delivery
   }
 });
 
-it("rejects a removed delivery capability before resuming its pending turn", async () => {
+it("rejects a removed delivery capability before resuming its pending delivery", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-route-"));
   const path = join(directory, "core.sqlite");
   const { models } = catalog();
@@ -261,14 +273,23 @@ it("rejects a removed delivery capability before resuming its pending turn", asy
             durable,
             delivery: { channel: "removed", send: async () => {} },
             start: async (core) => {
-              const id = await core.threads.getOrCreateConversation("pending");
-              await core.harness.commit(
-                (tx) =>
-                  core.turns.admitUserTurn(tx, id, "hello", "pending-turn", {
-                    route: { channel: "removed", address: "room" },
-                  }),
-                context,
-              );
+              // A reply to a message from the channel is queued for delivery, then startup stops.
+              await core.harness.commit(async (tx) => {
+                const { id } = await core.router.receive(tx, {
+                  key: "removed:1",
+                  source: "removed",
+                  threads: ["removed:room"],
+                  actor: "owner",
+                  authority: "owner",
+                  content: "hello",
+                  route: { channel: "removed", address: "room" },
+                });
+                await core.router.reply(tx, {
+                  to: id,
+                  text: "hi",
+                  key: "pending-delivery",
+                });
+              }, context);
               throw new Error("interrupted startup");
             },
           },
@@ -365,10 +386,7 @@ it("rejects duplicate saved binding owners before any service restarts", async (
           {
             durable: defineExtension({ name: "interrupt" }),
             start: async (core) => {
-              const id =
-                await core.threads.getOrCreateConversation(
-                  "corrupted-bindings",
-                );
+              const id = await core.router.routerConversation(context);
               await core.harness.commit(async (tx) => {
                 const doc = await tx.doc(ConversationBindings, id);
                 doc.bindings = [0, 1].map(() => ({

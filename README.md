@@ -7,11 +7,11 @@
 > -> should explain the principles, and primitives used
 > how to get kaeno up and running?
 
-Kaeno is a small, self-hosted durable conversation and work host. Threads, turns, activity reports, cancellation fences and WORK orchestration use one pi-durable runtime. Agents are a core concept: WORK stores the agent each work runs as and the plan frozen at root admission, and resolves agent names. Where agents and skills come from is not: Markdown and repository definitions, catalogs and skills are extensions, and the durable core never reads their files.
+Kaeno is a small, self-hosted durable agent host. One long-lived **router** conversation receives every event from every channel and keeps the owner's work continuous; each task runs as a **ticket** in its own isolated worker conversation, and follow-ups in a ticket's thread go straight to its worker. Routing, tickets, deliveries and WORK orchestration use one pi-durable runtime; see [routing](docs/routing.md). Agents are a core concept: WORK stores the agent each work runs as and the plan frozen at root admission, and resolves agent names. Where agents and skills come from is not: Markdown and repository definitions, catalogs and skills are extensions, and the durable core never reads their files.
 
 The CLI loads one owner configuration using `KAENO_CONFIG` (default `.kaeno/config.json`). It names public GitHub repositories and explicitly selects Kaeno and the available workers. `workers` takes `source:name` IDs or `source:*`, which selects every agent of that source except the one Kaeno runs as (list it explicitly to make it a worker too); a wildcard fails rather than skip a source with invalid agent records. Every agent, Kaeno included, gets its skills from the `skills` field of its own profile. Repository fetching and the immutable cache are host-side. Local source definitions use the same catalog and loader; the only deployment difference is the persistent storage directory (ordinary disk locally, PVC on Kubernetes).
 
-By default, Kaeno and every spawned worker have `list_skills` and `read_skill`, even with no assigned skills. They discover assigned skill IDs and descriptions with `list_skills`, then load relevant instructions with `read_skill`. An empty list means none are available for automatic use.
+By default, the router and every worker have `list_skills` and `read_skill`, even with no assigned skills. They discover assigned skill IDs and descriptions with `list_skills`, then load relevant instructions with `read_skill`. An empty list means none are available for automatic use.
 
 ## Run
 
@@ -27,7 +27,7 @@ export KAENO_DATA_DIR="$PWD/.kaeno/data"
 npm start
 ```
 
-Kaeno has WORK orchestration tools by default, independently of its assigned skills or configured workers. With no workers configured, it can explain why it cannot delegate and still manage existing work. Explicit `tools` lists remain authoritative.
+Kaeno (the router) has the routing tools by default: `route`, `reply`, `recall`, `list_tickets`, `message_ticket` and `stop_ticket`, plus owner memory, routine proposals and skills. It has no execution tools: GitHub, Zotero, MCP, browser and coding tools belong to workers, and an assistant profile that lists one fails startup. With no workers configured, it answers but cannot accept tickets. Explicit `tools` lists remain authoritative.
 
 Edit `kaeno.config.example.json` to choose repositories, a Kaeno profile and worker profiles. The example pins a Myriad profile commit; update the pin intentionally when selecting a newer revision. Copy the configuration locally and use a persistent source cache. Each repository declaration explicitly selects a definition-reader `provider`: `github` for public repositories, or `github-app-<installationId>` for the host-only App reader configured by `KAENO_GITHUB_CONFIG`. Both are provided by the installed GitHub integration; public definitions require no App key or GitHub agent tools. Older shorthand/provider-less declarations need conversion and one source refresh before offline use; see [definition readers](docs/extensions.md#definition-readers).
 
@@ -37,7 +37,7 @@ Agent frontmatter `name` and `description` are required. Optional fields include
 
 A skill has `name` and `description` frontmatter, an optional supported `disable-model-invocation` flag, a Markdown instruction body, and optional relative assets. Skills provide knowledge only; they do not grant tools or credentials. Skill discovery and reading use each conversation's saved bindings, not a live global catalog. `list_skills` excludes skills marked `disable-model-invocation`; explicitly requesting an assigned skill with `read_skill` remains supported. Binary assets are retained and returned as base64. Scripts and asset bytes are not implicitly mounted or executed in the sandbox. When an explicit tool list omits `read_skill`, visible assigned skill instructions are rendered inline instead of granting a hidden tool.
 
-The CLI's HTTP adapter listens on `PORT` (default `8080`). It supports thread listing, replies, stop and reset. This adapter does not implement transport authentication: run it on a trusted network or behind authenticated ingress. Setting a token environment variable alone does not secure the listener. Disconnecting a client does not cancel an admitted turn.
+The CLI's HTTP adapter listens on `PORT` (default `8080`). `POST /v1/threads/:key/turn` sends an owner message on that thread, `GET /v1/threads/:key/replies` reads what Kaeno sent there (the direct reply carries the client's `requestId`), `POST …/stop` stops the thread's tickets and `POST …/reset` compacts the router's context. `GET /v1/tickets`, `GET /v1/tickets/:id` and `POST /v1/tickets/:id/stop` inspect and stop tickets. This adapter does not implement transport authentication: run it on a trusted network or behind authenticated ingress. Setting a token environment variable alone does not secure the listener. Disconnecting a client does not cancel an admitted turn.
 
 ## Model credentials
 
@@ -47,13 +47,13 @@ To provision a login from a read-only source such as a Kubernetes Secret, set `K
 
 ## Owner memory
 
-Kaeno keeps a durable memory of its owner, shared by every thread and kept across `reset`. **Preferences** (how you want things done) are always in its prompt in full. **Memories** (facts) appear there by title only, and Kaeno reads the ones it needs with `memory_read`. Only your own messages can change memory: work reports are untrusted and cannot. Workers never see memory; Kaeno puts the facts a task needs into its brief. Browse and edit it with `GET /v1/memory`, `GET`/`PUT`/`DELETE /v1/memory/:id`. See [personal continuity](docs/continuity.md) for the design and the proposed persistent workspace.
+Kaeno keeps a durable memory of its owner in the router, kept across compaction. **Preferences** (how you want things done) are always in its prompt in full. **Memories** (facts) appear there by title only, and Kaeno reads the ones it needs with `memory_read`. Only your own messages can change memory: every change cites the message asking for it, and work reports are untrusted and cannot. Workers never see memory; the router puts the facts a task needs into its note. Browse and edit it with `GET /v1/memory`, `GET`/`PUT`/`DELETE /v1/memory/:id`. See [personal continuity](docs/continuity.md) for the design and the proposed persistent workspace.
 
 ## Routines
 
-A routine is work that runs on its own schedule: each run starts the routine's worker agent with its instructions, and the report arrives in the routine's Kaeno thread like any other work report, on the channel you last used there.
+A routine is work that runs on its own schedule: each run is a ticket for the routine's worker agent with its instructions, started without a router decision because you approved the routine. Its report reaches the router, which relays it to the routine's thread.
 
-Ask Kaeno ("check my PRs every weekday at 8") and it **proposes** the routine as a change, for example `c17`. Nothing changes until you approve it: `/kaeno-approve c17` (or `/kaeno-reject c17`, `/kaeno-changes`) in Pi, or `POST /v1/routines/changes/c17/approve` / `reject`. Changing or deleting a routine works the same way. A proposal is applied exactly as proposed, and one made against an older version of a routine is refused. Kaeno can propose only while answering your own messages, never from a work or routine report, and it cannot start runs.
+Ask Kaeno ("check my PRs every weekday at 8") and it **proposes** the routine as a change, for example `c17`. Nothing changes until you approve it: `/kaeno-approve c17` (or `/kaeno-reject c17`, `/kaeno-changes`) in Pi, or `POST /v1/routines/changes/c17/approve` / `reject`. Changing or deleting a routine works the same way. A proposal is applied exactly as proposed, and one made against an older version of a routine is refused. Kaeno can propose only by citing your own message, never from a work or routine report, and it cannot start runs.
 
 You can also manage routines directly:
 
@@ -66,11 +66,13 @@ curl -X POST localhost:8080/v1/routines -d '{
 }'
 ```
 
-`schedule` is `{ "every": <minutes> }` or `{ "at": "HH:MM", "timeZone": "<IANA zone>", "days"?: [1-7] }` (1 = Monday). Optional: `thread` (default `routines`; Kaeno's proposals default to the thread you asked in), `timeoutMinutes` (default 60; a longer run is cancelled) and `enabled`. Runs never overlap, and after downtime only the latest missed run starts. `GET /v1/routines` lists them; `PUT` and `DELETE /v1/routines/:id` change or remove one; `POST /v1/routines/:id/run` starts a run now.
+`schedule` is `{ "every": <minutes> }` or `{ "at": "HH:MM", "timeZone": "<IANA zone>", "days"?: [1-7] }` (1 = Monday). Optional: `thread`, where reports go (default `routines`; Kaeno's proposals default to the thread you asked in), `timeoutMinutes` (default 60; a longer run is cancelled) and `enabled`. Runs never overlap, and after downtime only the latest missed run starts. Runs never overlap; a new run ends the previous run's ticket. `GET /v1/routines` lists them; `PUT` and `DELETE /v1/routines/:id` change or remove one; `POST /v1/routines/:id/run` starts a run now.
 
 ## Telegram
 
-Set `TELEGRAM_BOT_TOKEN` and point `KAENO_TELEGRAM_CONFIG` at a file with `{ "allowedChatIds": [<your chat ID>] }`. Each allowed private chat is one Kaeno thread. Send text, a photo (with an optional caption) or an image sent as a file (JPEG, PNG, GIF or WebP, up to 5 MB). Images go to Kaeno's model as they are, so its model must accept images.
+Set `TELEGRAM_BOT_TOKEN` and point `KAENO_TELEGRAM_CONFIG` at a file with `{ "allowedChatIds": [<your chat ID>] }`. Each allowed private chat is your main thread with Kaeno. Send text, a photo (with an optional caption) or an image sent as a file (JPEG, PNG, GIF or WebP, up to 5 MB). Images go to the router's and the worker's models as they are, so those models must accept images.
+
+Each task Kaeno takes on gets a thread of its own. With `"topics": true` (enable the bot's threaded mode in BotFather) that is a topic of the chat; otherwise, or when Telegram refuses to create one, it is a reply chain on your message. Messages in a ticket's topic, or replies to Kaeno's messages about it, go straight to its worker. Kaeno's messages there stay under 100 words. Commands: `/jobs` lists tickets, `/show k3` shows the latest report, `/cancel k3` stops one, `/stop` stops the ticket of the thread you are in (in the main chat: all of them), `/new` gives Kaeno a fresh context and leaves tickets running.
 
 ## Embed and extend
 
@@ -88,7 +90,7 @@ The optional [GitHub App extension](docs/github.md) gives all agents installatio
 
 `KAENO_DATA_DIR` (default `/data`) holds two SQLite files:
 
-- `durable.sqlite`: pi-durable storage only (conversations, tasks, documents). Its history is append-only.
+- `durable.sqlite`: pi-durable storage only (the router and ticket conversations, triggers, threads, tickets, tasks, documents). Its history is append-only.
 - `kaeno.sqlite`: Kaeno's own state, such as owner memory, where deleting really deletes.
 
 Back up both together.
@@ -97,7 +99,7 @@ Back up both together.
 
 Definitions used by admitted work are frozen. On restart, missing saved native definitions, incompatible work plans, or a changed execution environment identity fail closed rather than silently changing running work. Finish or cancel work with its original backend before switching. Older unfinished work without an environment identity must be drained with the previous release before upgrading. Take a consistent SQLite backup before opening a changed release; opening the harness writes recovery reconciliation state. External side effects are not transactional with SQLite and may be uncertain after a crash.
 
-This cut intentionally does not migrate the prior WORK/Telegram database or legacy JSON configuration. Define/select a catalog agent in `KAENO_CONFIG`; do not rely on `.kaeno/AGENT.md` as an assistant override. Use a fresh database for this release unless the previous workload has been deliberately drained/migrated and backed up.
+This cut intentionally does not migrate the prior WORK/Telegram database, the per-chat conversations of releases before the router, or legacy JSON configuration. Define/select a catalog agent in `KAENO_CONFIG`; do not rely on `.kaeno/AGENT.md` as an assistant override. Use a fresh database for this release unless the previous workload has been deliberately drained/migrated and backed up.
 
 See the [core entry point](src/core/application/index.ts), [WORK implementation](src/core/work/work.ts) and [extension composition tests](test/integration/extensions.test.ts).
 

@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { expect, it } from "vitest";
 import { openKaeno, type Kaeno } from "../../src/core/application/index.ts";
 
-it("reopens a core-only native conversation", async () => {
+it("reopens the core-only router conversation", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-minimal-"));
   let core: Kaeno | undefined;
   async function open() {
@@ -23,12 +23,14 @@ it("reopens a core-only native conversation", async () => {
   }
   try {
     core = await open();
-    const id = await core.threads.getOrCreateConversation("minimal");
+    const id = await core.router.routerConversation(context);
     const binding = await core.harness.snapshot(AgentDoc, id, context);
-    expect(binding).toMatchObject({ tools: [], instructions: "Be helpful" });
+    expect(binding).toMatchObject({ tools: [] });
+    expect(binding?.instructions).toMatch(/^# Routing\n/);
+    expect(binding?.instructions).toContain("# Kaeno\nBe helpful");
     await core.close();
     core = await open();
-    expect(await core.threads.getOrCreateConversation("minimal")).toBe(id);
+    expect(await core.router.routerConversation(context)).toBe(id);
     expect(await core.harness.snapshot(AgentDoc, id, context)).toEqual(binding);
     expect((await core.harness.inspect(context)).scheduling).toBe("running");
   } finally {

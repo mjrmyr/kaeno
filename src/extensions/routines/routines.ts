@@ -2,11 +2,10 @@ import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
-import { z } from "zod";
-import {
-  parseTaskId,
-  type Kaeno,
-  type KaenoExtension,
+import type {
+  Kaeno,
+  KaenoExtension,
+  TicketRecord,
 } from "../../core/application/index.ts";
 import { latestSlot, nextSlot } from "./schedule.ts";
 import {
@@ -63,36 +62,26 @@ const TICK_MS = 30_000;
 
 /** Long enough to answer "how did it go", short enough for a tool result. */
 const REPORT_CHARS = 2000;
-const workResultSchema = z.object({
-  status: z.enum(["completed", "failed"]),
-  text: z.string(),
-});
 
-/**
- * A run as WORK records it; the store keeps only the work ID. A finished task's own outcome is
- * "completed" even when the work failed, so a completed task reports the work's result instead.
- */
-function runOutcome(task: Awaited<ReturnType<Kaeno["harness"]["getTask"]>>): {
+/** A run as its ticket records it; the store keeps only the ticket number. */
+function runOutcome(ticket: Readonly<TicketRecord> | undefined): {
   status: string;
   report?: string;
 } {
-  if (!task) {
+  if (!ticket) {
     return { status: "unknown" };
   }
-  if (task.state.status !== "terminal") {
+  if (ticket.status === "queued" || ticket.status === "running") {
     return { status: "running" };
   }
-  const { outcome } = task.state;
-  if (outcome.status !== "completed") {
-    return { status: outcome.status };
-  }
-  const result = workResultSchema.safeParse(outcome.result);
-  return result.success
-    ? {
-        status: result.data.status,
-        report: result.data.text.slice(0, REPORT_CHARS),
-      }
-    : { status: "completed" };
+  const report = ticket.reports.at(-1);
+  return {
+    status:
+      ticket.status === "ended"
+        ? (ticket.ended?.reason ?? "ended")
+        : (report?.state ?? "completed"),
+    ...(report ? { report: report.summary.slice(0, REPORT_CHARS) } : {}),
+  };
 }
 
 function fieldsOf(routine: Routine): RoutineFields {
@@ -102,7 +91,7 @@ function fieldsOf(routine: Routine): RoutineFields {
 
 export interface RoutineView extends Routine {
   lastRun?: {
-    workId: number;
+    ticket: string;
     startedAt: number;
     status: string;
     /** The run's final report, truncated. */
@@ -112,8 +101,9 @@ export interface RoutineView extends Routine {
 }
 
 /**
- * Owner-defined scheduled work. Each run is root WORK for the routine's agent, started by the host
- * and reporting to the routine's Kaeno thread like work Kaeno started itself. Kaeno lists routines
+ * Owner-defined scheduled work. Each run is a ticket for the routine's agent, started by the host with the
+ * owner's standing approval (no router decision), and its report reaches the router, which relays it to the
+ * routine's thread. Kaeno lists routines
  * and may propose creating, changing or deleting one; a proposal changes nothing until the owner
  * approves it. Only the scheduler and the owner start runs.
  */
@@ -151,7 +141,7 @@ export class Routines {
         ],
       }),
     });
-    // Proposals mutate, so the assistant tool policy admits them only on the owner's own turns:
+    // Proposals mutate, so the router's tool policy demands the owner's message as their basis:
     // a work or routine report can never propose a routine. The change ID is the tool call.
     const create = defineTool({
       name: CREATE_ROUTINE,
@@ -161,7 +151,9 @@ export class Routines {
       execute: async (args, api) => {
         const input = this.validate({
           ...args,
-          thread: args.thread ?? (await this.threadOf(api.conversationId)),
+          thread:
+            args.thread ??
+            (await this.attached().router.lastOwnerThread(BACKGROUND_CONTEXT)),
         });
         return this.proposed(
           this.store.propose(
@@ -247,8 +239,10 @@ export class Routines {
     return Promise.all(
       this.store.list().map(async (routine) => {
         const last = this.store.lastRun(routine.id);
-        const task = last
-          ? await core.harness.getTask(parseTaskId(last.workId), context)
+        const ticket = last
+          ? await core.router
+              .ticket(`k${last.workId}`, context)
+              .catch(() => undefined)
           : undefined;
         const next = routine.enabled
           ? nextSlot(
@@ -265,9 +259,9 @@ export class Routines {
           ...(last
             ? {
                 lastRun: {
-                  workId: last.workId,
+                  ticket: `k${last.workId}`,
                   startedAt: last.startedAt,
-                  ...runOutcome(task),
+                  ...runOutcome(ticket),
                 },
               }
             : {}),
@@ -323,7 +317,7 @@ export class Routines {
   }
 
   /** Start a run now, outside the schedule. Refused while the previous run is unfinished. */
-  runNow(id: number, now = Date.now()): Promise<number> {
+  runNow(id: number, now = Date.now()): Promise<string> {
     return this.serially(async () => {
       const routine = this.store.get(id);
       if (!routine) {
@@ -368,10 +362,17 @@ export class Routines {
       // No overlapping runs; a run past its deadline is cancelled, and the next slot starts fresh.
       if (now - last.startedAt > routine.timeoutMinutes * 60_000) {
         const core = this.attached();
-        await core.work?.cancelWork(
-          await core.threads.getOrCreateConversation(routine.thread),
-          parseTaskId(last.workId),
+        const works = await core.harness.commit(
+          (tx) =>
+            core.router.stopTicket(
+              tx,
+              `k${last.workId}`,
+              "host",
+              `timed out after ${routine.timeoutMinutes} minutes`,
+            ),
+          BACKGROUND_CONTEXT,
         );
+        await core.router.abortWorks(works, BACKGROUND_CONTEXT);
       }
       return;
     }
@@ -392,37 +393,46 @@ export class Routines {
     routine: Routine,
     slot: number | null,
     now: number,
-  ): Promise<number> {
+  ): Promise<string> {
     const core = this.attached();
     if (!core.work) {
       throw new Error("Routines need WORK, which is not configured");
     }
-    const conversation = await core.threads.getOrCreateConversation(
-      routine.thread,
-    );
-    // A slot's key is stable, so a start retried after a crash finds the same work.
+    // A slot's key is stable, so a start retried after a crash finds the same ticket.
     const key = `routine:${routine.id}:${slot ?? `manual:${now}`}`;
-    const workId = await core.work.startWork(
-      {
-        origin: await core.turns.hostOrigin(
-          conversation,
-          key,
-          BACKGROUND_CONTEXT,
-        ),
+    const previous = this.store.lastRun(routine.id);
+    const ticket = await core.harness.commit(async (tx) => {
+      // The previous run's ticket stops following the routine's thread: the new run takes over.
+      if (previous) {
+        const ended = await core.router
+          .stopTicket(
+            tx,
+            `k${previous.workId}`,
+            "host",
+            "superseded by the next run",
+          )
+          .catch(() => []);
+        if (ended.length > 0) {
+          throw new Error(`Routine ${routine.id} is still running`);
+        }
+      }
+      return core.router.startTicket(tx, {
         key,
+        source: "routine",
+        thread: `routine:${routine.id}`,
+        replyThread: routine.thread,
         agent: routine.agent,
         title: `Routine: ${routine.name}`,
-        brief: routine.instructions,
-      },
-      BACKGROUND_CONTEXT,
-    );
+        content: routine.instructions,
+      });
+    }, BACKGROUND_CONTEXT);
     this.store.recordRun({
       routineId: routine.id,
       slot,
-      workId,
+      workId: Number(ticket.slice(1)),
       startedAt: now,
     });
-    return workId;
+    return ticket;
   }
 
   private async isRunning(
@@ -433,11 +443,10 @@ export class Routines {
     if (!last) {
       return false;
     }
-    const task = await this.attached().harness.getTask(
-      parseTaskId(last.workId),
-      context,
-    );
-    return task !== undefined && task.state.status !== "terminal";
+    const ticket = await this.attached()
+      .router.ticket(`k${last.workId}`, context)
+      .catch(() => undefined);
+    return ticket?.status === "queued" || ticket?.status === "running";
   }
 
   private apply(change: RoutineChange, now: number): number {
@@ -486,13 +495,6 @@ export class Routines {
         },
       ],
     };
-  }
-
-  /** The thread key of a CHAT conversation, so reports return where the routine was asked for. */
-  private async threadOf(conversationId: number): Promise<string | undefined> {
-    return (await this.attached().threads.listConversations()).find(
-      (thread) => thread.conversationId === conversationId,
-    )?.key;
   }
 
   private validate(input: unknown): RoutineFields {

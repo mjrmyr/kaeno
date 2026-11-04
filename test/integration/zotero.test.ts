@@ -1,7 +1,6 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { MemoryStorage, type JsonObject } from "@earendil-works/pi-durable";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
@@ -10,6 +9,7 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import { expect, it, vi } from "vitest";
+import { ask } from "../mocks/router.ts";
 import {
   openKaeno,
   type KaenoExtension,
@@ -88,12 +88,8 @@ async function call(
     },
   });
   try {
-    const id = await core.threads.getOrCreateConversation("zotero");
-    const task = await core.harness.commit(
-      (tx) => core.turns.admitUserTurn(tx, id, "Read", "read"),
-      context,
-    );
-    await core.harness.waitForTask(task, context);
+    // A read-only tool needs no owner basis; the final text answers the one trigger.
+    expect(await ask(core, "Read")).toBe("Done");
     return { output, error };
   } finally {
     await core.close();

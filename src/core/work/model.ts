@@ -1,5 +1,5 @@
 // Durable WORK representation and consumer-owned contracts. No execution policy lives here.
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord";
 import {
   defineDoc,
   type ConversationId,
@@ -13,22 +13,12 @@ import {
 import { z } from "zod";
 import type { SetupSurface } from "../conversation/index.ts";
 import { parseConversationId, type Stored } from "../durable/index.ts";
-import type { Origin, Source } from "../turns/index.ts";
 import type { AgentProfile, WorkEnvironment } from "./plan.ts";
-/** Where messages and the final report go. CHAT parents route through the turn ledger; WORK parents get inputs. */
+/** Where messages and the final report go. A ticket's Assignment reports to the router; WORK parents get inputs. */
 const workParentSchema = z.discriminatedUnion("kind", [
   z.object({
-    kind: z.literal("chat"),
-    origin: z.object({
-      conversationId: z.number().int().positive(),
-      requestId: z.string(),
-      epoch: z.number().int().nonnegative(),
-      notify: z.object({
-        route: z
-          .object({ channel: z.string(), address: z.string() })
-          .optional(),
-      }),
-    }),
+    kind: z.literal("ticket"),
+    ticket: z.string().regex(/^k[0-9]+$/),
   }),
   z.object({
     kind: z.literal("work"),
@@ -36,17 +26,20 @@ const workParentSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 export type WorkParent =
-  | { kind: "chat"; origin: Origin }
+  | { kind: "ticket"; ticket: string }
   | { kind: "work"; conversationId: ConversationId };
 export interface WorkInput extends JsonObject {
   title: string;
-  brief: string;
+  /** The first input: text, or text and image blocks. */
+  brief: JsonValue;
   agent: string;
   depth: number;
   maxDepth: number;
   parent: JsonValue;
   plan: JsonValue;
   environment: string | null;
+  /** An Assignment continues its ticket's conversation; child WORK owns a new one. */
+  conversation: number | null;
 }
 export interface WorkResult {
   status: "completed" | "failed";
@@ -73,6 +66,8 @@ export type WorkState =
       sent: number;
       seen: number;
       message: string;
+      /** How a ticket's root asked: a question, or an obstacle. */
+      state?: "waiting" | "blocked";
     }
   | {
       phase: "report";
@@ -118,6 +113,10 @@ export interface WorkScopeState extends JsonObject {
   question: WorkQuestion | null;
   /** The latest nonblocking progress note; may be missing in older scopes too. */
   progress: string | null;
+  /** A ticket root's report state for the pending `message`. */
+  messageState: "waiting" | "blocked" | null;
+  /** Set when a ticket root reports the request needs no doing; its final answer then ends the ticket. */
+  outcome: "dropped" | null;
 }
 interface WorkQuestion extends JsonObject {
   /** The message_parent invocation that asked it; replays keep the same question. */
@@ -142,6 +141,8 @@ export const WorkScope = defineDoc<WorkScopeState>({
     message: null,
     question: null,
     progress: null,
+    messageState: null,
+    outcome: null,
   }),
 });
 export interface WorkView {
@@ -172,34 +173,21 @@ export interface WorkSettings {
   /** Unfinished WORK started by one conversation. */
   maxActive?: number;
 }
-export interface WorkReport {
-  workId: TaskId;
-  key: string;
-  content: string;
-  report: string;
-  origin: Extract<WorkParent, { kind: "chat" }>["origin"];
-}
-export interface WorkTurns {
-  getActiveTurn(
-    id: ConversationId,
-    ctx: Context,
-  ): Promise<{
-    origin: Extract<WorkParent, { kind: "chat" }>["origin"];
-    source: Source;
-  }>;
-  isOriginFenced(tx: Tx, origin: Origin): Promise<boolean>;
-  getPendingReportIds(tx: Tx, id: ConversationId): Promise<TaskId[]>;
-  suppressWorkReports(
+/** Where a ticket's Assignments report; implemented by the router's Engine. */
+export interface WorkReports {
+  report(
     tx: Tx,
-    id: ConversationId,
-    ids: readonly TaskId[],
+    reported: {
+      ticket: string;
+      workId: TaskId;
+      key: string;
+      state:
+        "progress" | "waiting" | "blocked" | "ready" | "failed" | "dropped";
+      text: string;
+    },
   ): Promise<void>;
-  admitWorkReport(tx: Tx, report: WorkReport): Promise<TaskId>;
-  admitWorkCancellation(
-    tx: Tx,
-    id: ConversationId,
-    workId: TaskId,
-  ): Promise<TaskId>;
+  /** The Assignment ended without a report (cancelled). */
+  ended(tx: Tx, ticket: string, workId: TaskId): Promise<void>;
 }
 export type WorkTask = Task<WorkInput, WorkState, Stored<WorkResult>, object>;
 export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
@@ -214,14 +202,8 @@ export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
 );
 export function readParent(value: JsonValue): WorkParent {
   const parent = workParentSchema.parse(value);
-  return parent.kind === "chat"
-    ? {
-        ...parent,
-        origin: {
-          ...parent.origin,
-          conversationId: parseConversationId(parent.origin.conversationId),
-        },
-      }
+  return parent.kind === "ticket"
+    ? parent
     : { ...parent, conversationId: parseConversationId(parent.conversationId) };
 }
 export const checkpointSchema = z.object({

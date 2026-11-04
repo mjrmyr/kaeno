@@ -1,5 +1,4 @@
 export { listWork } from "./directory.ts";
-export { workTurns } from "./turns.ts";
 export {
   assertPlanFits,
   describeAgents,
@@ -16,6 +15,7 @@ export type {
   WorkPlan,
 } from "./plan.ts";
 export { Work } from "./work.ts";
+export { NoWorkSlot } from "./commands.ts";
 export { WorkIndex, WorkScope } from "./model.ts";
 export type {
   WorkParent,
@@ -23,9 +23,8 @@ export type {
   WorkResult,
   WorkView,
   WorkDetails,
-  WorkReport,
+  WorkReports,
   WorkSettings,
-  WorkTurns,
 } from "./model.ts";
 export {
   CANCEL_WORK,
@@ -33,6 +32,7 @@ export {
   LIST_WORK,
   MESSAGE_PARENT,
   MESSAGE_WORK,
+  REPORT,
   START_WORK,
   WORK_EXTENSION,
   WORK_TOOLS,

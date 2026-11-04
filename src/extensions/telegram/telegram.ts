@@ -2,14 +2,16 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import {
   defineDoc,
   defineExtension,
+  type TaskId,
   type Tx,
   type UserInput,
 } from "@earendil-works/pi-durable";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import {
-  listWork,
-  parseTaskId,
+  ticketLine,
+  type ChannelRoute,
+  type Stored,
   type Kaeno,
   type KaenoExtension,
 } from "../../core/application/index.ts";
@@ -22,18 +24,32 @@ import {
 export const telegramConfigurationSchema = z
   .object({
     allowedChatIds: z.array(z.number().int().positive().safe()).min(1),
+    /** Give each ticket a topic of its own. Needs the bot's threaded mode; falls back to reply chains. */
+    topics: z.boolean().optional(),
   })
   .strict();
 
-const TelegramState = defineDoc<{
+interface Pending {
+  chatId: number;
+  text: string;
+  threadId?: number;
+  replyTo?: number;
+}
+interface TelegramStateShape {
   offset: number;
-  pending?: { chatId: number; text: string };
-}>({
+  pending?: Pending;
+  /** `<chat>:<message>` → thread key, for every message Kaeno sent and every reply-chain anchor. Bounded. */
+  sent: Record<string, string>;
+}
+/** Telegram's cursor, single-slot command outbox and sent-message map. */
+export const TelegramState = defineDoc<Stored<TelegramStateShape>>({
   kind: "kaeno.telegram",
-  version: 1,
+  version: 2,
   scope: "session",
-  initial: () => ({ offset: 0 }),
+  initial: () => ({ offset: 0, sent: {} }),
 });
+const SENT_LIMIT = 2000;
+const TOPIC_RETRY_MS = 10 * 60_000;
 const maxImageBytes = 5 * 1024 * 1024;
 const imageTypes = new Set([
   "image/jpeg",
@@ -42,34 +58,80 @@ const imageTypes = new Set([
   "image/webp",
 ]);
 const help =
-  "Kaeno here. Send me a task as text or a photo. /jobs lists work; /cancel <id> cancels one; /stop stops this chat and its work; /new resets context but leaves existing work running.";
+  "Kaeno here. Send me anything as text or a photo; each task gets its own thread, and replies there go straight to its worker. /jobs lists tickets; /show <ticket> shows its latest report; /cancel <ticket> stops one; /stop stops this thread's ticket (or all tickets in the main chat); /new gives Kaeno a fresh context and leaves tickets running.";
 
 export interface TelegramExtensionOptions {
   allowedChatIds: readonly number[];
+  topics?: boolean;
   client: TelegramTransport;
   onError?(error: unknown): void;
 }
 
-/** One private Telegram chat maps to one durable CHAT thread. */
+/** Thread keys: the chat itself, one topic of it, or a reply chain anchored at one message. */
+function mainThread(chatId: number): string {
+  return `telegram:${chatId}`;
+}
+function topicThread(chatId: number, topic: number): string {
+  return `telegram:${chatId}/topic:${topic}`;
+}
+function chainThread(chatId: number, anchor: number): string {
+  return `telegram:${chatId}/reply:${anchor}`;
+}
+
+/** Each allowed private chat is the owner's main thread; topics and reply chains are threads of tickets. */
 export function telegramExtension(
   options: TelegramExtensionOptions,
 ): KaenoExtension {
   const allowed = new Set(options.allowedChatIds);
-  function address(value: string): number {
-    const id = Number(value);
-    if (String(id) !== value || !allowed.has(id)) {
+  let attached: Kaeno | undefined;
+  let topicsRetryAt = 0;
+  function core(): Kaeno {
+    if (!attached) {
+      throw new Error("Telegram is used before Kaeno started");
+    }
+    return attached;
+  }
+  /** `<chat>` or `<chat>:<topic>`; only allowed private chats. */
+  function address(value: string): { chatId: number; threadId?: number } {
+    const [chat, topic, ...rest] = value.split(":");
+    const chatId = Number(chat);
+    const threadId = topic === undefined ? undefined : Number(topic);
+    if (
+      rest.length > 0 ||
+      String(chatId) !== chat ||
+      !allowed.has(chatId) ||
+      (threadId !== undefined &&
+        (!Number.isSafeInteger(threadId) || threadId <= 0))
+    ) {
       throw new Error(
         "Telegram delivery address is not an allowed private chat",
       );
     }
-    return id;
+    return threadId === undefined ? { chatId } : { chatId, threadId };
+  }
+  function replyTo(route: ChannelRoute): number | undefined {
+    const id = route.replyTo === undefined ? NaN : Number(route.replyTo);
+    return Number.isSafeInteger(id) && id > 0 ? id : undefined;
+  }
+  function remember(
+    state: { sent: Record<string, string> },
+    chatId: number,
+    messageIds: readonly number[],
+    thread: string,
+  ): void {
+    for (const id of messageIds) {
+      state.sent[`${chatId}:${id}`] = thread;
+    }
+    const keys = Object.keys(state.sent);
+    for (const key of keys.slice(0, Math.max(0, keys.length - SENT_LIMIT))) {
+      delete state.sent[key];
+    }
   }
   async function advance(
-    core: Kaeno,
     update: TelegramUpdate,
-    pending?: { chatId: number; text: string },
+    pending?: Pending,
   ): Promise<void> {
-    await core.harness.commit(async (tx) => {
+    await core().harness.commit(async (tx) => {
       const state = await tx.doc(TelegramState);
       if (state.offset <= update.update_id) {
         state.offset = update.update_id + 1;
@@ -96,7 +158,92 @@ export function telegramExtension(
       { type: "image", data: data.toString("base64"), mimeType },
     ];
   }
-  async function handle(core: Kaeno, update: TelegramUpdate): Promise<void> {
+  /** A reply to one of Kaeno's messages continues that message's thread; a topic is its own thread. */
+  function threadOf(
+    message: Message,
+    sent: Readonly<Record<string, string>>,
+  ): string {
+    const chatId = message.chat.id;
+    const replied = message.reply_to_message
+      ? sent[`${chatId}:${message.reply_to_message.message_id}`]
+      : undefined;
+    if (replied) {
+      return replied;
+    }
+    if (message.is_topic_message && message.message_thread_id !== undefined) {
+      return topicThread(chatId, message.message_thread_id);
+    }
+    return mainThread(chatId);
+  }
+  /** Owner commands are deterministic: no model decides them. */
+  async function command(
+    tx: Tx,
+    text: string,
+    thread: string,
+    chatId: number,
+  ): Promise<{ reply: string; abort: TaskId[]; compact?: true }> {
+    const router = core().router;
+    if (text === "/stop") {
+      const main = thread === mainThread(chatId);
+      const { tickets, works } = await router.stopAll(
+        tx,
+        main ? undefined : thread,
+      );
+      let reply = main
+        ? "Nothing is running."
+        : "No ticket follows this thread.";
+      if (tickets.length) {
+        reply = `Stopped ${tickets.join(", ")}. Sandbox cleanup may still be in progress.`;
+      }
+      return { reply, abort: works };
+    }
+    if (text === "/new") {
+      return {
+        reply:
+          "Fresh context requested. Tickets keep running; /jobs lists them.",
+        abort: [],
+        compact: true,
+      };
+    }
+    if (text === "/jobs" || text === "/status") {
+      const tickets = await router.listTickets(context);
+      return {
+        reply: tickets.length
+          ? tickets.map(ticketLine).join("\n")
+          : "No open tickets.",
+        abort: [],
+      };
+    }
+    const target = /^\/(cancel|show) k?([1-9][0-9]*)$/.exec(text);
+    if (target) {
+      const id = `k${target[2]}`;
+      if (target[1] === "cancel") {
+        const works = await router.stopTicket(
+          tx,
+          id,
+          "owner",
+          "cancelled by the owner",
+        );
+        return { reply: `Cancellation requested for ${id}.`, abort: works };
+      }
+      const ticket = await router.ticket(id, context);
+      const report = ticket.reports.at(-1);
+      return {
+        reply: report
+          ? `${ticketLine(ticket)}\n\n${report.summary}`
+          : `${ticketLine(ticket)}\n\nNo report yet.`,
+        abort: [],
+      };
+    }
+    return {
+      reply:
+        text === "/start" || text === "/help"
+          ? help
+          : `Unknown command. ${help}`,
+      abort: [],
+    };
+  }
+  async function handle(update: TelegramUpdate): Promise<void> {
     const message = update.message;
     const text = message?.text?.trim() ?? "";
     if (
@@ -107,80 +254,93 @@ export function telegramExtension(
       message.from.id !== message.chat.id ||
       !allowed.has(message.chat.id)
     ) {
-      await advance(core, update);
+      await advance(update);
       return;
     }
     const chatId = message.chat.id;
-    const id = await core.threads.getOrCreateConversation(`telegram:${chatId}`);
+    const topic =
+      message.is_topic_message && message.message_thread_id !== undefined
+        ? message.message_thread_id
+        : undefined;
+    const messageId = message.message_id;
+    function answer(text: string): Pending {
+      return {
+        chatId,
+        text,
+        replyTo: messageId,
+        ...(topic === undefined ? {} : { threadId: topic }),
+      };
+    }
     try {
       const input = text ? undefined : await image(message);
-      const jobs =
-        text === "/jobs" || text === "/status"
-          ? await listWork(() => core.harness, id)
-          : undefined;
-      await core.harness.commit(async (tx: Tx) => {
+      const outcome = await core().harness.commit(async (tx: Tx) => {
         const state = await tx.doc(TelegramState);
         if (state.offset > update.update_id) {
-          return;
+          return undefined;
         }
-        let reply: string | undefined;
-        if (text === "/stop") {
-          await core.turns.admitStop(tx, id);
-          reply =
-            "Stop requested. WORK and sandbox cleanup may still be in progress; /jobs shows status.";
-        } else if (text === "/new") {
-          await core.turns.admitReset(tx, id);
-          reply =
-            "Fresh context requested. Existing work continues; /jobs lists it.";
-        } else if (jobs) {
-          reply = jobs.length
-            ? jobs
-                .map((job) => `#${job.id} ${job.title} [${job.status}]`)
-                .join("\n")
-            : "No work in this chat.";
-        } else if (/^\/cancel [1-9][0-9]*$/.test(text)) {
-          const workId = parseTaskId(Number(text.slice(8)));
-          if ((await tx.task(workId))?.kind !== "kaeno.work") {
-            throw new Error("Not a WORK activity");
-          }
-          // Core validates conversation ownership in this same transaction.
-          await core.turns.admitActivityCancellation(tx, id, workId);
-          reply = `Cancellation requested for work #${workId}.`;
-        } else if (text.startsWith("/")) {
-          reply =
-            text === "/start" || text === "/help"
-              ? help
-              : `Unknown command. ${help}`;
+        const thread = threadOf(message, state.sent);
+        let result: Awaited<ReturnType<typeof command>> | undefined;
+        if (text.startsWith("/")) {
+          result = await command(tx, text, thread, chatId);
+          state.pending = answer(result.reply);
         } else {
-          await core.turns.admitUserTurn(
-            tx,
-            id,
-            input ?? text,
-            `telegram:${update.update_id}`,
-            { route: { channel: "telegram", address: String(chatId) } },
-          );
+          const quoted =
+            message.reply_to_message?.text ?? message.reply_to_message?.caption;
+          await core().router.receive(tx, {
+            key: `telegram:${update.update_id}`,
+            source: "telegram",
+            threads: [thread],
+            actor: `telegram:${message.from?.id ?? chatId}`,
+            authority: "owner",
+            content: input ?? text,
+            route: {
+              channel: "telegram",
+              address:
+                topic === undefined ? String(chatId) : `${chatId}:${topic}`,
+              replyTo: String(message.message_id),
+            },
+            ...(quoted === undefined ? {} : { quote: quoted }),
+          });
         }
         state.offset = update.update_id + 1;
-        if (reply) {
-          state.pending = { chatId, text: reply };
-        }
+        return result;
       }, context);
+      if (outcome) {
+        // The command is committed; its effects run after it and fail without un-accepting it.
+        try {
+          await core().router.abortWorks(outcome.abort, context);
+          if (outcome.compact) {
+            await core().router.compact(context);
+          }
+        } catch (error) {
+          options.onError?.(error);
+        }
+      }
     } catch (error) {
       // A rejected input must not trap the poller ahead of a later /stop or /new.
       // If persistence itself is unavailable this commit also fails, leaving the update retryable.
-      await advance(core, update, {
-        chatId,
-        text: `Could not accept that request: ${error instanceof Error ? error.message : "Unknown error"}`,
-      });
+      await advance(
+        update,
+        answer(
+          `Could not accept that request: ${error instanceof Error ? error.message : "Unknown error"}`,
+        ),
+      );
     }
   }
-  async function flush(core: Kaeno): Promise<void> {
-    const pending = (await core.harness.snapshot(TelegramState, context))
+  async function flush(): Promise<void> {
+    const pending = (await core().harness.snapshot(TelegramState, context))
       ?.pending;
     if (pending) {
       if (allowed.has(pending.chatId)) {
         try {
-          await options.client.sendMessage(pending.chatId, pending.text);
+          await options.client.sendMessage(pending.chatId, pending.text, {
+            ...(pending.threadId === undefined
+              ? {}
+              : { threadId: pending.threadId }),
+            ...(pending.replyTo === undefined
+              ? {}
+              : { replyTo: pending.replyTo }),
+          });
         } catch (error) {
           // A blocked chat or invalid reply must not prevent another chat's /stop.
           if (
@@ -196,19 +356,22 @@ export function telegramExtension(
           new Error("Discarded a Telegram command reply for a revoked chat"),
         );
       }
-      await core.harness.commit(async (tx) => {
+      await core().harness.commit(async (tx) => {
         delete (await tx.doc(TelegramState)).pending;
       }, context);
     }
   }
-  async function poll(core: Kaeno, signal: AbortSignal): Promise<void> {
+  async function poll(signal: AbortSignal): Promise<void> {
     while (!signal.aborted) {
       try {
         // This single-slot outbox bounds command acknowledgments and survives restarts.
         // Telegram has no send idempotency key: a crash after send can duplicate a reply.
-        await flush(core);
+        await flush();
         const offset =
-          (await core.harness.snapshot(TelegramState, context))?.offset ?? 0;
+          (await core().harness.snapshot(TelegramState, context))?.offset ?? 0;
+        if (signal.aborted) {
+          return;
+        }
         const updates = await options.client.fetchUpdates(offset, signal);
         for (const update of updates) {
           if (signal.aborted) {
@@ -217,8 +380,8 @@ export function telegramExtension(
           if (update.update_id < offset) {
             continue;
           }
-          await handle(core, update);
-          await flush(core);
+          await handle(update);
+          await flush();
         }
       } catch (error) {
         if (signal.aborted) {
@@ -233,13 +396,64 @@ export function telegramExtension(
     durable: defineExtension({ name: "kaeno-telegram" }),
     delivery: {
       channel: "telegram",
-      send: async (value, text) =>
-        options.client.sendMessage(address(value), text),
-      typing: async (value) =>
-        options.client.sendTypingIndicator(address(value)),
+      maxWords: 100,
+      send: async (route, text, thread) => {
+        const { chatId, threadId } = address(route.address);
+        const anchor = replyTo(route);
+        const ids = await options.client.sendMessage(chatId, text, {
+          ...(threadId === undefined ? {} : { threadId }),
+          ...(anchor === undefined ? {} : { replyTo: anchor }),
+        });
+        await core().harness.commit(async (tx) => {
+          remember(await tx.doc(TelegramState), chatId, ids, thread);
+        }, context);
+      },
+      typing: async (route) => {
+        const { chatId, threadId } = address(route.address);
+        await options.client.sendTypingIndicator(chatId, threadId);
+      },
+      async openThread(route, title) {
+        const { chatId, threadId } = address(route.address);
+        if (
+          options.topics &&
+          threadId === undefined &&
+          Date.now() >= topicsRetryAt
+        ) {
+          try {
+            const topic = await options.client.createTopic(chatId, title);
+            return {
+              key: topicThread(chatId, topic),
+              route: { channel: "telegram", address: `${chatId}:${topic}` },
+            };
+          } catch (error) {
+            // Topic creation in private chats is not available everywhere; a reply chain always works.
+            // Without threaded mode every attempt fails, so wait before asking again.
+            topicsRetryAt = Date.now() + TOPIC_RETRY_MS;
+            options.onError?.(error);
+          }
+        }
+        const anchor = replyTo(route);
+        if (anchor === undefined) {
+          return undefined;
+        }
+        const key = chainThread(chatId, anchor);
+        // A reply to the owner's own message continues the chain too.
+        await core().harness.commit(async (tx) => {
+          remember(await tx.doc(TelegramState), chatId, [anchor], key);
+        }, context);
+        return {
+          key,
+          route: {
+            channel: "telegram",
+            address: route.address,
+            replyTo: String(anchor),
+          },
+        };
+      },
     },
-    async start(core, signal) {
-      const polling = poll(core, signal);
+    async start(kaeno, signal) {
+      attached = kaeno;
+      const polling = poll(signal);
       return async () => {
         await polling;
       };

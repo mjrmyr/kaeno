@@ -12,6 +12,7 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import { z } from "zod";
+import { parseConversationId } from "../durable/index.ts";
 import {
   WorkIndex,
   WorkScope,
@@ -49,6 +50,20 @@ async function latestAnswer(
     }
   }
   return undefined;
+}
+/** The conversation a WORK runs in: its ticket's for an Assignment, otherwise the one it owns. */
+export async function workConversation(
+  tx: Tx,
+  record: { id: TaskId; input: unknown },
+): Promise<ConversationId | undefined> {
+  const saved = z
+    .object({ conversation: z.number().nullable().optional() })
+    .safeParse(record.input);
+  if (saved.success && typeof saved.data.conversation === "number") {
+    return parseConversationId(saved.data.conversation);
+  }
+  return (await tx.scanConversations({ ownerTaskId: record.id }, 1)).items[0]
+    ?.id;
 }
 /** Unfinished WORK started by one conversation, or by anyone when no conversation is given. */
 export async function liveWork(
@@ -192,15 +207,13 @@ export async function inspectWork(
   if (!view) {
     throw new Error(`Work #${id} is missing`);
   }
-  const conversation = (
-    await harness().commit(
-      (tx) => tx.scanConversations({ ownerTaskId: id }, 1),
-      context,
-    )
-  ).items[0];
-  if (!conversation) {
+  const conversationId = target
+    ? await harness().commit((tx) => workConversation(tx, target), context)
+    : undefined;
+  if (conversationId === undefined) {
     return { ...view, children: [] };
   }
+  const conversation = { id: conversationId };
   const scope = await harness().snapshot(WorkScope, conversation.id, context);
   const latest = await harness().commit(
     (tx) => latestAnswer(tx, conversation.id),

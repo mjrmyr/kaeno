@@ -33,6 +33,7 @@ export interface RoutineRun {
   routineId: number;
   /** The scheduled instant it ran for; null for a manual run. */
   slot: number | null;
+  /** The run's ticket number: `k<workId>`. The column predates tickets. */
   workId: number;
   startedAt: number;
 }

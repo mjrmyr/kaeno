@@ -1,5 +1,5 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
+import { getCurrentSystemPrompt, Type } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
   fauxAssistantMessage,
@@ -8,7 +8,12 @@ import {
   fauxToolCall,
   type FauxResponseFactory,
 } from "@earendil-works/pi-ai/providers/faux";
-import { LiveDoc, MemoryStorage } from "@earendil-works/pi-durable";
+import {
+  defineExtension,
+  defineTool,
+  LiveDoc,
+  MemoryStorage,
+} from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -21,17 +26,22 @@ import {
   type Kaeno,
   type WorkEnvironment,
 } from "../../src/core/application/index.ts";
+import {
+  assignment,
+  isRouterRequest,
+  receive,
+  ROUTER_ASSISTANT_TOOLS,
+  sinceLastAnswer,
+  startTicket,
+  ticketConversation,
+  ticketWhen,
+  until,
+} from "../mocks/router.ts";
 const model = { provider: "faux", modelId: "faux-1" };
-const orchestration = [
-  "start_work",
-  "message_work",
-  "list_work",
-  "cancel_work",
-];
 const assistant = {
   model,
-  instructions: "LIFECYCLE CHAT",
-  tools: orchestration,
+  instructions: "LIFECYCLE ROUTER",
+  tools: [...ROUTER_ASSISTANT_TOOLS],
 };
 function agent(id: string, tools: string[]): AgentProfile {
   return {
@@ -40,11 +50,24 @@ function agent(id: string, tools: string[]): AgentProfile {
     setup: { model, instructions: `AGENT:${id}`, tools },
   };
 }
-function scripted(respond: FauxResponseFactory) {
+/** Workers follow `respond`; the router acknowledges every report and counts the questions it relays. */
+function scripted(respond: FauxResponseFactory, onQuestion = () => {}) {
   const faux = fauxProvider();
   const models = createModels();
   models.setProvider(faux.provider);
-  faux.setResponses(Array.from({ length: 60 }, () => respond));
+  faux.setResponses(
+    Array.from({ length: 60 }, () => async (...args) => {
+      const [request] = args;
+      if (!isRouterRequest(request)) {
+        return respond(...args);
+      }
+      if (sinceLastAnswer(request).includes('state=\\"waiting\\"')) {
+        onQuestion();
+        return fauxAssistantMessage("RELAY");
+      }
+      return fauxAssistantMessage("ACK");
+    }),
+  );
   return models;
 }
 function required<T>(value: T | undefined): T {
@@ -56,19 +79,21 @@ function required<T>(value: T | undefined): T {
 function launch(agent: string, brief: string) {
   return call("start_work", { agent, title: agent, brief });
 }
+/** A host-started ticket; the owner answers in its thread, `test:ticket:<key>`. */
+async function ticket(core: Kaeno, agent: string, brief: string, key: string) {
+  const id = await startTicket(core, {
+    agent,
+    title: agent,
+    content: brief,
+    key,
+  });
+  await assignment(core, id);
+  return `test:ticket:${key}`;
+}
 function call(name: string, args: Record<string, string | number>) {
   return fauxAssistantMessage([fauxToolCall(name, args)], {
     stopReason: "toolUse",
   });
-}
-async function turn(core: Kaeno, conversation: string, text: string) {
-  const id = await core.threads.getOrCreateConversation(conversation);
-  const task = await core.harness.commit(
-    (tx) => core.turns.admitUserTurn(tx, id, text, text),
-    ctx,
-  );
-  await core.harness.waitForTask(task, ctx);
-  return id;
 }
 async function works(core: Kaeno) {
   return (
@@ -118,38 +143,20 @@ it("keeps two real question/reply cycles live and reports only the final answer"
   const observed: string[] = [];
   const storage = new MemoryStorage();
   const commits = vi.spyOn(storage, "commit");
-  const models = scripted(async (request) => {
-    const prompt = getCurrentSystemPrompt(request.messages);
-    const last = request.messages.findLast(
-      (message) => message.role !== "system",
-    );
-    if (prompt.includes("AGENT:worker")) {
+  const models = scripted(
+    async (request) => {
+      const last = request.messages.findLast(
+        (message) => message.role !== "system",
+      );
       workerTurns++;
       observed.push(JSON.stringify(last));
       if (workerTurns <= 2) {
         return call("message_parent", { text: `QUESTION ${workerTurns}` });
       }
       return fauxAssistantMessage("VERIFIED FINAL");
-    }
-    if (last?.role === "user") {
-      const text = JSON.stringify(last.content);
-      if (text.includes("launch")) {
-        return launch("worker", "ORIGINAL BRIEF");
-      }
-      if (text.includes("sent a message and waits")) {
-        questionReports++;
-        return fauxAssistantMessage(`RELAY ${questionReports}`);
-      }
-      if (text.includes("reply-")) {
-        return call("message_work", {
-          id: workId,
-          text: text.includes("reply-1") ? "ANSWER ONE" : "ANSWER TWO",
-        });
-      }
-      return fauxAssistantMessage("FINAL RELAY");
-    }
-    return fauxAssistantMessage("ACK");
-  });
+    },
+    () => questionReports++,
+  );
   const { env, released } = environment();
   const core = await openKaeno({
     storage,
@@ -162,15 +169,15 @@ it("keeps two real question/reply cycles live and reports only the final answer"
     },
   });
   try {
-    await turn(core, "cycles", "launch");
+    const thread = await ticket(core, "worker", "ORIGINAL BRIEF", "cycles");
     await waitState(core, "reply");
     workId = required((await works(core))[0]).id;
     await vi.waitFor(() => expect(questionReports).toBe(1));
     expect(released).toEqual([]);
-    await turn(core, "cycles", "reply-1");
+    await receive(core, "ANSWER ONE", { thread });
     await vi.waitFor(() => expect(questionReports).toBe(2));
     await waitState(core, "reply");
-    await turn(core, "cycles", "reply-2");
+    await receive(core, "ANSWER TWO", { thread });
     await core.harness.waitForTask(required((await works(core))[0]).id, ctx);
     expect((await works(core))[0]?.state).toMatchObject({
       status: "terminal",
@@ -182,18 +189,25 @@ it("keeps two real question/reply cycles live and reports only the final answer"
     expect(observed[0]).toContain("ORIGINAL BRIEF");
     expect(observed[1]).toContain("ANSWER ONE");
     expect(observed[2]).toContain("ANSWER TWO");
+    // Both questions and the final answer were one Assignment.
+    expect(await works(core)).toHaveLength(1);
+    expect(
+      (await core.router.ticket("k1", ctx)).reports.map(
+        (report) => report.state,
+      ),
+    ).toEqual(["waiting", "waiting", "ready"]);
     // Release is best-effort after the terminal commit.
     await vi.waitFor(() => expect(released).toEqual([workId]));
-    // CHAT report admission and its next WORK checkpoint must be one storage commit.
+    // The report's admission to the router and its next WORK checkpoint must be one storage commit.
     for (const ordinal of [1, 2, "final"]) {
       const reportCommits = commits.mock.calls.filter(([writes]) =>
         writes.some(
           (write) =>
             write.type === "task" &&
-            write.value.kind === "kaeno.turn" &&
+            write.value.kind === "kaeno.dispatch" &&
             write.value.state.status === "pending" &&
-            z.object({ requestId: z.string() }).parse(write.value.input)
-              .requestId === `activity-result:${workId}:${ordinal}`,
+            z.object({ requestId: z.string() }).safeParse(write.value.input)
+              .data?.requestId === `report:${workId}:${ordinal}`,
         ),
       );
       expect(reportCommits).toHaveLength(1);
@@ -233,32 +247,28 @@ it("reopens an awaiting-reply SQLite checkpoint without repeating the brief or q
   let workerTurns = 0;
   let questionReports = 0;
   let workId = 0;
-  const models = scripted(async (request) => {
-    const last = request.messages.findLast(
-      (message) => message.role !== "system",
-    );
-    if (getCurrentSystemPrompt(request.messages).includes("AGENT:worker")) {
+  const briefs: string[] = [];
+  const models = scripted(
+    async (request) => {
+      const last = request.messages.findLast(
+        (message) => message.role !== "system",
+      );
+      briefs.push(
+        ...request.messages.flatMap((message) =>
+          JSON.stringify(message).includes("ONCE ONLY BRIEF")
+            ? [JSON.stringify(message)]
+            : [],
+        ),
+      );
       workerTurns++;
       if (workerTurns === 1) {
         return call("message_parent", { text: "PERSISTED QUESTION" });
       }
       expect(JSON.stringify(last)).toContain("RECOVERED ANSWER");
       return fauxAssistantMessage("RECOVERED FINAL");
-    }
-    if (last?.role === "user") {
-      const text = JSON.stringify(last.content);
-      if (text.includes("launch")) {
-        return launch("worker", "ONCE ONLY BRIEF");
-      }
-      if (text.includes("sent a message and waits")) {
-        questionReports++;
-      }
-      if (text.includes("answer-after-reopen")) {
-        return call("message_work", { id: workId, text: "RECOVERED ANSWER" });
-      }
-    }
-    return fauxAssistantMessage("ACK");
-  });
+    },
+    () => questionReports++,
+  );
   const { env, released } = environment();
   const options = {
     models,
@@ -274,7 +284,7 @@ it("reopens an awaiting-reply SQLite checkpoint without repeating the brief or q
     storage: await openNodeSqliteStorage(path),
   });
   try {
-    await turn(core, "recover", "launch");
+    const thread = await ticket(core, "worker", "ONCE ONLY BRIEF", "recover");
     await waitState(core, "reply");
     await vi.waitFor(() => expect(questionReports).toBe(1));
     const record = required((await works(core))[0]);
@@ -284,10 +294,12 @@ it("reopens an awaiting-reply SQLite checkpoint without repeating the brief or q
       ...options,
       storage: await openNodeSqliteStorage(path),
     });
-    await turn(core, "recover", "answer-after-reopen");
+    await receive(core, "RECOVERED ANSWER", { thread });
     await core.harness.waitForTask(record.id, ctx);
     expect(workerTurns).toBe(2);
     expect(questionReports).toBe(1);
+    // The brief is in the worker's context once per turn: never resubmitted after the reopen.
+    expect(briefs).toHaveLength(2);
     expect(await works(core)).toHaveLength(1);
     expect((await works(core))[0]?.state).toMatchObject({
       outcome: { result: { text: "RECOVERED FINAL" } },
@@ -322,13 +334,7 @@ it.each([false, true])(
             })
           : fauxAssistantMessage("NEWEST VERIFIED ANSWER");
       }
-      if (
-        last?.role === "user" &&
-        JSON.stringify(last.content).includes("launch")
-      ) {
-        return launch("worker", "Run");
-      }
-      return fauxAssistantMessage("ACK");
+      throw new Error(`Unexpected request: ${JSON.stringify(last)}`);
     });
     const { env, released } = environment();
     const core = await openKaeno({
@@ -342,7 +348,7 @@ it.each([false, true])(
       },
     });
     try {
-      await turn(core, "newest", "launch");
+      await ticket(core, "worker", "Run", "newest");
       const record = required((await works(core))[0]);
       await core.harness.waitForTask(record.id, ctx);
       expect((await works(core))[0]?.state).toMatchObject({
@@ -356,6 +362,17 @@ it.each([false, true])(
           },
         },
       });
+      const done = await ticketWhen(
+        core,
+        "k1",
+        (value) => value.status === "idle",
+      );
+      expect(done.reports.at(-1)).toMatchObject({
+        state: fail ? "failed" : "ready",
+        summary: fail
+          ? "Work failed: newest-response-failed"
+          : "NEWEST VERIFIED ANSWER",
+      });
       // Release is best-effort after the terminal commit.
       await vi.waitFor(() => expect(released).toEqual([record.id]));
     } finally {
@@ -364,7 +381,6 @@ it.each([false, true])(
   },
 );
 it("waits for a live child, then cancels the subtree and releases both", async () => {
-  let parentId = 0;
   let childStarted = false;
   const models = scripted(async (request) => {
     const prompt = getCurrentSystemPrompt(request.messages);
@@ -384,16 +400,7 @@ it("waits for a live child, then cancels the subtree and releases both", async (
       }
       return fauxAssistantMessage("PARENT NARRATION WHILE CHILD LIVES");
     }
-    if (last?.role === "user") {
-      const text = JSON.stringify(last.content);
-      if (text.includes("launch")) {
-        return launch("parent", "PARENT BRIEF");
-      }
-      if (text.includes("cancel-tree")) {
-        return call("cancel_work", { id: parentId });
-      }
-    }
-    return fauxAssistantMessage("ACK");
+    throw new Error(`Unexpected request: ${JSON.stringify(last)}`);
   });
   const { env, released } = environment();
   const core = await openKaeno({
@@ -412,7 +419,7 @@ it("waits for a live child, then cancels the subtree and releases both", async (
     },
   });
   try {
-    await turn(core, "tree", "launch");
+    await ticket(core, "parent", "PARENT BRIEF", "tree");
     await vi.waitFor(() => expect(childStarted).toBe(true));
     await waitState(core, "children");
     const records = await works(core);
@@ -424,10 +431,15 @@ it("waits for a live child, then cancels the subtree and releases both", async (
       ),
     );
     const child = required(records.find((record) => record.id !== parent.id));
-    parentId = parent.id;
     expect(parent.state.status).not.toBe("terminal");
     expect(released).toEqual([]);
-    await turn(core, "tree", "cancel-tree");
+    // Stopping the ticket names its live run; aborting it cancels the subtree.
+    const stopped = await core.harness.commit(
+      (tx) => core.router.stopTicket(tx, "k1", "owner", "cancel-tree"),
+      ctx,
+    );
+    expect(stopped).toEqual([parent.id]);
+    await core.router.abortWorks(stopped, ctx);
     await core.harness.waitForTask(parent.id, ctx);
     expect((await core.harness.getTask(child.id, ctx))?.state).toMatchObject({
       status: "terminal",
@@ -441,44 +453,39 @@ it("waits for a live child, then cancels the subtree and releases both", async (
     await vi.waitFor(() =>
       expect([...released].sort()).toEqual([child.id, parent.id].sort()),
     );
+    // The ended ticket drops what the cancelled run would have reported.
+    const ended = await core.router.ticket("k1", ctx);
+    expect(ended.status).toBe("ended");
+    expect(ended.reports).toEqual([]);
   } finally {
     await core.close();
   }
 });
-it("rejects steering before brief admission, then accepts a reply after the brief", async () => {
+it("holds an owner's message until the brief is admitted, then accepts a reply after it", async () => {
   const ensuring = Promise.withResolvers<void>();
   const allowBrief = Promise.withResolvers<void>();
-  let workId = 0;
-  let workerTurns = 0;
-  const toolResults: string[] = [];
+  const held = Promise.withResolvers<void>();
   const workerInputs: string[] = [];
+  const pause = defineTool({
+    name: "pause",
+    description: "Let steered input arrive",
+    parameters: Type.Object({}),
+    execute: async () => ({ content: [{ type: "text", text: "resumed" }] }),
+  });
   const models = scripted(async (request) => {
-    const last = request.messages.findLast(
-      (message) => message.role !== "system",
+    const inputs = JSON.stringify(
+      request.messages.filter((message) => message.role === "user"),
     );
-    if (getCurrentSystemPrompt(request.messages).includes("AGENT:worker")) {
-      workerInputs.push(JSON.stringify(last));
-      workerTurns++;
-      return workerTurns === 1
-        ? call("message_parent", { text: "READY FOR REPLY" })
-        : fauxAssistantMessage("ADMISSION VERIFIED");
+    workerInputs.push(inputs);
+    if (inputs.includes("ADMITTED REPLY")) {
+      return fauxAssistantMessage("ADMISSION VERIFIED");
     }
-    if (last?.role === "toolResult" && last.toolName === "message_work") {
-      toolResults.push(JSON.stringify(last));
+    if (inputs.includes("EARLY MESSAGE")) {
+      return call("message_parent", { text: "READY FOR REPLY" });
     }
-    if (last?.role === "user") {
-      const text = JSON.stringify(last.content);
-      if (text.includes("launch")) {
-        return launch("worker", "FIRST BRIEF");
-      }
-      if (text.includes("reply-before-brief")) {
-        return call("message_work", { id: workId, text: "TOO EARLY" });
-      }
-      if (text.includes("reply-after-brief")) {
-        return call("message_work", { id: workId, text: "ADMITTED REPLY" });
-      }
-    }
-    return fauxAssistantMessage("ACK");
+    // The held message is steered into this run once the brief is in; it arrives after this tool round.
+    await held.promise;
+    return call("pause", {});
   });
   const { env, released } = environment();
   env.ensure = async () => {
@@ -489,35 +496,60 @@ it("rejects steering before brief admission, then accepts a reply after the brie
     storage: new MemoryStorage(),
     models,
     assistant,
+    extensions: [
+      { durable: defineExtension({ name: "pause-test", tools: [pause] }) },
+    ],
     work: {
-      agents: [agent("worker", ["message_parent"])],
-      tools: ["message_parent"],
+      agents: [agent("worker", ["message_parent", "pause"])],
+      tools: ["message_parent", "pause"],
       environment: env,
     },
   });
+  async function early() {
+    return (await core.harness.inspect(ctx)).tasks.find(
+      ({ record: task }) =>
+        task.kind === "kaeno.dispatch" &&
+        JSON.stringify(task.input).includes("EARLY MESSAGE"),
+    )?.record.state.status;
+  }
   try {
-    await turn(core, "admission", "launch");
+    const thread = await ticket(core, "worker", "FIRST BRIEF", "admission");
     await ensuring.promise;
     const record = required((await works(core))[0]);
-    workId = record.id;
-    await turn(core, "admission", "reply-before-brief");
-    expect(toolResults).toHaveLength(1);
-    expect(toolResults[0]).toContain("still starting");
+    await receive(core, "EARLY MESSAGE", { thread });
+    // The message waits for the brief instead of starting the worker without it.
+    await until(async () => (await early()) === "running", "the held message");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(await early()).toBe("running");
     expect(workerInputs).toEqual([]);
     allowBrief.resolve();
+    const conversation = await ticketConversation(core, "k1");
+    await until(
+      async () =>
+        (await core.harness.commit(
+          (tx) => tx.submissionByRequest(conversation, "input:k1:t2"),
+          ctx,
+        )) !== undefined,
+      "the steer",
+    );
+    held.resolve();
     await waitState(core, "reply");
-    await turn(core, "admission", "reply-after-brief");
+    await receive(core, "ADMITTED REPLY", { thread });
     await core.harness.waitForTask(record.id, ctx);
-    expect(toolResults).toHaveLength(2);
-    expect(toolResults[1]).toContain("Message delivered");
-    expect(workerInputs).toHaveLength(2);
+    expect((await works(core))[0]?.state).toMatchObject({
+      outcome: { result: { text: "ADMISSION VERIFIED" } },
+    });
+    expect(workerInputs).toHaveLength(3);
+    // The brief is the worker's first input; the held message comes after it.
     expect(workerInputs[0]).toContain("FIRST BRIEF");
-    expect(workerInputs[1]).toContain("ADMITTED REPLY");
-    expect(workerInputs.join("\n")).not.toContain("TOO EARLY");
+    expect(workerInputs[0]).not.toContain("EARLY MESSAGE");
+    expect(workerInputs[1]).toContain("EARLY MESSAGE");
+    expect(workerInputs[2]).toContain("ADMITTED REPLY");
     // Release is best-effort after the terminal commit.
     await vi.waitFor(() => expect(released).toEqual([record.id]));
   } finally {
     allowBrief.resolve();
+    held.resolve();
     await core.close();
   }
 });
