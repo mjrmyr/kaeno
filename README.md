@@ -39,6 +39,8 @@ A skill has `name` and `description` frontmatter, an optional supported `disable
 
 The CLI's HTTP adapter listens on `PORT` (default `8080`). `POST /v1/threads/:key/turn` sends an owner message on that thread, `GET /v1/threads/:key/replies` reads what Kaeno sent there (the direct reply carries the client's `requestId`), `POST …/stop` stops the thread's tickets and `POST …/reset` compacts the router's context. `GET /v1/tickets`, `GET /v1/tickets/:id` and `POST /v1/tickets/:id/stop` inspect and stop tickets. This adapter does not implement transport authentication: run it on a trusted network or behind authenticated ingress. Setting a token environment variable alone does not secure the listener. Disconnecting a client does not cancel an admitted turn.
 
+To watch the system while it runs, start `npm run inspect` next to `npm start` and open <http://127.0.0.1:8090> (`KAENO_INSPECT_PORT` changes the port). It reads `durable.sqlite` in `KAENO_DATA_DIR` read-only and shows threads, the router and tickets, a timeline of what changed, and each change's full record and diff. It listens on loopback only and has no authentication, and the page shows private conversation content.
+
 ## Model credentials
 
 Provider API keys come from the environment (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`). An OpenAI subscription login is stored in a writable host-only file, `KAENO_AUTH_FILE` (default `~/.kaeno/auth.json`), created with `npm run auth -- login openai [--output <file>]`. Kaeno refreshes and rotates those tokens in place, so the file must stay writable and persistent.

@@ -5,6 +5,7 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env src/host/main.ts",
     "auth": "node --env-file-if-exists=.env scripts/auth.ts",
+    "inspect": "node --env-file-if-exists=.env scripts/inspect/main.ts",
     "prepare": "husky",
     "check": "npm run typecheck && npm run lint && npm run architecture:check && npm run format:check",
     "typecheck": "tsc --noEmit",

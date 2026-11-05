@@ -1,0 +1,658 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Kaeno Inspector</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f6f6f4;
+        --panel: #ffffff;
+        --ink: #1d1f21;
+        --muted: #686c70;
+        --line: #d9d9d4;
+        --flash: #f5c542;
+        --added: #1a7f4b;
+        --changed: #9a6700;
+        --retired: #b3261e;
+        --accent: #2f5fc4;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #15171a;
+          --panel: #1e2125;
+          --ink: #e7e8ea;
+          --muted: #9a9fa6;
+          --line: #33373c;
+          --flash: #8a6d12;
+          --added: #5bc48d;
+          --changed: #e0b34c;
+          --retired: #f0837b;
+          --accent: #86a8f0;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        height: 100vh;
+        display: grid;
+        grid-template-rows: auto minmax(220px, 42vh) minmax(0, 1fr);
+        background: var(--bg);
+        color: var(--ink);
+        font:
+          13px/1.4 ui-sans-serif,
+          system-ui,
+          sans-serif;
+      }
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 16px;
+        align-items: baseline;
+        padding: 8px 16px;
+        border-bottom: 1px solid var(--line);
+      }
+      h1 {
+        margin: 0;
+        font-size: 14px;
+      }
+      header p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      #status[data-bad="true"] {
+        color: var(--retired);
+        font-weight: 600;
+      }
+      #map {
+        position: relative;
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 48px;
+        padding: 10px 16px;
+        overflow: auto;
+        border-bottom: 1px solid var(--line);
+      }
+      #edges {
+        position: absolute;
+        top: 0;
+        left: 0;
+        pointer-events: none;
+      }
+      #edges line.subscribed {
+        stroke: var(--accent);
+        stroke-width: 2;
+      }
+      #edges line {
+        stroke: var(--muted);
+        stroke-width: 1.25;
+      }
+      .column {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+      }
+      .column h2 {
+        margin: 0;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .node {
+        position: relative;
+        z-index: 1;
+        width: 100%;
+        padding: 8px 10px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel);
+        color: inherit;
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+      .node[aria-pressed="true"] {
+        border-color: var(--accent);
+        box-shadow: inset 0 0 0 1px var(--accent);
+      }
+      .node.flash {
+        animation: flash 1.6s ease-out;
+      }
+      @keyframes flash {
+        from {
+          background: var(--flash);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .node.flash {
+          animation: none;
+          border-color: var(--flash);
+        }
+      }
+      .node strong,
+      .node span {
+        display: block;
+        overflow-wrap: anywhere;
+      }
+      .node span {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .empty {
+        margin: 0;
+        color: var(--muted);
+      }
+      #lower {
+        display: grid;
+        grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+        min-height: 0;
+      }
+      #timeline-pane,
+      #detail {
+        min-height: 0;
+        overflow: auto;
+      }
+      #filters {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 12px;
+        padding: 6px 16px;
+        border-bottom: 1px solid var(--line);
+        background: var(--bg);
+      }
+      #filters label {
+        display: inline-flex;
+        gap: 4px;
+        align-items: center;
+      }
+      #timeline {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      #timeline button {
+        display: grid;
+        grid-template-columns: 62px 58px 16px minmax(0, 150px) minmax(0, 1fr);
+        gap: 8px;
+        width: 100%;
+        padding: 3px 16px;
+        border: 0;
+        border-bottom: 1px solid var(--line);
+        background: none;
+        color: inherit;
+        font:
+          12px/1.4 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+        text-align: left;
+        cursor: pointer;
+      }
+      #timeline button:hover,
+      #timeline button[aria-current="true"] {
+        background: var(--panel);
+      }
+      #timeline .meta {
+        color: var(--muted);
+      }
+      #timeline .cut {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .added {
+        color: var(--added);
+      }
+      .changed,
+      .snapshot {
+        color: var(--changed);
+      }
+      .retired {
+        color: var(--retired);
+      }
+      #detail {
+        padding: 10px 16px;
+        border-left: 1px solid var(--line);
+      }
+      #detail h3 {
+        margin: 12px 0 4px;
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      #detail h2 {
+        margin: 0;
+        font-size: 13px;
+        overflow-wrap: anywhere;
+      }
+      pre {
+        margin: 0;
+        padding: 8px;
+        overflow: auto;
+        border-radius: 4px;
+        background: var(--panel);
+        font:
+          12px/1.45 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .removed-value {
+        color: var(--retired);
+      }
+      .added-value {
+        color: var(--added);
+      }
+      @media (max-width: 760px) {
+        body {
+          height: auto;
+          grid-template-rows: auto auto auto;
+        }
+        #map {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 12px;
+        }
+        #edges {
+          display: none;
+        }
+        #lower {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        #detail {
+          border-top: 1px solid var(--line);
+          border-left: 0;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Kaeno Inspector</h1>
+      <p id="status" role="status">Connecting…</p>
+      <p>
+        <b>#</b> commit order, <b>~#</b> estimated order. A time means this page
+        saw the change live; blue lines are thread subscriptions;
+        <b>start</b> means it was already stored when the inspector started.
+        Short-lived task states between polls can be missed.
+      </p>
+    </header>
+    <section id="map" aria-label="System map">
+      <svg id="edges" aria-hidden="true"></svg>
+      <div class="column" id="threads"></div>
+      <div class="column" id="router"></div>
+      <div class="column" id="tickets"></div>
+    </section>
+    <section id="lower">
+      <div id="timeline-pane">
+        <div id="filters" aria-label="Timeline filters"></div>
+        <ol id="timeline"></ol>
+      </div>
+      <aside id="detail" aria-label="Change detail">
+        <p class="empty">Select a line to see the full record and diff.</p>
+      </aside>
+    </section>
+    <script>
+      const GROUPS = [
+        ["record", "Kaeno records", true],
+        ["task", "Tasks", true],
+        ["submission", "Submissions", true],
+        ["conversation", "Conversations", true],
+        ["entry", "Entries", true],
+        ["internal", "Pi internals", false],
+      ];
+      const SYMBOLS = { added: "+", changed: "~", snapshot: "=", retired: "-" };
+      const POLL_MS = 500;
+      const enabled = new Set(
+        GROUPS.filter(([, , on]) => on).map(([group]) => group),
+      );
+      const seenTouched = new Map();
+      const events = [];
+      let lastEvent = 0;
+      let firstRender = true;
+      let selectedNode = null;
+      let selectedEvent = null;
+      let snapshot = null;
+
+      const $ = (id) => document.getElementById(id);
+
+      function el(tag, props = {}, ...children) {
+        const node = document.createElement(tag);
+        Object.assign(node, props);
+        node.append(...children.filter((child) => child !== null));
+        return node;
+      }
+
+      function nodeCard(node, title, ...lines) {
+        const card = el(
+          "button",
+          { type: "button" },
+          el("strong", { textContent: title }),
+          ...lines
+            .filter(Boolean)
+            .map((text) => el("span", { textContent: text })),
+        );
+        card.className = "node";
+        card.dataset.node = node.node;
+        card.setAttribute("aria-pressed", String(selectedNode === node.node));
+        card.addEventListener("click", () => {
+          selectedNode = selectedNode === node.node ? null : node.node;
+          renderMap();
+          renderTimeline();
+        });
+        const previous = seenTouched.get(node.node);
+        if (!firstRender && node.touched > (previous ?? 0)) {
+          card.classList.add("flash");
+          flashing.set(node.node, performance.now());
+        } else if (
+          flashing.has(node.node) &&
+          performance.now() - flashing.get(node.node) < 1600
+        ) {
+          card.classList.add("flash");
+          card.style.animationDelay = `-${performance.now() - flashing.get(node.node)}ms`;
+        }
+        seenTouched.set(node.node, node.touched);
+        return card;
+      }
+      const flashing = new Map();
+
+      function taskLine(tasks) {
+        return tasks.length
+          ? `active: ${tasks.map((task) => `${task.kind} ${task.status}`).join(", ")}`
+          : "";
+      }
+
+      function column(id, heading, cards, emptyText) {
+        $(id).replaceChildren(
+          el("h2", { textContent: heading }),
+          ...(cards.length
+            ? cards
+            : [el("p", { className: "empty", textContent: emptyText })]),
+        );
+      }
+
+      function renderMap() {
+        if (!snapshot) {
+          return;
+        }
+        column(
+          "threads",
+          `Threads (${snapshot.threads.length})`,
+          snapshot.threads.map((thread) =>
+            nodeCard(
+              thread,
+              thread.key,
+              `${thread.label} · ${thread.recent} recent`,
+              thread.subscribers.length
+                ? `subscribers: ${thread.subscribers.join(", ")}`
+                : "no subscribers, goes to router",
+            ),
+          ),
+          "No threads yet.",
+        );
+        const router = snapshot.router;
+        column(
+          "router",
+          "Router",
+          [
+            nodeCard(
+              router,
+              "Router",
+              router.conversation === null
+                ? "no conversation yet"
+                : `conversation ${router.conversation}`,
+              `queue ${router.queue.length} · open ${router.open.length} · recent ${router.recent}`,
+              taskLine(router.tasks),
+            ),
+          ],
+          "",
+        );
+        column(
+          "tickets",
+          `Tickets (${snapshot.tickets.length})`,
+          snapshot.tickets.map((ticket) =>
+            nodeCard(
+              ticket,
+              `${ticket.id} · ${ticket.status}`,
+              ticket.title,
+              `${ticket.agent} · run ${ticket.assignments} · pending ${ticket.pending}`,
+              ticket.report ? `last report: ${ticket.report}` : "",
+              taskLine(ticket.tasks),
+            ),
+          ),
+          "No tickets yet.",
+        );
+        firstRender = false;
+        requestAnimationFrame(renderEdges);
+      }
+
+      function renderEdges() {
+        const map = $("map");
+        const svg = $("edges");
+        const origin = map.getBoundingClientRect();
+        svg.setAttribute("width", map.scrollWidth);
+        svg.setAttribute("height", map.scrollHeight);
+        const lines = [];
+        const anchor = (id) =>
+          map.querySelector(`[data-node="${CSS.escape(id)}"]`);
+        const edge = (from, to, subscribed = false) => {
+          const start = anchor(from)?.getBoundingClientRect();
+          const end = anchor(to)?.getBoundingClientRect();
+          if (!start || !end) {
+            return;
+          }
+          const line = document.createElementNS(
+            "http://www.w3.org/2000/svg",
+            "line",
+          );
+          line.setAttribute("x1", start.right - origin.left + map.scrollLeft);
+          line.setAttribute(
+            "y1",
+            start.top + start.height / 2 - origin.top + map.scrollTop,
+          );
+          line.setAttribute("x2", end.left - origin.left + map.scrollLeft);
+          line.setAttribute(
+            "y2",
+            end.top + end.height / 2 - origin.top + map.scrollTop,
+          );
+          line.classList.toggle("subscribed", subscribed);
+          lines.push(line);
+        };
+        for (const thread of snapshot.threads) {
+          edge(thread.node, "router");
+          for (const ticket of thread.subscribers) {
+            edge(thread.node, `ticket:${ticket}`, true);
+          }
+        }
+        for (const ticket of snapshot.tickets) {
+          edge("router", ticket.node);
+        }
+        svg.replaceChildren(...lines);
+      }
+
+      function visible(event) {
+        return (
+          enabled.has(event.group) &&
+          (!selectedNode || event.nodes.includes(selectedNode))
+        );
+      }
+
+      function timeLabel(event) {
+        return event.observedAt === null
+          ? "start"
+          : new Date(event.observedAt).toLocaleTimeString([], {
+              hour12: false,
+            });
+      }
+
+      function timelineRow(event) {
+        const button = el(
+          "button",
+          {
+            type: "button",
+            title: `${event.kind} ${event.name}: ${event.summary}`,
+          },
+          el("span", { className: "meta", textContent: timeLabel(event) }),
+          el("span", {
+            className: "meta",
+            textContent: `${event.exact ? "#" : "~#"}${event.seq}`,
+          }),
+          el("span", {
+            className: event.action,
+            textContent: SYMBOLS[event.action],
+          }),
+          el("span", {
+            className: "cut",
+            textContent: `${event.kind} ${event.name}`,
+          }),
+          el("span", { className: "cut", textContent: event.summary }),
+        );
+        if (selectedEvent === event.id) {
+          button.setAttribute("aria-current", "true");
+        }
+        button.addEventListener("click", () => showDetail(event.id));
+        return el("li", {}, button);
+      }
+
+      function renderTimeline() {
+        const pane = $("timeline-pane");
+        const pinned = pane.scrollTop < 8;
+        const rows = events.filter(visible).reverse().map(timelineRow);
+        $("timeline").replaceChildren(
+          ...(rows.length
+            ? rows
+            : [
+                el(
+                  "li",
+                  {},
+                  el("p", {
+                    className: "empty",
+                    textContent: "No matching changes.",
+                  }),
+                ),
+              ]),
+        );
+        if (pinned) {
+          pane.scrollTop = 0;
+        }
+      }
+
+      function pretty(value) {
+        return value === undefined ? "(none)" : JSON.stringify(value, null, 2);
+      }
+
+      async function showDetail(id) {
+        selectedEvent = id;
+        renderTimeline();
+        const response = await fetch(`/api/events/${id}`);
+        if (!response.ok) {
+          $("detail").replaceChildren(
+            el("p", {
+              className: "empty",
+              textContent: "This change is no longer retained.",
+            }),
+          );
+          return;
+        }
+        const event = await response.json();
+        const recorded = event.recordedAt
+          ? `Recorded in the data: ${new Date(event.recordedAt).toLocaleString()}`
+          : "No time recorded in the data";
+        const seen = event.observedAt
+          ? `Seen live: ${new Date(event.observedAt).toLocaleString()}`
+          : "Already stored when the inspector started";
+        $("detail").replaceChildren(
+          el("h2", { textContent: `${event.kind} ${event.name}` }),
+          el("p", { textContent: event.summary }),
+          el("p", {
+            className: "empty",
+            textContent: `${event.exact ? "Commit" : "Estimated commit"} ${event.seq}. ${seen}. ${recorded}.`,
+          }),
+          ...(event.changes.length
+            ? [
+                el("h3", { textContent: "Changes" }),
+                ...event.changes.map((change) =>
+                  el(
+                    "pre",
+                    {},
+                    el("strong", {
+                      textContent: `${change.path || "(root)"}\n`,
+                    }),
+                    el("span", {
+                      className: "removed-value",
+                      textContent: `- ${pretty(change.before)}\n`,
+                    }),
+                    el("span", {
+                      className: "added-value",
+                      textContent: `+ ${pretty(change.after)}`,
+                    }),
+                  ),
+                ),
+              ]
+            : []),
+          el("h3", {
+            textContent:
+              event.after === undefined ? "Last record" : "Full record",
+          }),
+          el("pre", { textContent: pretty(event.after ?? event.before) }),
+        );
+      }
+
+      async function refresh() {
+        try {
+          const response = await fetch(`/api/feed?after=${lastEvent}`);
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+          const feed = await response.json();
+          snapshot = feed.snapshot;
+          events.push(...feed.events);
+          events.splice(0, Math.max(0, events.length - 5000));
+          lastEvent = feed.events.at(-1)?.id ?? lastEvent;
+          renderMap();
+          if (feed.events.length) {
+            renderTimeline();
+          }
+          $("status").dataset.bad = String(Boolean(feed.error));
+          $("status").textContent = feed.error
+            ? `Stale, cannot read database: ${feed.error}`
+            : `Live · ${lastEvent} changes`;
+        } catch (error) {
+          $("status").dataset.bad = "true";
+          $("status").textContent = `Disconnected: ${error.message}`;
+        }
+        setTimeout(refresh, POLL_MS);
+      }
+
+      $("filters").append(
+        ...GROUPS.map(([group, label, on]) => {
+          const box = el("input", { type: "checkbox", checked: on });
+          box.addEventListener("change", () => {
+            if (box.checked) {
+              enabled.add(group);
+            } else {
+              enabled.delete(group);
+            }
+            renderTimeline();
+          });
+          return el("label", {}, box, label);
+        }),
+      );
+      window.addEventListener("resize", () => snapshot && renderEdges());
+      $("map").addEventListener("scroll", () => snapshot && renderEdges());
+      refresh();
+    </script>
+  </body>
+</html>
