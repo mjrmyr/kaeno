@@ -137,6 +137,7 @@ export interface Reported {
   key: string;
   state: ReportState;
   text: string;
+  handedOff?: boolean;
 }
 
 const DAY_MS = 24 * 60 * 60_000;
@@ -660,6 +661,11 @@ export class Engine {
     return tickets;
   }
 
+  async openConversations(context: Context): Promise<ConversationId[]> {
+    return (await this.listTickets(context)).map((ticket) =>
+      parseConversationId(ticket.conversation),
+    );
+  }
   async ticketOf(
     conversation: ConversationId,
     context: Context,
@@ -680,7 +686,7 @@ export class Engine {
     ticket.reports.push(report);
     trim(ticket.reports, LIMITS.reports);
     ticket.updatedAt = now;
-    if (FINAL_REPORTS.includes(reported.state)) {
+    if (reported.handedOff || FINAL_REPORTS.includes(reported.state)) {
       for (const assignment of ticket.assignments) {
         if (assignment.workId === reported.workId) {
           assignment.endedAt ??= now;

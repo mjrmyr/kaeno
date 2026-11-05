@@ -36,6 +36,7 @@ export interface SandboxProvider {
     sandbox: SandboxIdentity,
     cwd: string,
   ): Promise<ExecutionEnv>;
+  stop(sandbox: SandboxIdentity): Promise<void>;
   remove(sandbox: SandboxIdentity): Promise<void>;
   reconcile(active: readonly SandboxIdentity[]): Promise<void>;
 }

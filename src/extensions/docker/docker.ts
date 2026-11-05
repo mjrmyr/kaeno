@@ -54,6 +54,7 @@ export interface DockerEngine {
     options: SandboxOptions,
   ): Promise<void>;
   start(name: string): Promise<void>;
+  stop(name: string): Promise<void>;
   remove(name: string, volume: string): Promise<void>;
   managed(): Promise<DockerContainer[]>;
 }
@@ -154,6 +155,19 @@ export class DockerCli implements DockerEngine {
 
   async start(name: string): Promise<void> {
     await this.run(["start", name]);
+  }
+
+  async stop(name: string): Promise<void> {
+    try {
+      await this.run(["stop", name]);
+    } catch (error) {
+      if (!(
+        error instanceof Error &&
+        /No such (object|container)/i.test(error.message)
+      )) {
+        throw error;
+      }
+    }
   }
 
   async remove(name: string, volume: string): Promise<void> {
@@ -288,6 +302,10 @@ export class DockerSandboxProvider implements SandboxProvider {
       cwd,
       fetch: this.fetch,
     });
+  }
+
+  async stop(sandbox: SandboxIdentity): Promise<void> {
+    await this.engine.stop(containerName(this.scoped(sandbox).id));
   }
 
   async remove(sandbox: SandboxIdentity): Promise<void> {
