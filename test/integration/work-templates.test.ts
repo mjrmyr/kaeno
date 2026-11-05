@@ -13,6 +13,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import { openKaeno } from "../../src/core/application/index.ts";
+import {
+  receive,
+  replies,
+  ROUTER_ASSISTANT_TOOLS,
+  sinceLastAnswer,
+  until,
+} from "../mocks/router.ts";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import {
   parseAgent,
@@ -50,24 +57,40 @@ it("offers and launches every configured worker even when none delegate to each 
       const last = request.messages.findLast(
         (message) => message.role !== "system",
       );
+      if (last?.role === "toolResult") {
+        return fauxAssistantMessage("ok");
+      }
+      const batch = sinceLastAnswer(request);
+      const report = /<report ticket=\\"(k[0-9]+)\\"/.exec(batch);
+      if (report) {
+        return fauxAssistantMessage(
+          [fauxToolCall("reply", { to: report[1], text: "WORK_REPORT" })],
+          { stopReason: "toolUse" },
+        );
+      }
+      const trigger = /<trigger id=\\"(t[0-9]+)\\"/.exec(batch);
       const name = names.find((candidate) =>
-        JSON.stringify(last?.content).includes(`launch:${candidate}`),
+        batch.includes(`launch:${candidate}`),
       );
-      if (last?.role === "user" && name) {
+      if (trigger && name) {
         return fauxAssistantMessage(
           [
-            fauxToolCall("start_work", {
-              agent: name,
-              title: `Run ${name}`,
-              brief: "Complete this independent task.",
+            fauxToolCall("route", {
+              items: [
+                {
+                  trigger: trigger[1],
+                  kind: "accept",
+                  agent: name,
+                  title: `Run ${name}`,
+                  ack: "STARTED",
+                },
+              ],
             }),
           ],
           { stopReason: "toolUse" },
         );
       }
-      return fauxAssistantMessage(
-        last?.role === "toolResult" ? "STARTED" : "WORK_REPORT",
-      );
+      throw new Error(`Unexpected router batch: ${batch}`);
     }),
   );
   const provisioned: string[] = [];
@@ -86,7 +109,7 @@ it("offers and launches every configured worker even when none delegate to each 
     assistant: {
       model: { provider: "openai", modelId: "faux-1" },
       instructions: "Delegate the requested task.",
-      tools: ["start_work"],
+      tools: [...ROUTER_ASSISTANT_TOOLS],
     },
     extensions: [{ durable: CodingTools }],
     work: {
@@ -101,36 +124,27 @@ it("offers and launches every configured worker even when none delegate to each 
     },
   });
   try {
-    for (const name of names) {
-      const id = await core.threads.getOrCreateConversation(`test-${name}`);
-      const binding = await core.harness.snapshot(AgentDoc, id, context);
-      for (const choice of names) {
-        expect(binding?.instructions).toContain(
-          `- local:${choice}: ${choice} independent worker`,
-        );
-      }
-      const task = await core.harness.commit(
-        (tx) =>
-          core.turns.admitUserTurn(tx, id, `launch:${name}`, `request-${name}`),
-        context,
+    const router = await core.router.routerConversation(context);
+    const binding = await core.harness.snapshot(AgentDoc, router, context);
+    for (const choice of names) {
+      expect(binding?.instructions).toContain(
+        `- local:${choice}: ${choice} independent worker`,
       );
-      await core.harness.waitForTask(task, context);
-      const deadline = Date.now() + 5000;
-      while (
-        !(await core.turns.readReplies(id, 0)).replies.some(
-          (reply) => reply.text === "WORK_REPORT",
-        ) &&
-        Date.now() < deadline
-      ) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-      // Only Kaeno's acknowledgment and summary reach the user-facing ledger;
-      // "Verified worker result." is internal worker data, not a chat reply.
-      expect(
-        (await core.turns.readReplies(id, 0)).replies.map(
-          (reply) => reply.text,
-        ),
-      ).toEqual(["STARTED", "WORK_REPORT"]);
+    }
+    for (const name of names) {
+      const thread = `test-${name}`;
+      await receive(core, `launch:${name}`, { thread });
+      await until(
+        async () =>
+          (await replies(core, thread)).some(
+            (reply) => reply.text === "WORK_REPORT",
+          ),
+        `the ${name} report`,
+      );
+      expect((await replies(core, thread)).map((reply) => reply.text)).toEqual([
+        "STARTED",
+        "WORK_REPORT",
+      ]);
     }
     expect(provisioned).toHaveLength(3);
     expect(workerPrompts).toHaveLength(3);

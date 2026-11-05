@@ -1,5 +1,4 @@
 import { generateKeyPairSync } from "node:crypto";
-import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { MemoryStorage, type JsonObject } from "@earendil-works/pi-durable";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
@@ -9,6 +8,7 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import { openKaeno } from "../../src/core/application/index.ts";
 import { expect, it, vi } from "vitest";
+import { ask } from "../mocks/router.ts";
 import {
   githubBinding,
   githubExtension,
@@ -155,12 +155,7 @@ function setup(
       },
     });
     try {
-      const id = await core.threads.getOrCreateConversation("reads");
-      const task = await core.harness.commit(
-        (tx) => core.turns.admitUserTurn(tx, id, "Read", "read"),
-        context,
-      );
-      await core.harness.waitForTask(task, context);
+      expect(await ask(core, "Read")).toBe("Done");
       if (error) {
         throw new Error(output);
       }

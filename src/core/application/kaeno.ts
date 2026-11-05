@@ -4,15 +4,17 @@ import {
   createRegistry,
   defineExtension,
   Harness,
+  type ConversationId,
   type Cursor,
   type Extension,
   type HarnessOptions,
   type HarnessSettings,
   type Storage,
   type ToolRegistration,
+  type Tx,
 } from "@earendil-works/pi-durable";
 import { z } from "zod";
-import { assistantToolPolicy } from "../authority/index.ts";
+import { routerToolPolicy } from "../authority/index.ts";
 import {
   applySetup,
   assertSetupFits,
@@ -26,23 +28,31 @@ import {
   assertRecoveryCompatible,
   HarnessReference,
 } from "../durable/index.ts";
-import { ThreadDirectory } from "../threads/index.ts";
-import { defineControl, defineTurn, TurnCoordinator } from "../turns/index.ts";
+import { defineDelivery, type ChannelRoute } from "../outbox/index.ts";
 import {
-  START_WORK,
+  CHANNEL_NORMS,
+  Engine,
+  ROUTER_EXTENSION,
+  ROUTER_TOOLS,
+  routerInstructions,
+  routerTools,
+  ticketTools,
+  type GateMode,
+  type TriggerDraft,
+} from "../router/index.ts";
+import {
   WORK_EXTENSION,
   WORK_TOOLS,
   Work,
-  workTurns,
   type AgentProfile,
   type WorkEnvironment,
+  type WorkReports,
 } from "../work/index.ts";
 
 export interface Kaeno {
   harness: Harness;
-  threads: ThreadDirectory;
-  turns: TurnCoordinator;
-  /** Absent when Kaeno runs without WORK. */
+  router: Engine;
+  /** Absent when Kaeno runs without WORK: the router can only answer, not accept tickets. */
   work: Work | undefined;
   close(): Promise<void>;
 }
@@ -51,14 +61,21 @@ export interface Kaeno {
 export interface KaenoExtension {
   /** Native tools, tasks, sections, hooks and wrappers, fixed before the harness opens. */
   durable: Extension;
-  /** Tools allowed on result turns. Every other tool is treated as mutating. */
+  /** Tools that change nothing. Every other router tool must cite the owner's message asking for it. */
   readOnlyTools?: readonly string[];
   /** The one native execution-environment provider. */
   environment?: HarnessOptions["env"];
   delivery?: {
     channel: string;
-    send(address: string, text: string): Promise<void>;
-    typing?(address: string): Promise<void>;
+    /** `thread` is the key the message belongs to, so a source can map replies to it back. */
+    send(route: ChannelRoute, text: string, thread: string): Promise<void>;
+    typing?(route: ChannelRoute): Promise<void>;
+    maxWords?: number;
+    /** A ticket's own thread for an event that arrived on `route`: a topic, or a reply chain. */
+    openThread?(
+      route: ChannelRoute,
+      title: string,
+    ): Promise<{ key: string; route: ChannelRoute } | undefined>;
   };
   /** Boundary check of this extension's saved bindings; runs before anything resumes. */
   validateBinding?(binding: Binding): void;
@@ -84,8 +101,9 @@ export interface WorkOptions {
 export interface OpenKaenoOptions {
   storage: Storage;
   models: HarnessOptions["models"];
-  /** Resolved CHAT assistant; core never looks it up by name. */
   assistant: ConversationSetup;
+  /** The programmatic gate per trigger source; unlisted sources are explicit. */
+  sources?: Readonly<Record<string, GateMode>>;
   extensions?: readonly KaenoExtension[];
   work?: WorkOptions;
   onReport?: HarnessOptions["onReport"];
@@ -168,27 +186,19 @@ async function assertBindingsValid(
 /** Explicit native composition. Extensions and raw transactions are trusted application code. */
 export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
   const reference = new HarnessReference();
-  const turn = defineTurn(() => ({
-    async send(notify, text) {
-      if (!notify.route) {
-        return;
-      }
-      const delivery = deliveries.get(notify.route.channel);
+  const notifier = {
+    async send(route: ChannelRoute, text: string, thread: string) {
+      const delivery = deliveries.get(route.channel);
       if (!delivery) {
-        throw new Error(`Missing delivery channel: ${notify.route.channel}`);
+        throw new Error(`Missing delivery channel: ${route.channel}`);
       }
-      await delivery.send(notify.route.address, text);
+      await delivery.send(route, text, thread);
     },
-    async typing(notify) {
-      if (notify.route) {
-        await deliveries
-          .get(notify.route.channel)
-          ?.typing?.(notify.route.address);
-      }
+    async typing(route: ChannelRoute) {
+      await deliveries.get(route.channel)?.typing?.(route);
     },
-  }));
-  const control = defineControl(reference.getHarness);
-  const turns = new TurnCoordinator(reference.getHarness, turn, control);
+  };
+  const delivery = defineDelivery(() => notifier);
 
   const workOptions = options.work;
   if (workOptions) {
@@ -200,27 +210,43 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
   }
   let workerSurface: SetupSurface | undefined;
   const agents = structuredClone(workOptions?.agents ?? []);
+  const reportsToRouter: WorkReports = {
+    report: (tx, reported) => engine.report(tx, reported),
+    ended: (tx, ticket, workId) => engine.assignmentEnded(tx, ticket, workId),
+  };
   const work = workOptions
-    ? new Work(
-        reference.getHarness,
-        workTurns(() => turns),
-        {
-          agents,
-          environment: workOptions.environment,
-          onReport: options.onReport,
-          surface: () => {
-            if (!workerSurface) {
-              throw new Error("WORK used before Kaeno was composed");
-            }
-            return workerSurface;
-          },
-          maxDepth: workOptions.maxDepth ?? 2,
-          maxConcurrent: workOptions.maxConcurrent ?? 4,
+    ? new Work(reference.getHarness, reportsToRouter, {
+        agents,
+        environment: workOptions.environment,
+        onReport: options.onReport,
+        surface: () => {
+          if (!workerSurface) {
+            throw new Error("WORK used before Kaeno was composed");
+          }
+          return workerSurface;
         },
-      )
+        maxDepth: workOptions.maxDepth ?? 2,
+        maxConcurrent: workOptions.maxConcurrent ?? 4,
+      })
     : undefined;
+  const engine = new Engine({
+    harness: reference.getHarness,
+    gate: (trigger: TriggerDraft) =>
+      options.sources?.[trigger.source] ?? "explicit",
+    channel: (name) => deliveries.get(name),
+    notifier: () => notifier,
+    delivery,
+    work,
+    onReport: options.onReport,
+  });
   const workEnvironment = workOptions?.environment;
+  const routerExtension = defineExtension({
+    name: ROUTER_EXTENSION,
+    tools: [...routerTools(engine), ...ticketTools(engine)],
+    tasks: [engine.dispatchTask, delivery],
+  });
   const extensions: KaenoExtension[] = [
+    { durable: routerExtension, readOnlyTools: ROUTER_TOOLS.readOnly },
     ...(options.extensions ?? []),
     ...(work
       ? [
@@ -242,7 +268,7 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
       : []),
   ];
 
-  const names = new Set(["kaeno-channels", "kaeno-tool-authority"]);
+  const names = new Set(["kaeno-tool-authority"]);
   const deliveries = new Map<string, NonNullable<KaenoExtension["delivery"]>>();
   const byName = new Map<string, KaenoExtension>();
   let environment: HarnessOptions["env"];
@@ -286,18 +312,26 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
 
   const durable = extensions.map((extension) => extension.durable);
   const tools = durable.flatMap((extension) => extension.tools ?? []);
-  const policy = assistantToolPolicy(
-    reference.getHarness,
-    tools,
-    extensions.flatMap((extension) => extension.readOnlyTools ?? []),
-    work ? WORK_TOOLS.orchestration : [],
+  const workTools = new Set<string>([
+    ...WORK_TOOLS.orchestration,
+    ...WORK_TOOLS.parent,
+  ]);
+  const ticketToolNames = new Set<string>(ROUTER_TOOLS.ticket);
+  const routerSurface = surfaceOf(
+    durable,
+    (name) => !workTools.has(name) && !ticketToolNames.has(name),
+  );
+  const policy = routerToolPolicy(
+    engine,
+    tools.filter((tool) => routerSurface.tools.has(tool.name)),
+    [
+      ...ROUTER_TOOLS.router,
+      ...extensions.flatMap((extension) => extension.readOnlyTools ?? []),
+    ],
   );
 
-  // Selection is explicit for both CHAT and WORK. Installed tools are never offered implicitly.
   const installed = surfaceOf(durable, () => true);
-  const parentTools = new Set<string>(WORK_TOOLS.parent);
-  const chatSurface = surfaceOf(durable, (name) => !parentTools.has(name));
-  assertSetupFits("Assistant", options.assistant, chatSurface);
+  assertSetupFits("Assistant", options.assistant, routerSurface);
   for (const binding of options.assistant.bindings ?? []) {
     byName.get(binding.owner)?.validateBinding?.(binding);
   }
@@ -315,7 +349,6 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
     // agent definition can select them.
     const surface = surfaceOf(durable, (name) => approved.has(name));
     workerSurface = surface;
-    // Every agent is checked once here, so a misconfigured one fails startup instead of every start_work.
     const ids = new Set<string>();
     for (const agent of agents) {
       if (ids.has(agent.id)) {
@@ -329,34 +362,29 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
     }
   }
 
-  const threads = new ThreadDirectory(reference.getHarness, {
-    async configureChatConversation(tx, id) {
-      await applySetup(tx, id, {
-        setup: options.assistant,
-        surface: chatSurface,
-        extraExtensions: [policy],
-        instructions:
-          work && options.assistant.tools?.includes(START_WORK)
-            ? `${options.assistant.instructions}\n\n${work.describeForChat()}`
-            : options.assistant.instructions,
-        cwd: null,
-      });
-    },
-  });
+  async function configureRouter(tx: Tx, id: ConversationId): Promise<void> {
+    await applySetup(tx, id, {
+      setup: options.assistant,
+      surface: routerSurface,
+      extraExtensions: [policy],
+      instructions: routerInstructions({
+        assistant: options.assistant.instructions,
+        agents: work?.describeAgents() ?? "",
+        channels: CHANNEL_NORMS,
+      }),
+      cwd: null,
+    });
+  }
 
   const registry = createRegistry();
-  for (const extension of [
-    ...durable,
-    policy,
-    defineExtension({ name: "kaeno-channels", tasks: [turn, control] }),
-  ]) {
+  for (const extension of [...durable, policy]) {
     registry.install(extension);
   }
 
   const settings: HarnessSettings = {
     extensions: [],
     toolExecution: "parallel",
-    followUpMode: "one-at-a-time",
+    followUpMode: "all",
     retry: { maxRetries: 4 },
   };
 
@@ -379,15 +407,17 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
 
   const core: Kaeno = {
     harness,
-    threads,
-    turns,
+    router: engine,
     work,
     close() {
-      // NOTE: can't we just return that async function using Promise?
-      // that would be cleaner
       closing ??= (async () => {
         stopping.abort();
         const errors: unknown[] = [];
+        try {
+          await engine.close();
+        } catch (error) {
+          errors.push(error);
+        }
         // Keep extension clients alive until in-flight durable invocations stop.
         try {
           await harness.close(BACKGROUND_CONTEXT);
@@ -419,21 +449,19 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
 
     for (const { record } of (await harness.inspect(BACKGROUND_CONTEXT))
       .tasks) {
-      if (record.kind !== "kaeno.turn") {
+      if (record.kind !== "kaeno.delivery") {
         continue;
       }
 
-      const { notify } = z
+      const { route } = z
         .object({
-          notify: z
-            .object({ route: z.object({ channel: z.string() }).optional() })
-            .optional(),
+          route: z.object({ channel: z.string() }).nullable(),
         })
         .parse(record.input);
 
-      if (notify?.route && !deliveries.has(notify.route.channel)) {
+      if (route && !deliveries.has(route.channel)) {
         throw new Error(
-          `Missing delivery channel: ${notify.route.channel} (task ${record.id})`,
+          `Missing delivery channel: ${route.channel} (task ${record.id})`,
         );
       }
     }
@@ -448,7 +476,7 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
       owner.validateBinding?.(binding);
     }, BACKGROUND_CONTEXT);
 
-    await threads.refreshIdleConversations();
+    await engine.open(configureRouter, BACKGROUND_CONTEXT);
 
     if (work && workEnvironment) {
       // Cleanup is retried by the timer. An unavailable API or one stale resource

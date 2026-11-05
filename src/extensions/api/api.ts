@@ -1,7 +1,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { z } from "zod";
-import type { Kaeno } from "../../core/application/index.ts";
+import { recall, type Kaeno } from "../../core/application/index.ts";
 import {
   forgetEntry,
   memoryIndex,
@@ -42,8 +42,45 @@ export class ApiServer {
           return json(200, { ok: true });
         }
 
-        if (req.method === "GET" && url.pathname === "/v1/threads") {
-          return json(200, await core.threads.listConversations());
+        if (req.method === "GET" && url.pathname === "/v1/tickets") {
+          const all = url.searchParams.get("all") === "true";
+          return json(
+            200,
+            await core.router.listTickets(BACKGROUND_CONTEXT, all),
+          );
+        }
+        const ticket = /^\/v1\/tickets\/(k[0-9]{1,15})(\/stop)?$/.exec(
+          url.pathname,
+        );
+        if (ticket && req.method === "GET" && !ticket[2]) {
+          return json(200, {
+            ticket: await core.router.ticket(ticket[1], BACKGROUND_CONTEXT),
+            recall: await recall(
+              core.router,
+              ticket[1],
+              0,
+              4000,
+              BACKGROUND_CONTEXT,
+            ),
+          });
+        }
+        if (ticket && req.method === "POST" && ticket[2]) {
+          const works = await core.harness.commit(
+            (tx) =>
+              core.router.stopTicket(
+                tx,
+                ticket[1],
+                "owner",
+                "stopped by the owner",
+              ),
+            BACKGROUND_CONTEXT,
+          );
+          await core.router.abortWorks(works, BACKGROUND_CONTEXT);
+          return json(202, { stopped: ticket[1] });
+        }
+        if (req.method === "POST" && url.pathname === "/v1/router/compact") {
+          await core.router.compact(BACKGROUND_CONTEXT);
+          return json(202, { compacting: true });
         }
 
         if (routines && url.pathname === "/v1/routines") {
@@ -161,7 +198,7 @@ export class ApiServer {
             ["__proto__", "constructor", "prototype"].includes(
               input.requestId,
             ) ||
-            input.requestId.startsWith("activity-result:")
+            /^(reply|ack|unrouted):/.test(input.requestId)
           ) {
             throw new Error("Invalid requestId");
           }
@@ -175,27 +212,40 @@ export class ApiServer {
           throw new Error("Invalid reply cursor");
         }
 
-        const id = await core.threads.getOrCreateConversation(match[1]);
+        const thread = match[1];
         if (match[2] === "replies") {
-          return json(200, await core.turns.readReplies(id, after));
+          return json(
+            200,
+            await core.router.readReplies(thread, after, BACKGROUND_CONTEXT),
+          );
         }
-
-        const taskId = await core.harness.commit((tx) => {
-          if (input) {
-            return core.turns.admitUserTurn(
-              tx,
-              id,
-              input.text,
-              input.requestId,
-            );
-          }
-
-          return match[2] === "reset"
-            ? core.turns.admitReset(tx, id)
-            : core.turns.admitStop(tx, id);
-        }, BACKGROUND_CONTEXT);
-
-        return json(202, { taskId });
+        if (match[2] === "reset") {
+          await core.router.compact(BACKGROUND_CONTEXT);
+          return json(202, { compacting: true });
+        }
+        if (!input) {
+          const works = await core.harness.commit(
+            async (tx) => (await core.router.stopAll(tx, thread)).works,
+            BACKGROUND_CONTEXT,
+          );
+          await core.router.abortWorks(works, BACKGROUND_CONTEXT);
+          return json(202, { stopped: works.length });
+        }
+        const message = input;
+        const received = await core.harness.commit(
+          (tx) =>
+            core.router.receive(tx, {
+              key: `http:${thread}:${message.requestId}`,
+              source: thread.startsWith("pi:") ? "pi" : "http",
+              threads: [thread],
+              actor: "http",
+              authority: "owner",
+              content: message.text,
+              requestId: message.requestId,
+            }),
+          BACKGROUND_CONTEXT,
+        );
+        return json(202, { trigger: received.id });
       } catch (error) {
         if (!res.destroyed) {
           json(400, {

@@ -40,7 +40,7 @@ const configuration = await loadEnvironment({
 });
 ```
 
-Without policy additions, these extensions are installed but contribute nothing to agent assignments. The standard policy includes WORK orchestration and skill readers for CHAT, coding/WORK/skill readers for workers, and available file-source skills with no default skill assignments. Browser remains excluded from the assistant even if its profile requests a browser tool. Browser also checks the sandbox requirement during execution; policy does not replace that safety boundary.
+Without policy additions, these extensions are installed but contribute nothing to agent assignments. The standard policy includes the routing tools and skill readers for the router, coding/WORK/ticket/skill readers for workers, and available file-source skills with no default skill assignments. Browser remains excluded from the assistant even if its profile requests a browser tool. Browser also checks the sandbox requirement during execution; policy does not replace that safety boundary.
 
 `available` and `defaults` accept:
 
@@ -128,7 +128,7 @@ Repository/ref export keys, complete-load recipes and new provenance include the
 
 Core stores opaque owner/version/value bindings and validates them through installed owners. Saved skill documents, assets, hashes and provenance are immutable snapshots; recovery does not reload producer catalogs or source files. A skills-only producer can disappear while old knowledge remains readable through the installed catalog-free skills runtime. Native definitions or private binding owners required by saved work cannot disappear silently.
 
-New policies govern newly composed profiles. Pending CHAT and frozen WORK retain their saved assignments; narrowing the worker-role ceiling can fail saved WORK recovery. This is not a new per-agent historical revocation system. Extension authorization, such as GitHub's installation access, is still checked by its operations.
+New policies govern newly composed profiles. The router conversation is reconfigured when idle; frozen WORK retains its saved assignments; narrowing the worker-role ceiling can fail saved WORK recovery. This is not a new per-agent historical revocation system. Extension authorization, such as GitHub's installation access, is still checked by its operations.
 
 Execution environments and delivery are separate runtime capabilities, not tool/skill bundles. Definition readers are startup capabilities of installed integrations, not agent tools. Explicit execution-provider installation and the Docker/`./docker.json` default are unchanged. See [execution](execution.md) and [GitHub](github.md).
 

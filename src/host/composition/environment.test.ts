@@ -130,7 +130,8 @@ it("selects assistant and workers from the same catalog, captures origins and ke
   const { configFile } = await fixture();
   const config = await loadEnvironment({ configFile });
   expect(config.assistant.instructions).toBe("Instructions for coordinator.");
-  expect(config.assistant.tools).toContain("start_work");
+  expect(config.assistant.tools).toContain("route");
+  expect(config.assistant.tools).not.toContain("start_work");
   expect(config.assistant.tools).toContain("read_skill");
   expect(config.assistant.bindings).toMatchObject([
     {
@@ -168,7 +169,8 @@ it.each([undefined, []])(
     const config = await loadEnvironment({ configFile });
     expect(config.work.agents).toEqual([]);
     expect(config.work.tools).toContain("read_skill");
-    expect(config.assistant.tools).toContain("start_work");
+    expect(config.assistant.tools).toContain("route");
+    expect(config.assistant.tools).not.toContain("start_work");
   },
 );
 it.each([
@@ -202,7 +204,7 @@ it.each([
     "kaeno: Invalid input: expected string, received object",
   );
 });
-it.each(["[]", "[list_work]"])(
+it.each(["[]", "[recall]"])(
   "explicit assistant tools remain exact (%s)",
   async (tools) => {
     const { root, configFile } = await fixture();
@@ -211,10 +213,20 @@ it.each(["[]", "[list_work]"])(
       agent("coordinator", `model: openai/test\ntools: ${tools}\n`),
     );
     expect((await loadEnvironment({ configFile })).assistant.tools).toEqual(
-      tools === "[]" ? [] : ["list_work"],
+      tools === "[]" ? [] : ["recall"],
     );
   },
 );
+it("keeps WORK tools away from the router assistant", async () => {
+  const { root, configFile } = await fixture();
+  await put(
+    join(root, "agents/coordinator.md"),
+    agent("coordinator", "model: openai/test\ntools: [start_work]\n"),
+  );
+  await expect(loadEnvironment({ configFile })).rejects.toThrow(
+    'tool "start_work" is outside policy availability',
+  );
+});
 it("rejects explicit worker tools outside the approved policy before opening core", async () => {
   const { root, configFile } = await fixture();
   await put(

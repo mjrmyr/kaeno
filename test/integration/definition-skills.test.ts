@@ -10,6 +10,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
+import { ask } from "../mocks/router.ts";
 import {
   parseAgent,
   parseAgents,
@@ -119,12 +120,8 @@ it.each([{ tools: [] }, { tools: ["read_skill"] }])(
       extensions: [skillsExtension()],
     });
     try {
-      const id = await core.threads.getOrCreateConversation("native-only");
-      const task = await core.harness.commit(
-        (tx) => core.turns.admitUserTurn(tx, id, "Question", "request"),
-        context,
-      );
-      await core.harness.waitForTask(task, context);
+      expect(await ask(core, "Question")).toBe("DONE");
+      const id = await core.router.routerConversation(context);
       expect(
         (await core.harness.snapshot(AgentDoc, id, context))?.tools,
       ).toEqual(tools);

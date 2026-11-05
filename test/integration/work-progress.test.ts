@@ -15,15 +15,24 @@ import {
   type TaskId,
 } from "@earendil-works/pi-durable";
 import { expect, it, vi } from "vitest";
-import { z } from "zod";
 import {
   openKaeno,
   type WorkEnvironment,
 } from "../../src/core/application/index.ts";
+import { listWork, WorkScope } from "../../src/core/work/index.ts";
+import {
+  assignment,
+  isRouterRequest,
+  receive,
+  ROUTER_ASSISTANT_TOOLS,
+  settle,
+  sinceLastAnswer,
+  startTicket,
+  ticketConversation,
+  ticketWhen,
+} from "../mocks/router.ts";
 
 const model = { provider: "faux", modelId: "faux-1" };
-const orchestration = ["start_work", "inspect_work", "message_work"];
-let nextRequest = 0;
 function call(name: string, args: JsonObject) {
   return answer([fauxToolCall(name, args)], { stopReason: "toolUse" });
 }
@@ -41,10 +50,9 @@ function environment(release: WorkEnvironment["release"]): WorkEnvironment {
     executionEnvironment: async () => undefined,
   };
 }
-/** CHAT launches one worker and acts on keywords; any other input is recorded as a result turn. */
 async function fixture(options: {
   worker: FauxResponseFactory;
-  replyOnResult?: boolean;
+  replyOnQuestion?: boolean;
 }) {
   const faux = fauxProvider();
   const models = createModels();
@@ -52,8 +60,7 @@ async function fixture(options: {
   const busy = latch();
   const entered = vi.fn<() => void>();
   const release = vi.fn<WorkEnvironment["release"]>();
-  const resultInputs: string[] = [];
-  let workId: TaskId | undefined;
+  const routerBatches: string[] = [];
   const hold = defineTool({
     name: "hold",
     description: "Keep WORK executing while it is inspected",
@@ -67,46 +74,30 @@ async function fixture(options: {
   faux.setResponses(
     Array.from({ length: 100 }, () => async (...args) => {
       const [request] = args;
-      if (getCurrentSystemPrompt(request.messages).includes("WORKER")) {
+      if (!isRouterRequest(request)) {
         return options.worker(...args);
       }
       const last = request.messages.findLast(
         (message) => message.role !== "system",
       );
       if (last?.role === "toolResult") {
-        return answer(
-          last.content
-            .flatMap((block) => (block.type === "text" ? [block.text] : []))
-            .join(""),
-        );
+        return answer("ok");
       }
-      const content = JSON.stringify(last?.content);
-      if (content.includes("launch")) {
-        return call("start_work", {
-          agent: "worker",
-          title: "Progress",
-          brief: "Work",
-        });
-      }
-      if (workId === undefined) {
-        throw new Error("No work to address");
-      }
-      if (content.includes("inspect-now")) {
-        return call("inspect_work", { id: workId });
-      }
-      if (content.includes("reply-now")) {
-        return call("message_work", { id: workId, text: "User answer: main" });
-      }
-      resultInputs.push(content);
-      return options.replyOnResult && content.includes("waits for a reply")
-        ? call("message_work", { id: workId, text: "Context answer: main" })
+      const batch = sinceLastAnswer(request);
+      routerBatches.push(batch);
+      return options.replyOnQuestion && batch.includes('state=\\"waiting\\"')
+        ? call("message_ticket", { ticket: "k1", text: "Context answer: main" })
         : answer("RESULT OBSERVED");
     }),
   );
   const core = await openKaeno({
     storage: new MemoryStorage(),
     models,
-    assistant: { model, instructions: "CHAT", tools: orchestration },
+    assistant: {
+      model,
+      instructions: "ROUTER",
+      tools: [...ROUTER_ASSISTANT_TOOLS],
+    },
     extensions: [{ durable: defineExtension({ name: "hold", tools: [hold] }) }],
     work: {
       agents: [
@@ -116,34 +107,25 @@ async function fixture(options: {
           setup: {
             model,
             instructions: "WORKER",
-            tools: ["message_parent", "hold"],
+            tools: ["message_parent", "report", "hold"],
           },
         },
       ],
-      tools: [...orchestration, "message_parent", "hold"],
+      tools: ["message_parent", "report", "hold"],
       environment: environment(release),
       maxDepth: 1,
       maxConcurrent: 2,
     },
   });
-  const chat = await core.threads.getOrCreateConversation("progress");
-  async function user(text: string) {
-    const request = `user:${++nextRequest}`;
-    const id = await core.harness.commit(
-      (tx) => core.turns.admitUserTurn(tx, chat, text, request),
-      context,
-    );
-    await core.harness.waitForTask(id, context);
-    const { replies } = await core.turns.readReplies(chat, 0);
-    return replies.find((reply) => reply.requestId === request)?.text;
-  }
+  let workId: TaskId | undefined;
   async function launch() {
-    await user("launch");
-    const page = await core.harness.commit(
-      (tx) => tx.scanTasks({ kind: "kaeno.work" }, 10),
-      context,
-    );
-    workId = page.items[0].id;
+    const ticket = await startTicket(core, {
+      agent: "worker",
+      title: "Progress",
+      content: "Work",
+      key: "progress",
+    });
+    workId = await assignment(core, ticket);
   }
   async function record() {
     if (workId === undefined) {
@@ -152,29 +134,30 @@ async function fixture(options: {
     return core.harness.getTask(workId, context);
   }
   async function inspect() {
-    return z
-      .object({
-        status: z.string(),
-        message: z.string().optional(),
-        latest: z.string().optional(),
-        progress: z.string().optional(),
-        pendingQuestion: z
-          .object({ id: z.number(), text: z.string(), askedAt: z.number() })
-          .optional(),
-      })
-      .parse(JSON.parse((await user("inspect-now")) ?? "null"));
+    const router = await core.router.routerConversation(context);
+    const view = (await listWork(() => core.harness, router)).find(
+      (value) => value.id === workId,
+    );
+    const scope = await core.harness.snapshot(
+      WorkScope,
+      await ticketConversation(core, "k1"),
+      context,
+    );
+    return {
+      status: view?.status,
+      question: scope?.question?.text,
+      progress: scope?.progress ?? undefined,
+    };
   }
   return {
     core,
-    chat,
-    user,
     launch,
     record,
     inspect,
     busy,
     entered,
     release,
-    resultInputs,
+    routerBatches,
   };
 }
 
@@ -198,22 +181,23 @@ it("delivers nonblocking progress while WORK keeps running, then completes", asy
   try {
     await lifecycle.launch();
     await vi.waitFor(() => expect(lifecycle.entered).toHaveBeenCalledOnce());
-    await vi.waitFor(() =>
-      expect(
-        lifecycle.resultInputs.some((input) =>
-          input.includes("publishing now"),
-        ),
-      ).toBe(true),
+    const progressed = await ticketWhen(lifecycle.core, "k1", (ticket) =>
+      ticket.reports.some((report) => report.state === "progress"),
     );
-    const details = await lifecycle.inspect();
-    expect(details).toMatchObject({
+    expect(progressed.reports).toMatchObject([
+      { state: "progress", summary: "publishing now" },
+    ]);
+    expect(progressed.status).toBe("running");
+    expect(await lifecycle.inspect()).toEqual({
       status: "running",
+      question: undefined,
       progress: "publishing now",
     });
-    expect(details).not.toHaveProperty("pendingQuestion");
     expect(JSON.stringify((await lifecycle.record())?.state)).not.toContain(
       '"awaiting":"reply"',
     );
+    await settle(lifecycle.core);
+    expect(lifecycle.routerBatches).toEqual([]);
     lifecycle.busy.release();
     await vi.waitFor(async () =>
       expect((await lifecycle.record())?.state).toMatchObject({
@@ -227,12 +211,18 @@ it("delivers nonblocking progress while WORK keeps running, then completes", asy
         },
       }),
     );
-    // One progress turn and one final report; progress is never redelivered.
-    expect(
-      lifecycle.resultInputs.filter((input) =>
-        input.includes("publishing now"),
-      ),
-    ).toHaveLength(1);
+    await vi.waitFor(() => expect(lifecycle.routerBatches).toHaveLength(1));
+    expect(lifecycle.routerBatches[0]).toContain('state=\\"ready\\"');
+    expect(lifecycle.routerBatches[0]).toContain("publishing now");
+    const done = await ticketWhen(
+      lifecycle.core,
+      "k1",
+      (ticket) => ticket.status === "idle",
+    );
+    expect(done.reports.map((report) => report.state)).toEqual([
+      "progress",
+      "ready",
+    ]);
     expect(lifecycle.release).toHaveBeenCalledOnce();
   } finally {
     lifecycle.busy.release();
@@ -241,25 +231,29 @@ it("delivers nonblocking progress while WORK keeps running, then completes", asy
 });
 
 it.each([
-  { kind: "question", autonomous: false },
-  { kind: undefined, autonomous: false },
-  { kind: "question", autonomous: true },
-  { kind: undefined, autonomous: true },
+  { ask: "message_parent", kind: "question", autonomous: false },
+  { ask: "message_parent", kind: undefined, autonomous: false },
+  { ask: "report", kind: "waiting", autonomous: false },
+  { ask: "message_parent", kind: "question", autonomous: true },
+  { ask: "message_parent", kind: undefined, autonomous: true },
+  { ask: "report", kind: "waiting", autonomous: true },
 ])(
-  "resumes questions from user input or autonomously from context ($kind, autonomous=$autonomous)",
-  async ({ kind, autonomous }) => {
+  "resumes questions from the owner's message or the router's context ($ask $kind, autonomous=$autonomous)",
+  async ({ ask, kind, autonomous }) => {
     let turn = 0;
+    const answers: string[] = [];
     const lifecycle = await fixture({
-      replyOnResult: autonomous,
-      worker: async () => {
+      replyOnQuestion: autonomous,
+      worker: async (request) => {
         turn++;
         if (turn === 1) {
-          return call("message_parent", {
-            ...(kind ? { kind } : {}),
-            text: "Which branch should I publish?",
-          });
+          const text = "Which branch should I publish?";
+          return ask === "report"
+            ? call("report", { state: "waiting", text })
+            : call("message_parent", { ...(kind ? { kind } : {}), text });
         }
         if (turn === 2) {
+          answers.push(JSON.stringify(request.messages.at(-1)));
           return call("hold", {});
         }
         return answer("Verified final result");
@@ -275,21 +269,27 @@ it.each([
         );
         expect(await lifecycle.inspect()).toMatchObject({
           status: "awaiting-reply",
-          message: "Which branch should I publish?",
-          pendingQuestion: {
-            id: expect.any(Number),
-            text: "Which branch should I publish?",
-            askedAt: expect.any(Number),
-          },
+          question: "Which branch should I publish?",
+        });
+        const asked = await lifecycle.core.router.ticket("k1", context);
+        expect(asked.reports.at(-1)).toMatchObject({
+          state: "waiting",
+          summary: "Which branch should I publish?",
         });
         expect(turn).toBe(1);
-        await lifecycle.user("reply-now");
+        expect(
+          (
+            await receive(lifecycle.core, "User answer: main", {
+              thread: "test:ticket:progress",
+            })
+          ).path,
+        ).toBe("tickets");
       }
       await vi.waitFor(() => expect(lifecycle.entered).toHaveBeenCalledOnce());
-      const resumed = await lifecycle.inspect();
-      expect(resumed).toMatchObject({ status: "running" });
-      expect(resumed).not.toHaveProperty("pendingQuestion");
-      expect(resumed).not.toHaveProperty("message");
+      expect(answers[0]).toContain(
+        autonomous ? "Context answer: main" : "User answer: main",
+      );
+      expect(await lifecycle.inspect()).toMatchObject({ status: "running" });
       lifecycle.busy.release();
       await vi.waitFor(async () =>
         expect((await lifecycle.record())?.state).toMatchObject({
@@ -297,6 +297,12 @@ it.each([
           outcome: { result: { text: "Verified final result" } },
         }),
       );
+      const done = await ticketWhen(
+        lifecycle.core,
+        "k1",
+        (ticket) => ticket.status === "idle",
+      );
+      expect(done.assignments).toHaveLength(1);
     } finally {
       lifecycle.busy.release();
       await lifecycle.core.close();
@@ -327,6 +333,9 @@ it("routes child progress to its WORK parent without stopping the child", async 
         (message) => message.role !== "system",
       );
       const content = JSON.stringify(last?.content);
+      if (isRouterRequest(request)) {
+        return answer("ACK");
+      }
       if (system.includes("CHILD PROFILE")) {
         if (++childTurns === 1) {
           return call("message_parent", {
@@ -356,20 +365,17 @@ it("routes child progress to its WORK parent without stopping the child", async 
             : "Waiting for child",
         );
       }
-      if (last?.role === "user" && content.includes("launch")) {
-        return call("start_work", {
-          agent: "parent",
-          title: "Parent",
-          brief: "Coordinate",
-        });
-      }
       return answer("ACK");
     }),
   );
   const core = await openKaeno({
     storage: new MemoryStorage(),
     models,
-    assistant: { model, instructions: "CHAT", tools: ["start_work"] },
+    assistant: {
+      model,
+      instructions: "ROUTER",
+      tools: [...ROUTER_ASSISTANT_TOOLS],
+    },
     extensions: [{ durable: defineExtension({ name: "hold", tools: [hold] }) }],
     work: {
       agents: [
@@ -398,12 +404,11 @@ it("routes child progress to its WORK parent without stopping the child", async 
     },
   });
   try {
-    const chat = await core.threads.getOrCreateConversation("tree");
-    const turn = await core.harness.commit(
-      (tx) => core.turns.admitUserTurn(tx, chat, "launch", "launch"),
-      context,
-    );
-    await core.harness.waitForTask(turn, context);
+    await startTicket(core, {
+      agent: "parent",
+      title: "Parent",
+      content: "Coordinate",
+    });
     await vi.waitFor(() => expect(received).toHaveLength(1));
     expect(childTurns).toBe(2);
     const records = await core.harness.commit(

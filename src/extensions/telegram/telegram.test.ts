@@ -2,12 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
-import {
-  TelegramClient,
-  loadTelegram,
-  telegramExtension,
-  type TelegramTransport,
-} from "./index.ts";
+import { TelegramClient, loadTelegram } from "./index.ts";
 
 function response(result: unknown) {
   return new Response(JSON.stringify({ ok: true, result }));
@@ -18,6 +13,10 @@ it("long-polls only messages using the persisted offset and an abortable request
       {
         update_id: 12,
         message: {
+          message_id: 5,
+          message_thread_id: 7,
+          is_topic_message: true,
+          reply_to_message: { message_id: 4, text: "earlier" },
           chat: { id: 111, type: "private" },
           from: { id: 111, is_bot: false },
           text: "hello",
@@ -27,7 +26,16 @@ it("long-polls only messages using the persisted offset and an abortable request
   );
   const client = new TelegramClient("token", fetch);
   const abort = new AbortController();
-  expect(await client.fetchUpdates(10, abort.signal)).toHaveLength(1);
+  expect(await client.fetchUpdates(10, abort.signal)).toMatchObject([
+    {
+      update_id: 12,
+      message: {
+        message_id: 5,
+        message_thread_id: 7,
+        reply_to_message: { message_id: 4, text: "earlier" },
+      },
+    },
+  ]);
   expect(fetch.mock.calls[0][0]).toBe(
     "https://api.telegram.org/bottoken/getUpdates",
   );
@@ -45,12 +53,23 @@ it("rejects malformed updates, unsuccessful HTTP responses and Telegram API erro
     .fn<typeof globalThis.fetch>()
     .mockResolvedValueOnce(response([{ update_id: "bad" }]))
     .mockResolvedValueOnce(
+      response([
+        {
+          update_id: 1,
+          message: { chat: { id: 111, type: "private" }, text: "hello" },
+        },
+      ]),
+    )
+    .mockResolvedValueOnce(
       new Response(JSON.stringify({ ok: true, result: [] }), { status: 500 }),
     )
     .mockResolvedValueOnce(
       new Response(JSON.stringify({ ok: false, error_code: 429 })),
     );
   const client = new TelegramClient("token", fetch);
+  await expect(
+    client.fetchUpdates(0, new AbortController().signal),
+  ).rejects.toThrow();
   await expect(
     client.fetchUpdates(0, new AbortController().signal),
   ).rejects.toThrow();
@@ -86,13 +105,16 @@ it("downloads files through getFile", async () => {
   );
   await expect(client.download("abc")).rejects.toThrow();
 });
-it("splits plain-text replies safely, preserves Unicode and uses the requested chat", async () => {
+it("splits plain-text replies safely, preserves Unicode, returns every message ID and quotes only once", async () => {
+  let next = 100;
   const fetch = vi
     .fn<typeof globalThis.fetch>()
-    .mockImplementation(async () => response(true));
+    .mockImplementation(async () => response({ message_id: ++next }));
   const client = new TelegramClient("token", fetch);
   const text = `${"x".repeat(1999)}🙂${"y".repeat(3000)}`;
-  await client.sendMessage(111, text);
+  expect(
+    await client.sendMessage(111, text, { threadId: 7, replyTo: 5 }),
+  ).toEqual([101, 102, 103]);
   const bodies = fetch.mock.calls.map(([, init]) =>
     JSON.parse(String(init?.body)),
   );
@@ -101,33 +123,51 @@ it("splits plain-text replies safely, preserves Unicode and uses the requested c
     bodies.every(
       (body) =>
         body.chat_id === 111 &&
+        body.message_thread_id === 7 &&
         body.text.length <= 4000 &&
         body.text.isWellFormed() &&
         body.parse_mode === undefined,
     ),
   ).toBe(true);
+  expect(bodies.map((body) => body.reply_parameters)).toEqual([
+    { message_id: 5, allow_sending_without_reply: true },
+    undefined,
+    undefined,
+  ]);
+  await client.sendMessage(111, "plain");
+  const plain = JSON.parse(String(fetch.mock.lastCall?.[1]?.body));
+  expect(plain).not.toHaveProperty("message_thread_id");
+  expect(plain).not.toHaveProperty("reply_parameters");
   await client.sendTypingIndicator(222);
   expect(JSON.parse(String(fetch.mock.lastCall?.[1]?.body))).toEqual({
     chat_id: 222,
     action: "typing",
   });
+  await client.sendTypingIndicator(222, 7);
+  expect(JSON.parse(String(fetch.mock.lastCall?.[1]?.body))).toEqual({
+    chat_id: 222,
+    action: "typing",
+    message_thread_id: 7,
+  });
 });
-it("does not deliver to removed, malformed or unapproved addresses", async () => {
-  const client: TelegramTransport = {
-    fetchUpdates: vi.fn<TelegramTransport["fetchUpdates"]>(),
-    sendMessage: vi.fn<TelegramTransport["sendMessage"]>(),
-    sendTypingIndicator: vi.fn<TelegramTransport["sendTypingIndicator"]>(),
-    download: vi.fn<TelegramTransport["download"]>(),
-  };
-  const extension = telegramExtension({ allowedChatIds: [111], client });
-  for (const address of ["222", "0111", "-111", "not-a-chat"]) {
-    await expect(extension.delivery?.send(address, "secret")).rejects.toThrow(
-      "not an allowed private chat",
+it("creates a topic with a name Telegram accepts and returns its thread ID", async () => {
+  const fetch = vi
+    .fn<typeof globalThis.fetch>()
+    .mockResolvedValueOnce(response({ message_thread_id: 77, name: "x" }))
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: false, error_code: 400 })),
     );
-  }
-  await extension.delivery?.send("111", "reply");
-  expect(client.sendMessage).toHaveBeenCalledExactlyOnceWith(111, "reply");
+  const client = new TelegramClient("token", fetch);
+  expect(await client.createTopic(111, `${"🙂".repeat(130)}`)).toBe(77);
+  expect(fetch.mock.calls[0][0]).toBe(
+    "https://api.telegram.org/bottoken/createForumTopic",
+  );
+  const body = JSON.parse(String(fetch.mock.calls[0][1]?.body));
+  expect(body.chat_id).toBe(111);
+  expect(Array.from(body.name)).toHaveLength(128);
+  await expect(client.createTopic(111, "Research")).rejects.toThrow("400");
 });
+
 it("loads strict owner configuration and requires a token and at least one private chat", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-telegram-config-"));
   const file = join(directory, "telegram.json");

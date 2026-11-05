@@ -22,8 +22,17 @@ import {
   openKaeno,
   type AgentProfile,
 } from "../../src/core/application/index.ts";
+import {
+  isRouterRequest,
+  receive,
+  replies,
+  ROUTER_ASSISTANT_TOOLS,
+  startTicket,
+  ticketWhen,
+  until,
+} from "../mocks/router.ts";
 
-it("runs all-to-all delegation through core-only agents, keeps frozen children, exact tools and the v3 stored plan", async () => {
+it("runs all-to-all delegation through core-only agents, keeps frozen children, exact tools and the v4 stored plan", async () => {
   const faux = fauxProvider();
   const models = createModels();
   models.setProvider(faux.provider);
@@ -44,6 +53,9 @@ it("runs all-to-all delegation through core-only agents, keeps frozen children, 
       const last = request.messages.findLast(
         (message) => message.role !== "system",
       );
+      if (isRouterRequest(request)) {
+        return fauxAssistantMessage("ok");
+      }
       if (
         system.includes("PARENT") &&
         last?.role === "user" &&
@@ -71,30 +83,17 @@ it("runs all-to-all delegation through core-only agents, keeps frozen children, 
         prompts.push(system);
         return fauxAssistantMessage("LEAF REPORT");
       }
-      if (
-        last?.role === "user" &&
-        JSON.stringify(last.content).includes("launch-root")
-      ) {
-        return fauxAssistantMessage(
-          [
-            fauxToolCall("start_work", {
-              agent: "parent",
-              title: "Parent",
-              brief: "Coordinate",
-            }),
-          ],
-          { stopReason: "toolUse" },
-        );
-      }
-      return fauxAssistantMessage(
-        last?.role === "toolResult" ? "STARTED" : "REPORTED",
-      );
+      throw new Error("Unexpected model request");
     }),
   );
   const core = await openKaeno({
     storage: new MemoryStorage(),
     models,
-    assistant: { model, instructions: "CHAT", tools: ["start_work"] },
+    assistant: {
+      model,
+      instructions: "ROUTER",
+      tools: [...ROUTER_ASSISTANT_TOOLS],
+    },
     work: {
       agents,
       tools: ["start_work"],
@@ -103,22 +102,21 @@ it("runs all-to-all delegation through core-only agents, keeps frozen children, 
     },
   });
   try {
-    const id = await core.threads.getOrCreateConversation("tree");
-    const task = await core.harness.commit(
-      (tx) => core.turns.admitUserTurn(tx, id, "launch-root", "root"),
-      context,
+    const ticket = await startTicket(core, {
+      agent: "parent",
+      title: "Parent",
+      content: "Coordinate",
+    });
+    const done = await ticketWhen(
+      core,
+      ticket,
+      (value) => value.reports.some((report) => report.state === "ready"),
+      "the parent's report",
     );
-    await core.harness.waitForTask(task, context);
-    await vi.waitFor(
-      async () => {
-        expect(
-          (await core.turns.readReplies(id, 0)).replies.some(
-            (reply) => reply.text === "REPORTED",
-          ),
-        ).toBe(true);
-      },
-      { timeout: 5000 },
-    );
+    expect(done.reports.at(-1)).toMatchObject({
+      state: "ready",
+      summary: "PARENT REPORT",
+    });
     expect(prompts).toHaveLength(1);
     expect(prompts[0]).toContain("LEAF");
     expect(prompts[0]).not.toContain("CHANGED");
@@ -139,7 +137,6 @@ it("runs all-to-all delegation through core-only agents, keeps frozen children, 
           setup.tools.length === 0,
       ),
     ).toBe(true);
-    // Durable bytes are unchanged: kaeno.work v3 input keeps `agent` and `plan.participants`.
     const record = (
       await core.harness.commit((tx) => tx.scanTasks({}, 100), context)
     ).items.find(
@@ -147,9 +144,11 @@ it("runs all-to-all delegation through core-only agents, keeps frozen children, 
         task.kind === "kaeno.work" &&
         JSON.stringify(task.input).includes('"agent":"parent"'),
     );
-    expect(record?.version).toBe(3);
+    expect(record?.version).toBe(4);
     expect(record?.input).toMatchObject({
       agent: "parent",
+      parent: { kind: "ticket", ticket },
+      conversation: { kind: "ticket", id: done.conversation },
       plan: {
         root: "parent",
         participants: {
@@ -176,33 +175,31 @@ it("runs all-to-all delegation through core-only agents, keeps frozen children, 
   }
 });
 
-it("keeps orchestration usable and explains failed delegation without configured agents", async () => {
+it("keeps the router usable and explains a failed ticket without configured agents", async () => {
   const faux = fauxProvider();
   const models = createModels();
   models.setProvider(faux.provider);
   const model = { provider: "faux", modelId: "faux-1" };
-  const failure = "No worker agents are configured";
-  const tools = [
-    "start_work",
-    "list_work",
-    "inspect_work",
-    "message_work",
-    "cancel_work",
-  ];
+  const tools = [...ROUTER_ASSISTANT_TOOLS];
   let observedFailure = false;
   faux.setResponses([
     async (request) => {
       const prompt = getCurrentSystemPrompt(request.messages);
-      expect(prompt).toContain("You support delegation with start_work");
       expect(prompt).toContain("No worker agents are configured");
       return fauxAssistantMessage(
         [
-          fauxToolCall("start_work", {
-            agent: "broken",
-            title: "Attempt",
-            brief: "Delegate",
+          fauxToolCall("route", {
+            items: [
+              {
+                trigger: "t1",
+                kind: "accept",
+                agent: "broken",
+                title: "Attempt",
+                ack: "On it.",
+              },
+            ],
           }),
-          fauxToolCall("list_work", {}),
+          fauxToolCall("list_tickets", {}),
         ],
         { stopReason: "toolUse" },
       );
@@ -212,36 +209,34 @@ it("keeps orchestration usable and explains failed delegation without configured
         (message) => message.role === "toolResult",
       );
       expect(results).toHaveLength(2);
-      expect(JSON.stringify(results)).toContain(failure);
-      expect(JSON.stringify(results)).toContain('"text":"[]"');
+      expect(JSON.stringify(results)).toContain("t1: not routed");
       observedFailure = true;
-      return fauxAssistantMessage(
-        "I support delegation, but no worker can run yet.",
-      );
+      return fauxAssistantMessage("I can answer, but no worker can run yet.");
     },
   ]);
   const core = await openKaeno({
     storage: new MemoryStorage(),
     models,
-    assistant: { model, instructions: "CHAT", tools },
+    assistant: { model, instructions: "ROUTER", tools },
     work: { agents: [], tools: [] },
   });
   try {
-    const id = await core.threads.getOrCreateConversation(
-      "no-available-workers",
-    );
-    expect((await core.harness.snapshot(AgentDoc, id, context))?.tools).toEqual(
-      tools,
-    );
-    const task = await core.harness.commit(
-      (tx) => core.turns.admitUserTurn(tx, id, "Delegate this", "delegate"),
-      context,
-    );
-    await core.harness.waitForTask(task, context);
-    expect(observedFailure).toBe(true);
+    const router = await core.router.routerConversation(context);
     expect(
-      (await core.turns.readReplies(id, 0)).replies.map((reply) => reply.text),
-    ).toContain("I support delegation, but no worker can run yet.");
+      (await core.harness.snapshot(AgentDoc, router, context))?.tools,
+    ).toEqual(tools);
+    await receive(core, "Delegate this", { key: "delegate" });
+    await until(
+      async () =>
+        (await replies(core)).some(
+          (reply) => reply.text === "I can answer, but no worker can run yet.",
+        ),
+      "the router's answer",
+    );
+    expect(observedFailure).toBe(true);
+    await expect(
+      startTicket(core, { agent: "broken", content: "Delegate" }),
+    ).rejects.toThrow(/Unknown agent "broken"/);
     const tasks = await core.harness.commit(
       (tx) => tx.scanTasks({}, 100),
       context,
@@ -249,6 +244,7 @@ it("keeps orchestration usable and explains failed delegation without configured
     expect(tasks.items.filter((task) => task.kind === "kaeno.work")).toEqual(
       [],
     );
+    expect(await core.router.listTickets(context, true)).toEqual([]);
   } finally {
     await core.close();
   }
@@ -314,8 +310,8 @@ it.each([
         models: createModels(),
         assistant: {
           model: { provider: "faux", modelId: "faux-1" },
-          instructions: "CHAT",
-          tools: ["start_work"],
+          instructions: "ROUTER",
+          tools: [...ROUTER_ASSISTANT_TOOLS],
         },
         work: { agents, tools: [] },
       }),
@@ -323,20 +319,23 @@ it.each([
   },
 );
 
-it("keeps message_parent out of the assistant's selectable tools", async () => {
-  await expect(
-    openKaeno({
-      storage: new MemoryStorage(),
-      models: createModels(),
-      assistant: {
-        model: { provider: "faux", modelId: "faux-1" },
-        instructions: "CHAT",
-        tools: ["message_parent"],
-      },
-      work: { agents: [], tools: [] },
-    }),
-  ).rejects.toThrow('Assistant: tool "message_parent" is not available here');
-});
+it.each(["message_parent", "report", "start_work", "list_work"])(
+  "keeps the WORK tool %s out of the assistant's selectable tools",
+  async (tool) => {
+    await expect(
+      openKaeno({
+        storage: new MemoryStorage(),
+        models: createModels(),
+        assistant: {
+          model: { provider: "faux", modelId: "faux-1" },
+          instructions: "ROUTER",
+          tools: [tool],
+        },
+        work: { agents: [], tools: [] },
+      }),
+    ).rejects.toThrow(`Assistant: tool "${tool}" is not available here`);
+  },
+);
 
 it("fails paused preflight when an approved tool disappears from a saved unfinished tree", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-plan-recovery-"));
@@ -383,40 +382,34 @@ it("fails paused preflight when an approved tool disappears from a saved unfinis
     reconcile: async () => {},
     executionEnvironment: async () => undefined,
   };
-  faux.setResponses([
-    fauxAssistantMessage(
-      [
-        fauxToolCall("start_work", {
-          agent: "worker",
-          title: "Pending",
-          brief: "Wait",
-        }),
-      ],
-      { stopReason: "toolUse" },
-    ),
-    fauxAssistantMessage("STARTED"),
-  ]);
   const core = await openKaeno({
     storage: await openNodeSqliteStorage(path),
     models,
-    assistant: { model, instructions: "CHAT", tools: ["start_work"] },
+    assistant: {
+      model,
+      instructions: "ROUTER",
+      tools: [...ROUTER_ASSISTANT_TOOLS],
+    },
     extensions: [extension],
     work: { agents, tools: [read.name], environment },
   });
   try {
-    const id = await core.threads.getOrCreateConversation("pending");
-    const task = await core.harness.commit(
-      (tx) => core.turns.admitUserTurn(tx, id, "launch", "launch"),
-      context,
-    );
-    await core.harness.waitForTask(task, context);
+    await startTicket(core, {
+      agent: "worker",
+      title: "Pending",
+      content: "Wait",
+    });
     await vi.waitFor(() => expect(ensuring).toBe(true));
     await core.close();
     await expect(
       openKaeno({
         storage: await openNodeSqliteStorage(path),
         models,
-        assistant: { model, instructions: "CHAT", tools: ["start_work"] },
+        assistant: {
+          model,
+          instructions: "ROUTER",
+          tools: [...ROUTER_ASSISTANT_TOOLS],
+        },
         extensions: [extension],
         work: { agents: [], tools: [], environment },
       }),

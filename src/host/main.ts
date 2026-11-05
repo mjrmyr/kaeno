@@ -69,21 +69,8 @@ const configuration = await loadEnvironment({
   ],
   policy: (base) => ({
     assistant: {
-      available: [
-        ...base.assistant.available,
-        ...githubExtensions,
-        memoryTools,
-        routineTools,
-        ...zoteroTools,
-        ...(mcp?.policy.assistant.available ?? []),
-      ],
-      defaults: [
-        ...base.assistant.defaults,
-        ...githubExtensions,
-        memoryTools,
-        routineTools,
-        ...zoteroTools,
-      ],
+      available: [...base.assistant.available, memoryTools, routineTools],
+      defaults: [...base.assistant.defaults, memoryTools, routineTools],
     },
     worker: {
       available: [

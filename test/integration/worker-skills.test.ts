@@ -10,9 +10,10 @@ import { AgentDoc, MemoryStorage } from "@earendil-works/pi-durable";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import { openKaeno } from "../../src/core/application/index.ts";
 import { loadEnvironment } from "../../src/host/composition/index.ts";
+import { startTicket, ticketWhen, until } from "../mocks/router.ts";
 
 it.each([false, true])(
   "gives root and nested workers lazy skill tools independently of assignments (%s)",
@@ -85,19 +86,7 @@ it.each([false, true])(
           }
           prompts.set(role, system);
           if (role === "chat") {
-            if (
-              last?.role === "user" &&
-              JSON.stringify(last.content).includes("launch-root")
-            ) {
-              return call("start_work", {
-                agent: "parent",
-                title: "Parent",
-                brief: "Discover skills and delegate to leaf.",
-              });
-            }
-            return fauxAssistantMessage(
-              last?.role === "toolResult" ? "STARTED" : "REPORTED",
-            );
+            return fauxAssistantMessage("REPORTED");
           }
           if (last?.role === "toolResult") {
             if (last.toolName === "list_skills") {
@@ -131,22 +120,22 @@ it.each([false, true])(
         models,
       });
       try {
-        const id = await core.threads.getOrCreateConversation("worker-skills");
-        const task = await core.harness.commit(
-          (tx) => core.turns.admitUserTurn(tx, id, "launch-root", "root"),
-          context,
+        const ticket = await startTicket(core, {
+          agent: "parent",
+          title: "Parent",
+          content: "Discover skills and delegate to leaf.",
+        });
+        const done = await ticketWhen(
+          core,
+          ticket,
+          (value) => value.status === "idle",
+          "the parent's report",
         );
-        await core.harness.waitForTask(task, context);
-        await vi.waitFor(
-          async () => {
-            expect(
-              (await core.turns.readReplies(id, 0)).replies.some(
-                (reply) => reply.text === "REPORTED",
-              ),
-            ).toBe(true);
-          },
-          { timeout: 5000 },
-        );
+        expect(done.reports.at(-1)).toMatchObject({
+          state: "ready",
+          summary: "PARENT REPORT",
+        });
+        await until(() => prompts.has("chat"), "the router's turn");
         expect(lists.size).toBe(2);
         expect(lists.get("parent")).toContain('"text":"[]"');
         if (assigned) {

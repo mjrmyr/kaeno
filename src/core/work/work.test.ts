@@ -6,37 +6,32 @@ import {
   createMockTransaction,
 } from "../../../test/mocks/durable.ts";
 import { conversationId, taskId } from "../../../test/mocks/identifiers.ts";
-import { Work, WorkIndex, WorkScope, type WorkTurns } from "./index.ts";
+import {
+  listWork,
+  NoWorkSlot,
+  Work,
+  WorkIndex,
+  WorkScope,
+  type WorkReports,
+} from "./index.ts";
 vi.mock("@earendil-works/pi-durable", async () => {
   const { createMockSdk } = await import("../../../test/mocks/sdk.ts");
   return createMockSdk();
 });
-function turns(): WorkTurns {
+function reports(): WorkReports {
   return {
-    getActiveTurn: async () => {
-      throw new Error("Unexpected turn lookup");
-    },
-    isOriginFenced: vi
-      .fn<WorkTurns["isOriginFenced"]>()
-      .mockResolvedValue(false),
-    getPendingReportIds: vi
-      .fn<WorkTurns["getPendingReportIds"]>()
-      .mockResolvedValue([]),
-    suppressWorkReports: vi
-      .fn<WorkTurns["suppressWorkReports"]>()
-      .mockResolvedValue(undefined),
-    admitWorkReport: vi.fn<WorkTurns["admitWorkReport"]>(),
-    admitWorkCancellation: vi.fn<WorkTurns["admitWorkCancellation"]>(),
+    report: vi.fn<WorkReports["report"]>().mockResolvedValue(undefined),
+    ended: vi.fn<WorkReports["ended"]>().mockResolvedValue(undefined),
   };
 }
 function setup(): {
   work: Work;
   runtime: ReturnType<typeof createMockRuntime>;
-  turns: WorkTurns;
+  reports: WorkReports;
 } {
   const runtime = createMockRuntime(createMockTransaction());
-  const coordinator = turns();
-  const work = new Work(() => runtime, coordinator, {
+  const sink = reports();
+  const work = new Work(() => runtime, sink, {
     agents: [
       {
         id: "local:root",
@@ -48,7 +43,7 @@ function setup(): {
     maxDepth: 2,
     maxConcurrent: 4,
   });
-  return { work, runtime, turns: coordinator };
+  return { work, runtime, reports: sink };
 }
 function pending(): TaskRecord<JsonValue, JsonValue, unknown> {
   return {
@@ -63,7 +58,7 @@ function pending(): TaskRecord<JsonValue, JsonValue, unknown> {
   };
 }
 it("publishes orchestration and parent tools and reports an empty directory", async () => {
-  const { work } = setup();
+  const { work, runtime } = setup();
   expect(work.orchestrationTools.map((tool) => tool.name)).toEqual([
     "start_work",
     "list_work",
@@ -71,16 +66,20 @@ it("publishes orchestration and parent tools and reports an empty directory", as
     "message_work",
     "cancel_work",
   ]);
-  expect(work.parentTools.map((tool) => tool.name)).toEqual(["message_parent"]);
-  expect(await work.listWork(conversationId(12))).toEqual([]);
-  expect(work.describeForChat()).toContain("- local:root: Root");
+  expect(work.parentTools.map((tool) => tool.name)).toEqual([
+    "message_parent",
+    "report",
+  ]);
+  expect(await listWork(() => runtime, conversationId(12))).toEqual([]);
+  expect(work.describeAgents()).toContain("- local:root: Root");
+  expect(work.resolveAgent("root")).toBe("local:root");
 });
 it("preserves the durable task and document identities behind the public API", () => {
   const { work } = setup();
   expect(work.extension.name).toBe("kaeno-work");
   expect(work.extension.tasks).toHaveLength(1);
   const definition = work.extension.tasks?.[0].definition;
-  expect(definition).toMatchObject({ name: "kaeno.work", version: 3 });
+  expect(definition).toMatchObject({ name: "kaeno.work", version: 4 });
   expect(Object.keys(definition?.phases ?? {})).toEqual([
     "start",
     "supervise",
@@ -108,9 +107,10 @@ it("preserves the durable task and document identities behind the public API", (
     maxDepth: null,
     agent: null,
     plan: null,
-    message: null,
+    mailbox: null,
     question: null,
     progress: null,
+    outcome: null,
   });
   expect(work.extension.tools).toEqual([
     ...work.orchestrationTools,
@@ -176,7 +176,7 @@ const states: [
 it.each(states)(
   "lists indexed work with a status derived from its durable state (%j)",
   async (state, abortRequested, status) => {
-    const { work, runtime } = setup();
+    const { runtime } = setup();
     vi.spyOn(runtime, "snapshot").mockResolvedValue({
       launches: { call: taskId(24) },
     });
@@ -187,35 +187,13 @@ it.each(states)(
         ? { ...base, state }
         : { ...base, state },
     );
-    expect(await work.listWork(conversationId(12))).toEqual([
+    expect(await listWork(() => runtime, conversationId(12))).toEqual([
       { id: taskId(24), title: "Job", agent: "root", status },
     ]);
   },
 );
-it("rejects cross-chat cancellation before suppressing reports or aborting a task", async () => {
-  const { work, runtime, turns } = setup();
-  await expect(work.cancelWork(conversationId(12), taskId(24))).rejects.toThrow(
-    /belongs to this chat/,
-  );
-  expect(turns.suppressWorkReports).not.toHaveBeenCalled();
-  expect(runtime.abortTask).not.toHaveBeenCalled();
-});
-it("suppresses reports in a transaction before requesting an abort", async () => {
-  const { work, runtime, turns } = setup();
-  vi.spyOn(runtime, "snapshot").mockResolvedValue({
-    launches: { request: taskId(24) },
-  });
-  vi.spyOn(runtime, "getTask").mockResolvedValue(pending());
-  const operations: string[] = [];
-  vi.mocked(turns.suppressWorkReports).mockImplementation(async () => {
-    operations.push("suppress");
-  });
-  vi.mocked(runtime.abortTask).mockImplementation(async () => {
-    operations.push("abort");
-    return "marked";
-  });
-  expect(await work.cancelWork(conversationId(12), taskId(24))).toEqual([
-    taskId(24),
-  ]);
-  expect(operations).toEqual(["suppress", "abort"]);
+it("recognizes a full slot so the router can queue a ticket instead of failing it", () => {
+  const { work } = setup();
+  expect(work.isNoSlot(new NoWorkSlot("full"))).toBe(true);
+  expect(work.isNoSlot(new Error("full"))).toBe(false);
 });

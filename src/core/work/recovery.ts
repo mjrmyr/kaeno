@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Binding } from "../conversation/index.ts";
 import type { WorkRuntime, WorkSettings } from "./model.ts";
 import { assertPlanFits, readPlan, type WorkInstance } from "./plan.ts";
+import { workConversation } from "./directory.ts";
 /**
  * Paused-startup check: every unfinished WORK must retain its execution backend/target and its
  * saved plan must fit the installed worker surface. Reject changes before any resource reconciliation.
@@ -87,14 +88,12 @@ export async function reconcileEnvironment(
     if (record.kind !== "kaeno.work" || record.state.status === "terminal") {
       continue;
     }
-    const conversation = (
-      await harness().commit(
-        (tx) => tx.scanConversations({ ownerTaskId: record.id }, 1),
-        context,
-      )
-    ).items[0];
-    if (conversation) {
-      live.push({ workId: record.id, conversationId: conversation.id });
+    const conversation = await harness().commit(
+      (tx) => workConversation(tx, record),
+      context,
+    );
+    if (conversation !== undefined) {
+      live.push({ workId: record.id, conversationId: conversation });
     }
   }
   await environment.reconcile(live, harness());

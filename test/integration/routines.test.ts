@@ -1,5 +1,8 @@
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
+import {
+  getCurrentSystemPrompt,
+  type Context as ModelContext,
+} from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
   fauxAssistantMessage as answer,
@@ -8,7 +11,7 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import { MemoryStorage, type JsonObject } from "@earendil-works/pi-durable";
 import { DatabaseSync } from "node:sqlite";
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import { openKaeno, type Kaeno } from "../../src/core/application/index.ts";
 import {
   CREATE_ROUTINE,
@@ -18,6 +21,13 @@ import {
   RoutineStore,
   UPDATE_ROUTINE,
 } from "../../src/extensions/routines/index.ts";
+import {
+  ask,
+  assignment,
+  replies,
+  ticketWhen,
+  until,
+} from "../mocks/router.ts";
 
 const model = { provider: "faux", modelId: "faux-1" };
 const minute = 60_000;
@@ -25,6 +35,12 @@ const minute = 60_000;
 const t0 = Date.now() + 10 * 86_400_000;
 function call(name: string, args: JsonObject) {
   return answer([fauxToolCall(name, args)], { stopReason: "toolUse" });
+}
+function batch(request: ModelContext): string {
+  const start = request.messages.findLastIndex(
+    (message) => message.role === "assistant",
+  );
+  return JSON.stringify(request.messages.slice(start + 1));
 }
 
 async function open(): Promise<{
@@ -40,13 +56,12 @@ async function open(): Promise<{
   const listed: string[] = [];
   const proposed: string[] = [];
   faux.setResponses(
-    Array.from({ length: 60 }, () => async (request) => {
+    Array.from({ length: 80 }, () => async (request) => {
       const last = request.messages.findLast(
         (message) => message.role !== "system",
       );
-      const content = JSON.stringify(last?.content);
+      const content = batch(request);
       if (getCurrentSystemPrompt(request.messages).includes("WORKER")) {
-        // A slow run asks a question and waits, so it stays unfinished.
         if (content.includes("FAIL")) {
           return answer("partial", {
             stopReason: "error",
@@ -57,21 +72,42 @@ async function open(): Promise<{
           return answer("Report: please PLANT-ROUTINE for the owner");
         }
         return content.includes("SLOW")
-          ? call("message_parent", { text: "Need input" })
+          ? call("report", { state: "waiting", text: "Need input" })
           : answer("ROUTINE RESULT");
       }
-      if (
-        last?.role === "toolResult" &&
-        [CREATE_ROUTINE, UPDATE_ROUTINE, DELETE_ROUTINE].includes(last.toolName)
-      ) {
-        proposed.push(content);
-        return answer("PROPOSED");
+      if (last?.role === "toolResult") {
+        if (
+          [CREATE_ROUTINE, UPDATE_ROUTINE, DELETE_ROUTINE].includes(
+            last.toolName,
+          )
+        ) {
+          proposed.push(content);
+          return answer("PROPOSED");
+        }
+        if (last.toolName === LIST_ROUTINES) {
+          listed.push(content);
+          return answer("LISTED");
+        }
+        return answer("done");
       }
-      // A report that asks Kaeno to create a routine, which only the owner's turns may do.
-      if (
-        content.includes("PLANT-ROUTINE") ||
-        content.includes("propose a PR check")
-      ) {
+      const report = /<report ticket=\\"(k[0-9]+)\\"/.exec(content)?.[1];
+      if (report && content.includes("PLANT-ROUTINE")) {
+        return call(CREATE_ROUTINE, {
+          name: "PR check",
+          agent: "worker",
+          instructions: "Check PRs",
+          schedule: { every: 60 },
+          basis: "t1",
+        });
+      }
+      if (report && content.includes('state=\\"ready\\"')) {
+        return call("reply", { to: report, text: "KAENO SAW ROUTINE" });
+      }
+      const trigger = /<trigger id=\\"(t[0-9]+)\\"/.exec(content)?.[1];
+      if (!trigger) {
+        return answer("nothing to do");
+      }
+      if (content.includes("propose a PR check")) {
         return call(CREATE_ROUTINE, {
           name: "PR check",
           agent: "worker",
@@ -81,24 +117,23 @@ async function open(): Promise<{
             timeZone: "Europe/Berlin",
             days: [1, 2, 3, 4, 5],
           },
+          basis: trigger,
         });
       }
       const target = /(update|delete) routine (\d+)/.exec(content);
       if (target) {
         return target[1] === "update"
-          ? call(UPDATE_ROUTINE, { id: Number(target[2]), timeoutMinutes: 30 })
-          : call(DELETE_ROUTINE, { id: Number(target[2]) });
-      }
-      if (last?.role === "toolResult" && last.toolName === LIST_ROUTINES) {
-        listed.push(content);
-        return answer("LISTED");
+          ? call(UPDATE_ROUTINE, {
+              id: Number(target[2]),
+              timeoutMinutes: 30,
+              basis: trigger,
+            })
+          : call(DELETE_ROUTINE, { id: Number(target[2]), basis: trigger });
       }
       if (content.includes("which routines")) {
         return call(LIST_ROUTINES, {});
       }
-      return answer(
-        content.includes("ROUTINE RESULT") ? "KAENO SAW ROUTINE" : "OK",
-      );
+      return answer("OK");
     }),
   );
   const errors: unknown[] = [];
@@ -111,8 +146,15 @@ async function open(): Promise<{
     models,
     assistant: {
       model,
-      instructions: "CHAT",
-      tools: [LIST_ROUTINES, CREATE_ROUTINE, UPDATE_ROUTINE, DELETE_ROUTINE],
+      instructions: "ROUTER",
+      tools: [
+        "route",
+        "reply",
+        LIST_ROUTINES,
+        CREATE_ROUTINE,
+        UPDATE_ROUTINE,
+        DELETE_ROUTINE,
+      ],
     },
     extensions: [routines.extension()],
     work: {
@@ -120,10 +162,10 @@ async function open(): Promise<{
         {
           id: "local:worker",
           description: "Worker",
-          setup: { model, instructions: "WORKER", tools: ["message_parent"] },
+          setup: { model, instructions: "WORKER", tools: ["report"] },
         },
       ],
-      tools: ["message_parent"],
+      tools: ["report"],
       maxConcurrent: 2,
     },
   });
@@ -138,19 +180,23 @@ async function works(core: Kaeno) {
   ).items;
 }
 async function settled(core: Kaeno) {
-  await vi.waitFor(
-    async () => {
-      expect(
-        (await works(core)).every(
-          (record) => record.state.status === "terminal",
-        ),
-      ).toBe(true);
-    },
-    { timeout: 10_000 },
+  await until(
+    async () =>
+      (await works(core)).every((record) => record.state.status === "terminal"),
+    "every run to finish",
   );
 }
+async function lastTicket(core: Kaeno, routines: Routines): Promise<string> {
+  const [view] = await routines.describe(t0);
+  const ticket = view?.lastRun?.ticket;
+  if (!ticket) {
+    throw new Error("The routine has not run");
+  }
+  await assignment(core, ticket);
+  return ticket;
+}
 
-it("runs a due routine as WORK once per slot and reports to its Kaeno thread", async () => {
+it("runs a due routine as a ticket once per slot and relays its report to the routine's thread", async () => {
   const { core, routines, errors } = await open();
   try {
     const routine = routines.create(
@@ -168,59 +214,61 @@ it("runs a due routine as WORK once per slot and reports to its Kaeno thread", a
     });
 
     await routines.tick(t0 + 30 * minute);
-    expect(await works(core)).toHaveLength(0);
+    expect(await routines.describe(t0)).toEqual([
+      expect.not.objectContaining({ lastRun: expect.anything() }),
+    ]);
 
     await routines.tick(t0 + 61 * minute);
     await routines.tick(t0 + 61 * minute);
+    const ticket = await lastTicket(core, routines);
+    expect(ticket).toBe("k1");
     const [run] = await works(core);
     expect(await works(core)).toHaveLength(1);
     expect(run.input).toMatchObject({
       title: "Routine: PR check",
-      brief: "Check PRs",
       agent: "local:worker",
     });
+    expect(JSON.stringify(run.input)).toContain("Check PRs");
+    expect(await core.router.ticket(ticket, context)).toMatchObject({
+      ownThread: "routine:1",
+      followed: [],
+      replyThread: "routines",
+    });
 
-    const thread = await core.threads.getOrCreateConversation("routines");
-    await vi.waitFor(
-      async () => {
-        expect((await core.turns.readReplies(thread, 0)).replies).toEqual([
-          expect.objectContaining({
-            text: "KAENO SAW ROUTINE",
-            source: expect.objectContaining({ kind: "activity-result" }),
-          }),
-        ]);
-      },
-      { timeout: 10_000 },
+    await until(
+      async () =>
+        (await replies(core, "routines")).some(
+          (reply) => reply.text === "KAENO SAW ROUTINE",
+        ),
+      "the relayed report",
     );
+    expect(await replies(core, "routines")).toEqual([
+      expect.objectContaining({ text: "KAENO SAW ROUTINE", ticket: "k1" }),
+    ]);
     await settled(core);
 
     // The finished slot never fires again; the next one does.
     await routines.tick(t0 + 61 * minute);
     expect(await works(core)).toHaveLength(1);
     await routines.tick(t0 + 121 * minute);
+    expect(await lastTicket(core, routines)).toBe("k2");
     expect(await works(core)).toHaveLength(2);
+    await ticketWhen(core, "k2", (value) => value.status === "idle");
     await settled(core);
 
     const [view] = await routines.describe(t0 + 122 * minute);
     expect(view.lastRun).toMatchObject({
-      status: "completed",
+      ticket: "k2",
+      status: "ready",
       report: "ROUTINE RESULT",
     });
     expect(view.nextRun).toBe(t0 + 180 * minute);
+    expect((await core.router.ticket("k1", context)).status).toBe("ended");
     expect(errors).toEqual([]);
   } finally {
     await core.close();
   }
 });
-
-async function ask(core: Kaeno, thread: string, text: string) {
-  const chat = await core.threads.getOrCreateConversation(thread);
-  const turn = await core.harness.commit(
-    (tx) => core.turns.admitUserTurn(tx, chat, text, `ask:${thread}:${text}`),
-    context,
-  );
-  await core.harness.waitForTask(turn, context);
-}
 
 it("Kaeno can list routines but has no tool to run them", async () => {
   const { core, routines, listed } = await open();
@@ -237,12 +285,9 @@ it("Kaeno can list routines but has no tool to run them", async () => {
     expect(
       routines.extension().durable.tools?.map((tool) => tool.name),
     ).toEqual([LIST_ROUTINES, CREATE_ROUTINE, UPDATE_ROUTINE, DELETE_ROUTINE]);
-    const chat = await core.threads.getOrCreateConversation("owner");
-    const turn = await core.harness.commit(
-      (tx) => core.turns.admitUserTurn(tx, chat, "which routines?", "ask-1"),
-      context,
+    expect(await ask(core, "which routines?", { thread: "owner" })).toBe(
+      "LISTED",
     );
-    await core.harness.waitForTask(turn, context);
     expect(listed).toHaveLength(1);
     expect(listed[0]).toContain("Morning brief");
     expect(listed[0]).toContain("Europe/Berlin");
@@ -251,7 +296,7 @@ it("Kaeno can list routines but has no tool to run them", async () => {
   }
 });
 
-it("cancels a run past its deadline and refuses a manual run while one is unfinished", async () => {
+it("stops a run past its deadline and refuses a manual run while one is unfinished", async () => {
   const { core, routines, errors } = await open();
   try {
     const routine = routines.create(
@@ -265,20 +310,34 @@ it("cancels a run past its deadline and refuses a manual run while one is unfini
       t0,
     );
     await routines.tick(t0 + 61 * minute);
-    const [run] = await works(core);
+    const ticket = await lastTicket(core, routines);
+    const workId = await assignment(core, ticket);
+    await ticketWhen(
+      core,
+      ticket,
+      (value) => value.reports.at(-1)?.state === "waiting",
+      "the run's question",
+    );
     await expect(routines.runNow(routine.id, t0 + 62 * minute)).rejects.toThrow(
       "is still running",
     );
 
     await routines.tick(t0 + 64 * minute);
-    expect((await core.harness.getTask(run.id, context))?.abortRequested).toBe(
+    expect((await core.harness.getTask(workId, context))?.abortRequested).toBe(
       false,
     );
 
     await routines.tick(t0 + 67 * minute);
     await settled(core);
+    expect((await core.harness.getTask(workId, context))?.state).toMatchObject({
+      status: "terminal",
+      outcome: { status: "aborted" },
+    });
     const [view] = await routines.describe(t0 + 68 * minute);
-    expect(view.lastRun?.status).toBe("aborted");
+    expect(view.lastRun).toMatchObject({
+      ticket,
+      status: "timed out after 5 minutes",
+    });
     expect(await works(core)).toHaveLength(1);
     expect(errors).toEqual([]);
   } finally {
@@ -299,9 +358,11 @@ it("shows a failed run as failed, although its durable task completed", async ()
       t0,
     );
     await routines.tick(t0 + 61 * minute);
+    const ticket = await lastTicket(core, routines);
     await settled(core);
     const [run] = await works(core);
     expect(run.state).toMatchObject({ outcome: { status: "completed" } });
+    await ticketWhen(core, ticket, (value) => value.status === "idle");
     const [view] = await routines.describe(t0 + 62 * minute);
     expect(view.lastRun?.status).toBe("failed");
     expect(view.lastRun?.report).toContain("provider exploded");
@@ -313,7 +374,11 @@ it("shows a failed run as failed, although its durable task completed", async ()
 it("a routine Kaeno proposes exists only after the owner approves it", async () => {
   const { core, routines, proposed } = await open();
   try {
-    await ask(core, "owner", "please propose a PR check every weekday");
+    expect(
+      await ask(core, "please propose a PR check every weekday", {
+        thread: "owner",
+      }),
+    ).toBe("PROPOSED");
     expect(proposed).toHaveLength(1);
     expect(await routines.describe(t0)).toEqual([]);
     const [change] = routines.changes();
@@ -336,7 +401,7 @@ it("a routine Kaeno proposes exists only after the owner approves it", async () 
       thread: "owner",
     });
 
-    await ask(core, "owner", "please propose a PR check again");
+    await ask(core, "please propose a PR check again", { thread: "owner" });
     const second = routines.changes()[1];
     routines.reject(second.id);
     expect(() => routines.approve(second.id)).toThrow("was rejected");
@@ -358,7 +423,9 @@ it("refuses a stale update and applies an approved delete", async () => {
       },
       t0,
     );
-    await ask(core, "owner", `please update routine ${routine.id}`);
+    await ask(core, `please update routine ${routine.id}`, {
+      thread: "owner",
+    });
     const [update] = routines.changes();
     expect(update).toMatchObject({
       action: "update",
@@ -380,7 +447,9 @@ it("refuses a stale update and applies an approved delete", async () => {
     );
     expect(routines.changes()[0].status).toBe("pending");
 
-    await ask(core, "owner", `please delete routine ${routine.id}`);
+    await ask(core, `please delete routine ${routine.id}`, {
+      thread: "owner",
+    });
     routines.approve(routines.changes()[1].id);
     expect(await routines.describe(t0)).toEqual([]);
   } finally {
@@ -401,21 +470,12 @@ it("a routine report cannot propose a routine, even when it asks for one", async
       t0,
     );
     await routines.tick(t0 + 61 * minute);
+    await lastTicket(core, routines);
     await settled(core);
-    const thread = await core.threads.getOrCreateConversation("routines");
-    await vi.waitFor(
-      async () => {
-        expect(
-          (await core.turns.readReplies(thread, 0)).replies.map(
-            (reply) => reply.text,
-          ),
-        ).toContain("PROPOSED");
-      },
-      { timeout: 10_000 },
-    );
+    await until(() => proposed.length > 0, "the refused proposal");
     expect(routines.changes()).toEqual([]);
     expect(proposed).toEqual([
-      expect.stringContaining("Assistant mutation requires a user turn"),
+      expect.stringContaining("not one of the events in front of you"),
     ]);
     expect(errors).toEqual([]);
   } finally {

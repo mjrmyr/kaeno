@@ -5,6 +5,7 @@ export const INSPECT_WORK = "inspect_work";
 export const MESSAGE_WORK = "message_work";
 export const CANCEL_WORK = "cancel_work";
 export const MESSAGE_PARENT = "message_parent";
+export const REPORT = "report";
 export const WORK_EXTENSION = "kaeno-work";
 
 export const WORK_TOOLS = {
@@ -16,6 +17,6 @@ export const WORK_TOOLS = {
     MESSAGE_WORK,
     CANCEL_WORK,
   ],
-  parent: [MESSAGE_PARENT],
+  parent: [MESSAGE_PARENT, REPORT],
   readOnly: [LIST_WORK, INSPECT_WORK],
 } as const;

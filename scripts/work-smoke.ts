@@ -32,7 +32,7 @@ await mkdir(join(directory, "agents/smoke"), { recursive: true });
 await mkdir(join(directory, "agents/worker"), { recursive: true });
 await writeFile(
   join(directory, "agents/smoke/AGENT.md"),
-  "---\nname: smoke\ndescription: Smoke assistant\nmodel: openai/faux-1\ntools: [start_work]\n---\nBe helpful.",
+  "---\nname: smoke\ndescription: Smoke assistant\nmodel: openai/faux-1\ntools: [route, reply]\n---\nBe helpful.",
 );
 await writeFile(
   join(directory, "agents/worker/AGENT.md"),
@@ -129,24 +129,47 @@ faux.setResponses(
         fauxText(`Verified command ran in the ${provider} sandbox.`),
       ]);
     }
-    if (last?.role === "user" && String(last.content).includes("Work #")) {
-      return fauxAssistantMessage([
-        fauxText("Worker report received and summarized."),
-      ]);
+    const batch = JSON.stringify(
+      request.messages.slice(
+        request.messages.findLastIndex(
+          (message) => message.role === "assistant",
+        ) + 1,
+      ),
+    );
+    if (last?.role === "toolResult" && last.toolName === "route") {
+      return fauxAssistantMessage([fauxText("Accepted the smoke ticket.")]);
     }
-    if (last?.role === "toolResult" && last.toolName === "start_work") {
-      return fauxAssistantMessage([fauxText("Started the worker.")]);
+    if (last?.role === "toolResult" && last.toolName === "reply") {
+      return fauxAssistantMessage([fauxText("Relayed the report.")]);
     }
-    if (
-      last?.role === "user" &&
-      String(last.content).includes("delegate-smoke")
-    ) {
+    const report = /<report ticket=\\"(k[0-9]+)\\"[^>]*state=\\"ready\\"/.exec(
+      batch,
+    );
+    if (report) {
       return fauxAssistantMessage(
         [
-          fauxToolCall("start_work", {
-            agent: "worker",
-            title: `${provider} smoke test`,
-            brief: "Run the verification command and report the exact output.",
+          fauxToolCall("reply", {
+            to: report[1],
+            text: "Worker report received and summarized.",
+          }),
+        ],
+        { stopReason: "toolUse" },
+      );
+    }
+    const trigger = /<trigger id=\\"(t[0-9]+)\\"/.exec(batch);
+    if (trigger && batch.includes("delegate-smoke")) {
+      return fauxAssistantMessage(
+        [
+          fauxToolCall("route", {
+            items: [
+              {
+                trigger: trigger[1],
+                kind: "accept",
+                agent: "worker",
+                title: `${provider} smoke test`,
+                ack: "Started the worker.",
+              },
+            ],
           }),
         ],
         { stopReason: "toolUse" },
@@ -167,15 +190,22 @@ const server = new ApiServer(core, {
 }).server;
 await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 try {
-  const thread = await core.threads.getOrCreateConversation("smoke");
-  const task = await core.harness.commit(
+  const thread = "smoke";
+  await core.harness.commit(
     (tx) =>
-      core.turns.admitUserTurn(tx, thread, "delegate-smoke", "request-smoke"),
+      core.router.receive(tx, {
+        key: "smoke:request-smoke",
+        source: "http",
+        threads: [thread],
+        actor: "owner",
+        authority: "owner",
+        content: "delegate-smoke",
+        requestId: "request-smoke",
+      }),
     BACKGROUND_CONTEXT,
   );
-  await core.harness.waitForTask(task, BACKGROUND_CONTEXT);
   const end = Date.now() + 45_000;
-  let replies = await core.turns.readReplies(thread, 0);
+  let replies = await core.router.readReplies(thread, 0, BACKGROUND_CONTEXT);
   while (
     !replies.replies.some((reply) =>
       reply.text.includes("Worker report received"),
@@ -183,7 +213,7 @@ try {
     Date.now() < end
   ) {
     await new Promise((resolve) => setTimeout(resolve, 100));
-    replies = await core.turns.readReplies(thread, 0);
+    replies = await core.router.readReplies(thread, 0, BACKGROUND_CONTEXT);
   }
   const output = replies.replies.map((reply) => reply.text).join("\n---\n");
   console.log(output);

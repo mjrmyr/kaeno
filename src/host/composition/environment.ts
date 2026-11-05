@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import {
+  ROUTER_TOOLS,
   WORK_TOOLS,
   type ConversationSetup,
   type KaenoExtension,
@@ -37,7 +38,12 @@ import {
 
 const ORCHESTRATION = WORK_TOOLS.orchestration;
 const CODING = (CodingTools.tools ?? []).map((tool) => tool.name);
-const WORKER_TOOLS = [...CODING, ...ORCHESTRATION, ...WORK_TOOLS.parent];
+const WORKER_TOOLS = [
+  ...CODING,
+  ...ORCHESTRATION,
+  ...WORK_TOOLS.parent,
+  ...ROUTER_TOOLS.ticket,
+];
 
 async function packagesFrom<Source extends { alias: string }, Item>(
   sources: readonly Source[],
@@ -219,7 +225,7 @@ export async function loadEnvironment(
         extensions: options.extensions ?? [],
         standard,
         sourceSkills: catalog,
-        assistantTools: [...ORCHESTRATION, ...SKILL_TOOLS],
+        assistantTools: [...ROUTER_TOOLS.router, ...SKILL_TOOLS],
         workerTools: [...WORKER_TOOLS, ...SKILL_TOOLS],
         policy: options.policy,
       });

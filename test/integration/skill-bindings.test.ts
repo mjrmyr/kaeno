@@ -5,17 +5,13 @@ import {
   fauxProvider,
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import {
-  defineExtension,
-  AgentDoc,
-  MemoryStorage,
-  type ConversationId,
-} from "@earendil-works/pi-durable";
+import { AgentDoc, LiveDoc, MemoryStorage } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
+import { ask, hangingResponse, receive, replies } from "../mocks/router.ts";
 import { openKaeno, type Binding } from "../../src/core/application/index.ts";
 import {
   SkillCatalog,
@@ -31,7 +27,7 @@ function guideBinding(catalog: SkillCatalog): Binding {
   return binding;
 }
 
-it("replays a pending CHAT with its original assigned skill without a catalog or WORK", async () => {
+it("replays a pending router run with its original assigned skill without a catalog or WORK", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-skill-bindings-"));
   const path = join(directory, "db.sqlite");
   const faux = fauxProvider();
@@ -50,45 +46,32 @@ it("replays a pending CHAT with its original assigned skill without a catalog or
       },
     },
   ]);
-  let conversation: ConversationId | undefined;
   try {
-    await expect(
-      openKaeno({
-        storage: await openNodeSqliteStorage(path),
-        models,
-        assistant: {
-          model,
-          instructions: "Use your skill",
-          tools: ["list_skills", "read_skill"],
-          bindings: [guideBinding(catalog)],
-        },
-        extensions: [
-          skillsExtension(),
-          {
-            durable: defineExtension({ name: "interrupt-startup" }),
-            start: async (core) => {
-              conversation =
-                await core.threads.getOrCreateConversation("skill-test");
-              const id = conversation;
-              await core.harness.commit(
-                (tx) =>
-                  core.turns.admitUserTurn(
-                    tx,
-                    id,
-                    "Read the guide",
-                    "skill-request",
-                  ),
-                context,
-              );
-              throw new Error("Interrupted before scheduling");
-            },
-          },
-        ],
-      }),
-    ).rejects.toThrow("Interrupted before scheduling");
-    const originalId = conversation;
-    if (originalId === undefined) {
-      throw new Error("Expected conversation");
+    const hanging = hangingResponse();
+    faux.setResponses([hanging.response]);
+    const first = await openKaeno({
+      storage: await openNodeSqliteStorage(path),
+      models,
+      assistant: {
+        model,
+        instructions: "Use your skill",
+        tools: ["list_skills", "read_skill"],
+        bindings: [guideBinding(catalog)],
+      },
+      extensions: [skillsExtension()],
+    });
+    const originalId = await first.router.routerConversation(context);
+    try {
+      await receive(first, "Read the guide", {
+        thread: "skill-test",
+        key: "skill-request",
+      });
+      await hanging.started;
+      expect(
+        (await first.harness.snapshot(LiveDoc, originalId, context))?.run,
+      ).toBeTruthy();
+    } finally {
+      await first.close();
     }
     let observedSkill = "";
     let observedList = "";
@@ -125,11 +108,10 @@ it("replays a pending CHAT with its original assigned skill without a catalog or
     try {
       await vi.waitFor(async () => {
         expect(
-          (await core.turns.readReplies(originalId, 0)).replies.map(
-            (reply) => reply.text,
-          ),
+          (await replies(core, "skill-test")).map((reply) => reply.text),
         ).toContain("Read the original reference");
       });
+      expect(await core.router.routerConversation(context)).toBe(originalId);
       expect(observedList).toContain("home:guide");
       expect(observedList).not.toContain("ORIGINAL SKILL");
       expect(observedList).not.toContain("ORIGINAL REFERENCE");
@@ -175,12 +157,8 @@ it("keeps explicit tools empty and presents assigned guidance inline without gra
     extensions: [skillsExtension()],
   });
   try {
-    const id = await core.threads.getOrCreateConversation("inline");
-    const task = await core.harness.commit(
-      (tx) => core.turns.admitUserTurn(tx, id, "Question", "inline-request"),
-      context,
-    );
-    await core.harness.waitForTask(task, context);
+    expect(await ask(core, "Question")).toBe("DONE");
+    const id = await core.router.routerConversation(context);
     expect((await core.harness.snapshot(AgentDoc, id, context))?.tools).toEqual(
       [],
     );
