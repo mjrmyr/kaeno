@@ -69,8 +69,7 @@ export class MicrosandboxEngine implements SandboxEngine {
   async stop(name: string): Promise<void> {
     const handle = await find(name);
     if (handle?.status === "running") {
-      const { Sandbox } = await import("microsandbox");
-      await (await Sandbox.get(name)).stop();
+      await handle.stop();
     }
   }
 
