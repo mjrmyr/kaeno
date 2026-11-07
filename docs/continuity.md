@@ -69,7 +69,7 @@ What forgetting cannot reach is the conversation history in `durable.sqlite`: th
 
 ## Phase 2 proposal: persistent working state
 
-Today every WORK starts empty. Docker mounts a fresh `/workspace` volume per sandbox and removes it on release. The browser runs Playwright MCP with `--isolated`, so cookies and logins are gone after each task. An agent cannot continue yesterday's checkout or reuse a site login.
+On Docker and microsandbox a ticket keeps its `/workspace` across Assignments ([routing](routing.md#slots)). Nothing outlives the ticket, and child WORK and Kubernetes sandboxes still start empty. The browser runs Playwright MCP with `--isolated`, so cookies and logins are gone after each task. A new ticket cannot reuse an earlier ticket's checkout or a site login.
 
 Three options:
 

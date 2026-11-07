@@ -355,7 +355,7 @@ it("counts foreign physical pods but only sweeps its own orphans", async () => {
   await rig.environment.release(second, rig.harness);
   rig.harness.resume();
   await rig.harness.waitForTask(first.workId, context);
-  await rig.environment.reconcile([], rig.harness);
+  await rig.environment.reconcile([], rig.harness, []);
   expect([...rig.server.pods.keys()]).toEqual(["foreign"]);
 });
 
@@ -369,8 +369,8 @@ it.each(["Running", "Succeeded", "Failed"])(
 
     // An unfinished task (including one waiting for a reply) keeps its sandbox,
     // even if envd has exited. Also recheck tasks missing from an earlier scan.
-    await rig.environment.reconcile([work], rig.harness);
-    await rig.environment.reconcile([], rig.harness);
+    await rig.environment.reconcile([work], rig.harness, []);
+    await rig.environment.reconcile([], rig.harness, []);
     expect(rig.server.pods.has(`owner-work-${work.workId}`)).toBe(true);
     expect(
       rig.server.requests.filter((request) => request.method === "DELETE"),
@@ -378,8 +378,8 @@ it.each(["Running", "Succeeded", "Failed"])(
 
     rig.harness.resume();
     await rig.harness.waitForTask(work.workId, context);
-    await rig.environment.reconcile([], rig.harness);
-    await rig.environment.reconcile([], rig.harness);
+    await rig.environment.reconcile([], rig.harness, []);
+    await rig.environment.reconcile([], rig.harness, []);
     expect(rig.server.pods.size).toBe(0);
     expect(
       rig.server.requests.filter((request) => request.method === "DELETE"),
@@ -469,14 +469,14 @@ it.each(["api", "identity"])(
     rig.harness.resume();
     await rig.harness.waitForTask(first.workId, context);
     await rig.harness.waitForTask(second.workId, context);
-    await expect(rig.environment.reconcile([], rig.harness)).rejects.toThrow(
-      "Kubernetes sandbox reconciliation failed",
-    );
+    await expect(
+      rig.environment.reconcile([], rig.harness, []),
+    ).rejects.toThrow("Kubernetes sandbox reconciliation failed");
     expect([...rig.server.pods.keys()]).toEqual([firstName]);
     if (mode === "api") {
       rig.server.rejectDelete();
-      await rig.environment.reconcile([], rig.harness);
-      await rig.environment.reconcile([], rig.harness);
+      await rig.environment.reconcile([], rig.harness, []);
+      await rig.environment.reconcile([], rig.harness, []);
       expect(rig.server.pods.size).toBe(0);
     } else {
       // An orphan sweep must not bypass the failed reservation identity check.
@@ -509,14 +509,14 @@ it("continues orphan cleanup after one deletion fails, then retries", async () =
     });
   }
   rig.server.rejectDelete("orphan-one");
-  await expect(rig.environment.reconcile([work], rig.harness)).rejects.toThrow(
-    "Kubernetes sandbox reconciliation failed",
-  );
+  await expect(
+    rig.environment.reconcile([work], rig.harness, []),
+  ).rejects.toThrow("Kubernetes sandbox reconciliation failed");
   expect(rig.server.pods.has("orphan-one")).toBe(true);
   expect(rig.server.pods.has("orphan-two")).toBe(false);
   expect(rig.server.pods.has(`owner-work-${work.workId}`)).toBe(true);
   rig.server.rejectDelete();
-  await rig.environment.reconcile([work], rig.harness);
+  await rig.environment.reconcile([work], rig.harness, []);
   expect([...rig.server.pods.keys()]).toEqual([`owner-work-${work.workId}`]);
 });
 
@@ -771,9 +771,9 @@ it("keeps identities without a RuntimeClass and rejects adding one to saved work
     runtimeClassName: "kata-qemu",
   });
   expect(kata.environment.identity).not.toBe(rig.environment.identity);
-  await expect(kata.environment.reconcile([work], rig.harness)).rejects.toThrow(
-    "differs",
-  );
+  await expect(
+    kata.environment.reconcile([work], rig.harness, []),
+  ).rejects.toThrow("differs");
 });
 
 it("adopts a changed target once no sandbox reservations remain", async () => {
@@ -787,7 +787,7 @@ it("adopts a changed target once no sandbox reservations remain", async () => {
     runtimeClassName: "kata-qemu",
   });
   rig.server.runtimeClass("kata-qemu", {});
-  await kata.environment.reconcile([], rig.harness);
+  await kata.environment.reconcile([], rig.harness, []);
   const second = await rig.work();
   await kata.environment.ensure(second, rig.harness, context);
   expect(
@@ -795,7 +795,7 @@ it("adopts a changed target once no sandbox reservations remain", async () => {
   ).toBe("kata-qemu");
   // The adopted target is now the saved one: the previous configuration is refused.
   await expect(
-    rig.environment.reconcile([second], rig.harness),
+    rig.environment.reconcile([second], rig.harness, []),
   ).rejects.toThrow("1 sandbox reservation(s) remain");
 });
 
@@ -905,7 +905,7 @@ it("reopens SQLite, adopts saved pod/token/image, and rejects retargeting saved 
     ...rig.options,
     image: "new-image",
   });
-  await replacement.environment.reconcile([work], reopened);
+  await replacement.environment.reconcile([work], reopened, []);
   await replacement.environment.ensure(work, reopened, context);
   expect(
     rig.server.requests.filter((request) => request.method === "POST"),
@@ -918,7 +918,7 @@ it("reopens SQLite, adopts saved pod/token/image, and rejects retargeting saved 
     namespace: "other",
   });
   await expect(
-    retargeted.environment.reconcile([work], reopened),
+    retargeted.environment.reconcile([work], reopened, []),
   ).rejects.toThrow("differs");
   rig.server.pods.clear();
   expect(
@@ -982,7 +982,7 @@ it("loads explicit configuration with relative token paths and uses the real HTT
     "kaeno-kubernetes",
   ]);
   const rig = await fixture();
-  await loaded.environment.reconcile([], rig.harness);
+  await loaded.environment.reconcile([], rig.harness, []);
 });
 
 it("reports startup cleanup errors without blocking recovery and retries on the periodic sweep", async () => {

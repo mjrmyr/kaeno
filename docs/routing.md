@@ -37,6 +37,8 @@ Accepting never fails for lack of capacity: a ticket waits in the queue (`queued
 
 An idle ticket keeps following its threads for 14 days; after that it ends, and a later message there goes to the router.
 
+On a backend that can suspend sandboxes (Docker, microsandbox), a ticket keeps its `/workspace` until it ends: an Assignment's end only stops the sandbox, the next Assignment restarts it, and reconciliation removes it within five minutes of the ticket ending. Running processes do not survive a stop. On Docker, `/tmp` and `/home/agent` are lost too, because they are tmpfs; on microsandbox they stay with the VM until the ticket ends. A worker that reports `waiting` or `blocked` with no live child WORK ends its Assignment and frees its slot; the owner's answer wakes the ticket. Kubernetes cannot suspend yet: its sandboxes are removed after each Assignment and a waiting worker keeps its slot.
+
 ## Context: Inline & Spill and Chain of Recall
 
 The router's context is a cache. Every object it sees is rendered by `render.ts`:

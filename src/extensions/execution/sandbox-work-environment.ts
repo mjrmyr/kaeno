@@ -2,6 +2,7 @@ import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   defineDoc,
+  type ConversationId,
   type Cursor,
   type EnvTarget,
   type JsonObject,
@@ -26,6 +27,7 @@ interface SandboxIdentityData extends JsonObject {
 }
 interface SandboxState extends JsonObject {
   identity: SandboxIdentityData | null;
+  holder: number | null;
 }
 const WorkSandbox = defineDoc<SandboxState>({
   kind: "kaeno.work-sandbox",
@@ -33,7 +35,7 @@ const WorkSandbox = defineDoc<SandboxState>({
   scope: "conversation",
   history: "latest",
   fork: "initial",
-  initial: () => ({ identity: null }),
+  initial: () => ({ identity: null, holder: null }),
 });
 
 /** Optional sandbox adapter. Participant discovery/configuration never depends on this class. */
@@ -45,6 +47,7 @@ export class SandboxWorkEnvironment implements WorkEnvironment {
     image: string;
     limits: SandboxLimits;
   };
+  private readonly transitions = new Map<ConversationId, Promise<unknown>>();
   constructor(options: {
     sandbox: SandboxProvider;
     image: string;
@@ -54,28 +57,60 @@ export class SandboxWorkEnvironment implements WorkEnvironment {
     this.identity = options.sandbox.identity;
   }
 
-  async ensure(
+  private async inOrder<T>(
+    conversation: ConversationId,
+    transition: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.transitions.get(conversation) ?? Promise.resolve();
+    const current = previous.catch(() => {}).then(transition);
+    this.transitions.set(conversation, current);
+    try {
+      return await current;
+    } finally {
+      if (this.transitions.get(conversation) === current) {
+        this.transitions.delete(conversation);
+      }
+    }
+  }
+
+  ensure(
     work: WorkInstance,
     runtime: WorkEnvironmentRuntime,
     context: Context,
   ): Promise<void> {
-    const identity = await runtime.commit(async (tx) => {
-      const state = await tx.doc(WorkSandbox, work.conversationId);
-      state.identity ??= {
-        id: `work-${work.workId}`,
-        token: randomBytes(32).toString("hex"),
-        image: this.options.image,
-      };
-      return { ...state.identity };
-    }, context);
-    await this.options.sandbox.ensure(
-      identity,
-      {
-        cwd: this.cwd,
-        limits: this.options.limits,
-      },
-      context.abortSignal,
-    );
+    return this.inOrder(work.conversationId, async () => {
+      const identity = await runtime.commit(async (tx) => {
+        const state = await tx.doc(WorkSandbox, work.conversationId);
+        state.identity ??= {
+          id: `work-${work.workId}`,
+          token: randomBytes(32).toString("hex"),
+          image: this.options.image,
+        };
+        state.holder = Number(work.workId);
+        return { ...state.identity };
+      }, context);
+      await this.options.sandbox.ensure(
+        identity,
+        {
+          cwd: this.cwd,
+          limits: this.options.limits,
+        },
+        context.abortSignal,
+      );
+    });
+  }
+
+  suspend(work: WorkInstance, runtime: WorkEnvironmentRuntime): Promise<void> {
+    return this.inOrder(work.conversationId, async () => {
+      const state = await runtime.snapshot(
+        WorkSandbox,
+        work.conversationId,
+        BACKGROUND_CONTEXT,
+      );
+      if (state?.identity && state.holder === Number(work.workId)) {
+        await this.options.sandbox.stop(state.identity);
+      }
+    });
   }
 
   async release(
@@ -95,12 +130,17 @@ export class SandboxWorkEnvironment implements WorkEnvironment {
   async reconcile(
     live: readonly WorkInstance[],
     runtime: WorkEnvironmentRuntime,
+    retained: readonly ConversationId[],
   ): Promise<void> {
+    const conversations = new Set([
+      ...live.map((work) => work.conversationId),
+      ...retained,
+    ]);
     const identities: SandboxIdentity[] = [];
-    for (const work of live) {
+    for (const conversation of conversations) {
       const state = await runtime.snapshot(
         WorkSandbox,
-        work.conversationId,
+        conversation,
         BACKGROUND_CONTEXT,
       );
       if (state?.identity) {

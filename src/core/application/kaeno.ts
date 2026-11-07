@@ -213,6 +213,7 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
   const reportsToRouter: WorkReports = {
     report: (tx, reported) => engine.report(tx, reported),
     ended: (tx, ticket, workId) => engine.assignmentEnded(tx, ticket, workId),
+    retainedConversations: (context) => engine.openConversations(context),
   };
   const work = workOptions
     ? new Work(reference.getHarness, reportsToRouter, {

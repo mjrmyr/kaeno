@@ -100,6 +100,7 @@ it("offers and launches every configured worker even when none delegate to each 
       provisioned.push(identity.id);
     },
     executionEnvironment: async () => new NodeExecutionEnv({ cwd: directory }),
+    stop: async () => {},
     remove: async () => {},
     reconcile: async () => {},
   };

@@ -22,6 +22,9 @@ function reports(): WorkReports {
   return {
     report: vi.fn<WorkReports["report"]>().mockResolvedValue(undefined),
     ended: vi.fn<WorkReports["ended"]>().mockResolvedValue(undefined),
+    retainedConversations: vi
+      .fn<WorkReports["retainedConversations"]>()
+      .mockResolvedValue([]),
   };
 }
 function setup(): {

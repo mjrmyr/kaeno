@@ -254,7 +254,7 @@ try {
         await core.harness.waitForTask(record.id, BACKGROUND_CONTEXT);
       }
     }
-    await backend.environment.reconcile([], core.harness);
+    await backend.environment.reconcile([], core.harness, []);
   } finally {
     await core.close();
     await rm(directory, { recursive: true, force: true });

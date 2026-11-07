@@ -68,10 +68,12 @@ export interface WorkEnvironment {
     context: Context,
   ): Promise<string | undefined>;
   release(work: WorkInstance, runtime: WorkEnvironmentRuntime): Promise<void>;
-  /** Remove resources no longer backing one of the given live works. */
+  suspend?(work: WorkInstance, runtime: WorkEnvironmentRuntime): Promise<void>;
+  /** Remove resources no longer backing one of the given live works or retained conversations. */
   reconcile(
     live: readonly WorkInstance[],
     runtime: WorkEnvironmentRuntime,
+    retained: readonly ConversationId[],
   ): Promise<void>;
   executionEnvironment(
     target: EnvTarget,

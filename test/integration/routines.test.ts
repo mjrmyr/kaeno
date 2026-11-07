@@ -12,7 +12,11 @@ import {
 import { MemoryStorage, type JsonObject } from "@earendil-works/pi-durable";
 import { DatabaseSync } from "node:sqlite";
 import { expect, it } from "vitest";
-import { openKaeno, type Kaeno } from "../../src/core/application/index.ts";
+import {
+  openKaeno,
+  type Kaeno,
+  type WorkEnvironment,
+} from "../../src/core/application/index.ts";
 import {
   CREATE_ROUTINE,
   DELETE_ROUTINE,
@@ -43,7 +47,7 @@ function batch(request: ModelContext): string {
   return JSON.stringify(request.messages.slice(start + 1));
 }
 
-async function open(): Promise<{
+async function open(environment?: WorkEnvironment): Promise<{
   core: Kaeno;
   routines: Routines;
   listed: string[];
@@ -158,6 +162,7 @@ async function open(): Promise<{
     },
     extensions: [routines.extension()],
     work: {
+      ...(environment ? { environment } : {}),
       agents: [
         {
           id: "local:worker",
@@ -477,6 +482,53 @@ it("a routine report cannot propose a routine, even when it asks for one", async
     expect(proposed).toEqual([
       expect.stringContaining("not one of the events in front of you"),
     ]);
+    expect(errors).toEqual([]);
+  } finally {
+    await core.close();
+  }
+});
+
+it("keeps a run that handed off its question from being superseded, until its timeout", async () => {
+  const { core, routines, errors } = await open({
+    identity: "test:suspend",
+    cwd: "/workspace",
+    ensure: async () => {},
+    suspend: async () => {},
+    release: async () => {},
+    reconcile: async () => {},
+    executionEnvironment: async () => undefined,
+  });
+  try {
+    const routine = routines.create(
+      {
+        name: "Asks",
+        agent: "worker",
+        instructions: "SLOW",
+        schedule: { every: 1 },
+        timeoutMinutes: 5,
+      },
+      t0,
+    );
+    await routines.tick(t0 + 61 * minute);
+    const ticket = await lastTicket(core, routines);
+    await ticketWhen(
+      core,
+      ticket,
+      (value) =>
+        value.status === "idle" && value.reports.at(-1)?.state === "waiting",
+      "the handed-off question",
+    );
+    await expect(routines.runNow(routine.id, t0 + 62 * minute)).rejects.toThrow(
+      "is still running",
+    );
+    await routines.tick(t0 + 64 * minute);
+    expect(await lastTicket(core, routines)).toBe(ticket);
+    expect((await core.router.ticket(ticket, context)).status).toBe("idle");
+
+    await routines.tick(t0 + 67 * minute);
+    expect((await core.router.ticket(ticket, context)).ended?.reason).toBe(
+      "timed out after 5 minutes",
+    );
     expect(errors).toEqual([]);
   } finally {
     await core.close();

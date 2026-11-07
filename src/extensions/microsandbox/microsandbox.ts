@@ -37,6 +37,7 @@ export interface SandboxEngine {
   start(name: string): Promise<void>;
   /** Starts envd in a running VM. */
   launch(name: string): Promise<void>;
+  stop(name: string): Promise<void>;
   remove(name: string): Promise<void>;
   managed(): Promise<WorkVm[]>;
 }
@@ -146,6 +147,10 @@ export class MicrosandboxSandboxProvider implements SandboxProvider {
       cwd,
       fetch: this.fetch,
     });
+  }
+
+  async stop(sandbox: SandboxIdentity): Promise<void> {
+    await this.engine.stop(vmName(this.scoped(sandbox).id));
   }
 
   async remove(sandbox: SandboxIdentity): Promise<void> {

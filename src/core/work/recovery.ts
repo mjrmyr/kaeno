@@ -2,7 +2,7 @@
 import type { Context } from "@earendil-works/chord";
 import { z } from "zod";
 import type { Binding } from "../conversation/index.ts";
-import type { WorkRuntime, WorkSettings } from "./model.ts";
+import type { WorkReports, WorkRuntime, WorkSettings } from "./model.ts";
 import { assertPlanFits, readPlan, type WorkInstance } from "./plan.ts";
 import { workConversation } from "./directory.ts";
 /**
@@ -73,9 +73,10 @@ export async function validateSavedBindings(
     }
   }
 }
-/** Remove environment resources that no longer back an unfinished WORK. */
+/** Remove environment resources that no longer back an unfinished WORK or an open ticket. */
 export async function reconcileEnvironment(
   harness: () => WorkRuntime,
+  reports: WorkReports,
   settings: WorkSettings,
   context: Context,
 ): Promise<void> {
@@ -96,5 +97,9 @@ export async function reconcileEnvironment(
       live.push({ workId: record.id, conversationId: conversation });
     }
   }
-  await environment.reconcile(live, harness());
+  await environment.reconcile(
+    live,
+    harness(),
+    await reports.retainedConversations(context),
+  );
 }

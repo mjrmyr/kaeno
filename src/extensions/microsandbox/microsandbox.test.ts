@@ -68,6 +68,12 @@ function engineStub(): SandboxEngine & {
         vm.envd = true;
       }
     }),
+    stop: vi.fn<SandboxEngine["stop"]>(async (name) => {
+      const vm = vms.get(name);
+      if (vm) {
+        vm.running = false;
+      }
+    }),
     remove: vi.fn<SandboxEngine["remove"]>(async (name) => {
       vms.delete(name);
     }),

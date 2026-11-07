@@ -1,5 +1,5 @@
 // Durable WORK representation and consumer-owned contracts. No execution policy lives here.
-import type { JsonValue } from "@earendil-works/chord";
+import type { Context, JsonValue } from "@earendil-works/chord";
 import {
   defineDoc,
   type ConversationId,
@@ -201,9 +201,11 @@ export interface WorkReports {
       state:
         "progress" | "waiting" | "blocked" | "ready" | "failed" | "dropped";
       text: string;
+      handedOff?: boolean;
     },
   ): Promise<void>;
   ended(tx: Tx, ticket: string, workId: TaskId): Promise<void>;
+  retainedConversations(context: Context): Promise<ConversationId[]>;
 }
 export type WorkTask = Task<WorkInput, WorkState, Stored<WorkResult>, object>;
 export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>

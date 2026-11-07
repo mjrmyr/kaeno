@@ -26,6 +26,7 @@ export class Work {
   readonly parentTools: ToolRegistration[];
   private readonly harness: () => WorkRuntime;
   private readonly settings: WorkSettings;
+  private readonly reports: WorkReports;
   private readonly launchAssignment: ReturnType<
     typeof createWorkCommands
   >["launchAssignment"];
@@ -36,6 +37,7 @@ export class Work {
   ) {
     this.harness = harness;
     this.settings = settings;
+    this.reports = reports;
     const task = createWorkTask(harness, reports, settings);
     const commands = createWorkCommands(harness, reports, settings, task);
     this.orchestrationTools = commands.orchestrationTools;
@@ -60,7 +62,12 @@ export class Work {
     await validateSavedBindings(this.harness, validate, context);
   }
   async reconcileEnvironment(context: Context): Promise<void> {
-    await reconcileEnvironment(this.harness, this.settings, context);
+    await reconcileEnvironment(
+      this.harness,
+      this.reports,
+      this.settings,
+      context,
+    );
   }
   /** The configured agent a requested name refers to; throws when unknown or ambiguous. */
   resolveAgent(requested: string): string {

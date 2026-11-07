@@ -438,6 +438,10 @@ export class Routines {
     const ticket = await this.attached()
       .router.ticket(last.ticket, context)
       .catch(() => undefined);
+    if (ticket?.status === "idle") {
+      const report = ticket.reports.at(-1)?.state;
+      return report === "waiting" || report === "blocked";
+    }
     return ticket?.status === "queued" || ticket?.status === "running";
   }
 

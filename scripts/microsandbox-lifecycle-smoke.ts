@@ -82,7 +82,15 @@ try {
   );
   console.log("new provider adopted the running VM and retained workspace");
 
-  await (await Sandbox.get(name)).stop();
+  await restarted.stop(sandbox);
+  assert.equal((await engine.inspect(name))?.running, false);
+  await restarted.stop(sandbox);
+  console.log("stop halted the VM and is safe to repeat");
+
+  await restarted.reconcile([sandbox]);
+  assert.equal((await engine.inspect(name))?.running, false);
+  console.log("reconciliation retained a stopped VM it was told to keep");
+
   await restarted.ensure(sandbox, options);
   assert.equal(
     await command(restarted, "cat recovery.txt"),

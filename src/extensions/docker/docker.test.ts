@@ -54,6 +54,12 @@ function engineStub(): DockerEngine & {
         container.running = true;
       }
     }),
+    stop: vi.fn<DockerEngine["stop"]>(async (name) => {
+      const container = containers.get(name);
+      if (container) {
+        container.running = false;
+      }
+    }),
     remove: vi.fn<DockerEngine["remove"]>(async (name) => {
       containers.delete(name);
     }),
