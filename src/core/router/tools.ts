@@ -359,7 +359,7 @@ export function ticketTools(engine: Engine): ToolRegistration[] {
   const follow = defineTool({
     name: FOLLOW_THREAD,
     description:
-      "Follow another thread that your ticket depends on, for example a pull request you opened: its later events reach you directly.",
+      "Follow another thread that your ticket depends on, for example a pull request you opened, even before it has any events: its later events from the owner or the owner's systems reach you directly and wake you.",
     parameters: Type.Object({ thread: Type.String() }),
     replay: "safe",
     execute: async ({ thread }, api, context) => {

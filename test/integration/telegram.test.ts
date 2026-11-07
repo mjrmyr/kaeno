@@ -324,6 +324,7 @@ it("opens a topic for an accepted ticket and passes later messages there straigh
     expect(await core.router.ticket("k1", context)).toMatchObject({
       ownThread: "telegram:111/topic:77",
       followed: [],
+      systemWakes: 0,
       replyThread: "telegram:111",
     });
     await ticketWhen(core, "k1", (ticket) => ticket.status === "idle");

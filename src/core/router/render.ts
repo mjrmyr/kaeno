@@ -106,7 +106,7 @@ export function renderPassThroughNote(
   trigger: Trigger,
   tickets: readonly Ticket[],
 ): string {
-  return `<passed${attribute("trigger", trigger.id)}${attribute("thread", trigger.threads[0])}${attribute("to", tickets.map((ticket) => ticket.id).join(" "))}>${stub(contentText(trigger.content), LIMITS.mid)}</passed>`;
+  return `<passed${attribute("trigger", trigger.id)}${attribute("thread", trigger.threads[0])}${attribute("authority", trigger.authority)}${attribute("to", tickets.map((ticket) => ticket.id).join(" "))}>${stub(contentText(trigger.content), LIMITS.mid)}</passed>`;
 }
 
 function renderReports(
