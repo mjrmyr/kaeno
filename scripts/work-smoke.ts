@@ -28,14 +28,13 @@ import { microsandboxExecutionProvider } from "../src/extensions/microsandbox/in
 // Use a dedicated backend file; never reuse an active application's explicit namespace/owner.
 const directory = await mkdtemp(join(tmpdir(), "kaeno-work-smoke-"));
 const provider = process.argv[2] ?? "docker";
-await mkdir(join(directory, "agents/smoke"), { recursive: true });
-await mkdir(join(directory, "agents/worker"), { recursive: true });
+await mkdir(join(directory, "agents"), { recursive: true });
 await writeFile(
-  join(directory, "agents/smoke/AGENT.md"),
+  join(directory, "agents/smoke.md"),
   "---\nname: smoke\ndescription: Smoke assistant\nmodel: openai/faux-1\ntools: [route, reply]\n---\nBe helpful.",
 );
 await writeFile(
-  join(directory, "agents/worker/AGENT.md"),
+  join(directory, "agents/worker.md"),
   "---\nname: worker\ndescription: Sandbox worker\nmodel: openai/faux-1\n---\nComplete the task and verify it.",
 );
 const configFile = join(directory, "config.json");
