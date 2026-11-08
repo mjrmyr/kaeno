@@ -27,6 +27,12 @@ import { dockerExecutionProvider } from "../extensions/docker/index.ts";
 import { kubernetesExecutionProvider } from "../extensions/kubernetes/index.ts";
 import { microsandboxExecutionProvider } from "../extensions/microsandbox/index.ts";
 
+const token = process.env.KAENO_TOKEN ?? "";
+if (token.length < 32) {
+  throw new Error(
+    "Set KAENO_TOKEN to a secret of at least 32 characters; API clients send it as a bearer token",
+  );
+}
 const data = await openDataDirectory(process.env.KAENO_DATA_DIR ?? "/data");
 const memory = new MemoryStore(data.kaeno);
 // Owner memory belongs to the assistant only: workers get the facts they need in their brief.
@@ -226,7 +232,7 @@ try {
     previous = tasks;
   });
 
-  const current = new ApiServer(core, { memory, routines }).server;
+  const current = new ApiServer(core, token, { memory, routines }).server;
   server = current;
   await new Promise<void>((resolve, reject) => {
     current.once("error", reject);

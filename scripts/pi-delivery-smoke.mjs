@@ -12,6 +12,9 @@ if (provider !== "kaeno" && provider !== "kaeno-local") {
   );
 }
 const urlVariable = provider === "kaeno" ? "KAENO_URL" : "KAENO_LOCAL_URL";
+const tokenVariable =
+  provider === "kaeno" ? "KAENO_TOKEN" : "KAENO_LOCAL_TOKEN";
+const token = "pi-delivery-smoke-token";
 const directory = await mkdtemp(join(tmpdir(), "kaeno-pi-delivery-"));
 const agentDirectory = join(directory, "agent");
 await mkdir(join(agentDirectory, "extensions"), { recursive: true });
@@ -39,6 +42,10 @@ export default function (pi) {
 const replies = [];
 let posts = 0;
 const server = createServer(async (req, res) => {
+  if (req.headers.authorization !== `Bearer ${token}`) {
+    res.writeHead(401).end("missing token");
+    return;
+  }
   if (req.method === "POST") {
     let body = "";
     for await (const chunk of req) {
@@ -97,6 +104,7 @@ function start() {
         ...process.env,
         PI_CODING_AGENT_DIR: agentDirectory,
         [urlVariable]: url,
+        [tokenVariable]: token,
       },
       stdio: ["pipe", "pipe", "pipe"],
     },

@@ -61,6 +61,7 @@ async function fixture(options: {
   const entered = vi.fn<() => void>();
   const release = vi.fn<WorkEnvironment["release"]>();
   const routerBatches: string[] = [];
+  const routerResults: string[] = [];
   const hold = defineTool({
     name: "hold",
     description: "Keep WORK executing while it is inspected",
@@ -81,12 +82,17 @@ async function fixture(options: {
         (message) => message.role !== "system",
       );
       if (last?.role === "toolResult") {
+        routerResults.push(JSON.stringify(last.content));
         return answer("ok");
       }
       const batch = sinceLastAnswer(request);
       routerBatches.push(batch);
       return options.replyOnQuestion && batch.includes('state=\\"waiting\\"')
-        ? call("message_ticket", { ticket: "k1", text: "Context answer: main" })
+        ? call("message_ticket", {
+            ticket: "k1",
+            text: "Context answer: main",
+            basis: "t1",
+          })
         : answer("RESULT OBSERVED");
     }),
   );
@@ -158,6 +164,7 @@ async function fixture(options: {
     entered,
     release,
     routerBatches,
+    routerResults,
   };
 }
 
@@ -231,19 +238,15 @@ it("delivers nonblocking progress while WORK keeps running, then completes", asy
 });
 
 it.each([
-  { ask: "message_parent", kind: "question", autonomous: false },
-  { ask: "message_parent", kind: undefined, autonomous: false },
-  { ask: "report", kind: "waiting", autonomous: false },
-  { ask: "message_parent", kind: "question", autonomous: true },
-  { ask: "message_parent", kind: undefined, autonomous: true },
-  { ask: "report", kind: "waiting", autonomous: true },
+  { ask: "message_parent", kind: "question" },
+  { ask: "message_parent", kind: undefined },
+  { ask: "report", kind: "waiting" },
 ])(
-  "resumes questions from the owner's message or the router's context ($ask $kind, autonomous=$autonomous)",
-  async ({ ask, kind, autonomous }) => {
+  "resumes questions from the owner's message ($ask $kind)",
+  async ({ ask, kind }) => {
     let turn = 0;
     const answers: string[] = [];
     const lifecycle = await fixture({
-      replyOnQuestion: autonomous,
       worker: async (request) => {
         turn++;
         if (turn === 1) {
@@ -261,34 +264,30 @@ it.each([
     });
     try {
       await lifecycle.launch();
-      if (!autonomous) {
-        await vi.waitFor(async () =>
-          expect((await lifecycle.record())?.state).toMatchObject({
-            checkpoint: { awaiting: "reply" },
-          }),
-        );
-        expect(await lifecycle.inspect()).toMatchObject({
-          status: "awaiting-reply",
-          question: "Which branch should I publish?",
-        });
-        const asked = await lifecycle.core.router.ticket("k1", context);
-        expect(asked.reports.at(-1)).toMatchObject({
-          state: "waiting",
-          summary: "Which branch should I publish?",
-        });
-        expect(turn).toBe(1);
-        expect(
-          (
-            await receive(lifecycle.core, "User answer: main", {
-              thread: "test:ticket:progress",
-            })
-          ).path,
-        ).toBe("tickets");
-      }
-      await vi.waitFor(() => expect(lifecycle.entered).toHaveBeenCalledOnce());
-      expect(answers[0]).toContain(
-        autonomous ? "Context answer: main" : "User answer: main",
+      await vi.waitFor(async () =>
+        expect((await lifecycle.record())?.state).toMatchObject({
+          checkpoint: { awaiting: "reply" },
+        }),
       );
+      expect(await lifecycle.inspect()).toMatchObject({
+        status: "awaiting-reply",
+        question: "Which branch should I publish?",
+      });
+      const asked = await lifecycle.core.router.ticket("k1", context);
+      expect(asked.reports.at(-1)).toMatchObject({
+        state: "waiting",
+        summary: "Which branch should I publish?",
+      });
+      expect(turn).toBe(1);
+      expect(
+        (
+          await receive(lifecycle.core, "User answer: main", {
+            thread: "test:ticket:progress",
+          })
+        ).path,
+      ).toBe("tickets");
+      await vi.waitFor(() => expect(lifecycle.entered).toHaveBeenCalledOnce());
+      expect(answers[0]).toContain("User answer: main");
       expect(await lifecycle.inspect()).toMatchObject({ status: "running" });
       lifecycle.busy.release();
       await vi.waitFor(async () =>
@@ -309,6 +308,36 @@ it.each([
     }
   },
 );
+
+it("refuses to let the router answer a worker's question without the owner's message", async () => {
+  let turns = 0;
+  const lifecycle = await fixture({
+    replyOnQuestion: true,
+    worker: async () => {
+      turns++;
+      return call("report", {
+        state: "waiting",
+        text: "Which branch should I publish?",
+      });
+    },
+  });
+  try {
+    await lifecycle.launch();
+    await vi.waitFor(() =>
+      expect(lifecycle.routerResults.join("")).toContain(
+        "not one of the events in front of you",
+      ),
+    );
+    expect(await lifecycle.inspect()).toMatchObject({
+      status: "awaiting-reply",
+      question: "Which branch should I publish?",
+    });
+    expect(turns).toBe(1);
+  } finally {
+    lifecycle.busy.release();
+    await lifecycle.core.close();
+  }
+});
 
 it("routes child progress to its WORK parent without stopping the child", async () => {
   const faux = fauxProvider();

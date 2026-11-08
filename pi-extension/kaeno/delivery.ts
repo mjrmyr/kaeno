@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { readReplies } from "./client.ts";
+import { readReplies, type Server } from "./client.ts";
 
 export const cursorSchema = z.object({
   key: z.string(),
@@ -25,15 +25,15 @@ interface DeliveryOptions {
 /** One cursor and one in-flight read per Pi session. Never advances while Pi is busy. */
 export class ReplyDelivery {
   private after: number | "latest";
-  private readonly baseUrl: string;
+  private readonly server: Server;
   private readonly session: string;
   private readonly options: DeliveryOptions;
   private readonly controller = new AbortController();
   private initializing?: Promise<void>;
   private pending?: Promise<number>;
 
-  constructor(baseUrl: string, session: string, options: DeliveryOptions) {
-    this.baseUrl = baseUrl;
+  constructor(server: Server, session: string, options: DeliveryOptions) {
+    this.server = server;
     this.session = session;
     this.options = options;
     this.after = options.after;
@@ -56,7 +56,7 @@ export class ReplyDelivery {
     }
     this.initializing ??= (async () => {
       const page = await readReplies(
-        this.baseUrl,
+        this.server,
         this.session,
         0,
         this.signal(),
@@ -91,7 +91,7 @@ export class ReplyDelivery {
       throw new Error("Reply delivery has not initialized");
     }
     const page = await readReplies(
-      this.baseUrl,
+      this.server,
       this.session,
       after,
       this.signal(),

@@ -12,6 +12,7 @@ import {
   request,
   streamKaeno,
   threadPath,
+  type Server,
 } from "./client.ts";
 import { cursorSchema, receiptSchema, ReplyDelivery } from "./delivery.ts";
 
@@ -21,19 +22,25 @@ interface Target {
   readonly name: string;
   /** Shown above replies that arrive later, for example after a worker report. */
   readonly label: string;
-  readonly baseUrl: string;
+  readonly server: Server;
 }
 
 const targets: readonly Target[] = [
   {
     name: "kaeno",
     label: "Kaeno (homelab)",
-    baseUrl: process.env.KAENO_URL ?? "http://homelab-kaeno:8080",
+    server: {
+      url: process.env.KAENO_URL ?? "http://homelab-kaeno:8080",
+      token: process.env.KAENO_TOKEN ?? "",
+    },
   },
   {
     name: "kaeno-local",
     label: "Kaeno (local)",
-    baseUrl: process.env.KAENO_LOCAL_URL ?? "http://127.0.0.1:8080",
+    server: {
+      url: process.env.KAENO_LOCAL_URL ?? "http://127.0.0.1:8080",
+      token: process.env.KAENO_LOCAL_TOKEN ?? "",
+    },
   },
 ];
 
@@ -44,7 +51,7 @@ export default function (pi: ExtensionAPI) {
 }
 
 function registerTarget(pi: ExtensionAPI, target: Target) {
-  const { name, label, baseUrl } = target;
+  const { name, label, server } = target;
   const replyType = `${name}-reply`;
   const cursorType = `${name}-cursor`;
 
@@ -83,8 +90,8 @@ function registerTarget(pi: ExtensionAPI, target: Target) {
     stop();
     selectedProvider = ctx.model?.provider;
     const session = ctx.sessionManager.getSessionId();
-    const key = deliveryKey(baseUrl, session);
-    const prefix = receiptPrefix(baseUrl, session);
+    const key = deliveryKey(server, session);
+    const prefix = receiptPrefix(server, session);
     let after: number | "latest" = 0;
     let savedCursor = false;
     let legacy = false;
@@ -112,7 +119,7 @@ function registerTarget(pi: ExtensionAPI, target: Target) {
     if (!savedCursor && legacy) {
       after = "latest";
     }
-    const inbox = new ReplyDelivery(baseUrl, session, {
+    const inbox = new ReplyDelivery(server, session, {
       after,
       canDeliver: () => selectedProvider === name && ctx.isIdle(),
       displayed: () => {
@@ -206,8 +213,8 @@ function registerTarget(pi: ExtensionAPI, target: Target) {
   });
 
   pi.registerProvider(name, {
-    baseUrl,
-    // Pi requires a credential to list the model; the Kaeno API is unauthenticated.
+    baseUrl: server.url,
+    // Pi requires a credential to list the model; Kaeno's token travels with each request instead.
     apiKey: "none",
     api: `${name}-thread`,
     models: [
@@ -222,7 +229,7 @@ function registerTarget(pi: ExtensionAPI, target: Target) {
       },
     ],
     streamSimple: (model, context, options) =>
-      streamKaeno(baseUrl, model, context, options, () =>
+      streamKaeno(server, model, context, options, () =>
         active && active.session === options?.sessionId
           ? active.inbox.initialize()
           : Promise.resolve(),
@@ -250,7 +257,7 @@ function registerTarget(pi: ExtensionAPI, target: Target) {
   pi.registerCommand(`${name}-changes`, {
     description: `List routine changes ${label} proposed and their status`,
     handler: async (_args, ctx) => {
-      const changes = await listChanges(baseUrl);
+      const changes = await listChanges(server);
       ctx.ui.notify(
         changes.length === 0
           ? "No routine changes."
@@ -267,7 +274,7 @@ function registerTarget(pi: ExtensionAPI, target: Target) {
     pi.registerCommand(`${name}-${decision}`, {
       description: `${decision === "approve" ? "Approve" : "Reject"} a routine change ${label} proposed: /${name}-${decision} <change id>`,
       handler: async (args, ctx) => {
-        await decideChange(baseUrl, args.trim(), decision);
+        await decideChange(server, args.trim(), decision);
         ctx.ui.notify(`${label}: change ${args.trim()} ${decision}d`, "info");
       },
     });
@@ -277,7 +284,7 @@ function registerTarget(pi: ExtensionAPI, target: Target) {
     description: `Stop ${label}'s current turn and background work for this session`,
     handler: async (_args, ctx) => {
       await request(
-        baseUrl,
+        server,
         `${threadPath(ctx.sessionManager.getSessionId())}/stop`,
         { method: "POST" },
       );

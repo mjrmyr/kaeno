@@ -66,7 +66,7 @@ The router's context is a cache. Every object it sees is rendered by `render.ts`
 
 Messages, reports and documents never grant permissions. Owner authority comes only from an allowlisted owner's own message or a routine run the owner approved:
 
-- `route accept/attach`, `stop_ticket` and every router extension tool that changes something must cite **basis**: the ID of an owner trigger in the batch in front of the router. The tool policy (`src/core/authority/`) adds that parameter to memory and routine tools and checks it. A worker report is not a trigger and can never authorise saving memory, proposing a routine or starting work.
+- `route accept/attach`, `message_ticket`, `stop_ticket` and every router extension tool that changes something must cite **basis**: the ID of an owner trigger in the batch in front of the router. The tool policy (`src/core/authority/`) adds that parameter to memory and routine tools and checks it. A worker report is not a trigger and can never authorise saving memory, proposing a routine or starting work.
 - Ticket roots get `report`, `handback` (an event that is not about their ticket goes back to the router), `unsubscribe_thread` and `follow_thread` (which also creates a thread with no events yet). Child WORK keeps `message_parent`.
 - Workers never see owner memory; the router puts the facts a task needs into its note.
 

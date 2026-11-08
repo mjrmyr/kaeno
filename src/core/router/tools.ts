@@ -275,13 +275,17 @@ export function routerTools(engine: Engine): ToolRegistration[] {
   const message = defineTool({
     name: MESSAGE_TICKET,
     description:
-      "Give a ticket's worker information it needs: the owner's answer given elsewhere, or context from another ticket. A running worker sees it after its current step; an idle ticket resumes.",
+      "Give a ticket's worker information it needs because the owner asked: the owner's answer given elsewhere, or context from another ticket. A running worker sees it after its current step; an idle ticket resumes.",
     parameters: Type.Object({
       ticket: Type.String(),
       text: Type.String({ minLength: 1, maxLength: 16000 }),
+      basis: Type.String({
+        description: "ID of the owner's message this follows from, e.g. t12",
+      }),
     }),
     replay: "safe",
-    execute: async ({ ticket, text: message }, api, context) => {
+    execute: async ({ ticket, text: message, basis }, api, context) => {
+      await engine.requireOwnerBasis(basis, context);
       await api.commit(
         (tx) => engine.messageTicket(tx, ticket, message, String(api.taskId)),
         context,

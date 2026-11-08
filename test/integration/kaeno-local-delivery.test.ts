@@ -29,17 +29,21 @@ function setup(after: number | "latest" = 0) {
     checkpoints: Array<number>(),
     truncated: 0,
   };
-  const inbox = new ReplyDelivery("http://kaeno.test", "session-1", {
-    after,
-    canDeliver: () => state.idle,
-    displayed: () => state.displayed,
-    deliver: (value) => {
-      state.delivered.push(value);
-      state.displayed.add(value.id);
+  const inbox = new ReplyDelivery(
+    { url: "http://kaeno.test", token: "t" },
+    "session-1",
+    {
+      after,
+      canDeliver: () => state.idle,
+      displayed: () => state.displayed,
+      deliver: (value) => {
+        state.delivered.push(value);
+        state.displayed.add(value.id);
+      },
+      checkpoint: (next) => state.checkpoints.push(next),
+      truncated: () => state.truncated++,
     },
-    checkpoint: (next) => state.checkpoints.push(next),
-    truncated: () => state.truncated++,
-  });
+  );
   return { state, inbox };
 }
 
