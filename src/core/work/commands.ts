@@ -470,16 +470,17 @@ export function createWorkCommands(
     }
     return reply("Progress sent. Keep working; no reply is needed.");
   }
-  async function dropRequest(
+  async function finishWithout(
+    outcome: "dropped" | "quiet",
     api: ToolExecutionApi,
     context: Context,
   ): Promise<ToolReply> {
     await api.commit(async (tx) => {
       const { scope, parent } = await liveCaller(api, tx);
       if (parent.kind !== "ticket") {
-        throw new Error("Only a ticket's root can drop its request");
+        throw new Error(`Only a ticket's root can report ${outcome}`);
       }
-      scope.outcome = "dropped";
+      scope.outcome = outcome;
     }, context);
     return reply(
       "Noted. Give a one-line final answer saying why nothing is needed.",
@@ -504,13 +505,14 @@ export function createWorkCommands(
   const report = defineTool({
     name: REPORT,
     description:
-      "Report on your ticket to Kaeno's router, which tells the owner. state=progress is a nonblocking update: keep working. state=waiting asks the owner a question and state=blocked names an obstacle you cannot remove: both end your turn, and the answer arrives as a message. state=dropped means the request needs nothing; then give a one-line final answer.",
+      "Report on your ticket to Kaeno's router, which tells the owner. state=progress is a nonblocking update: keep working. state=waiting asks the owner a question and state=blocked names an obstacle you cannot remove: both end your turn, and the answer arrives as a message. state=dropped means the request needs nothing and ends the ticket; then give a one-line final answer. state=quiet means a system event that woke you needs no action: nobody is told and the ticket stays open; then give a one-line final answer.",
     parameters: Type.Object({
       state: Type.Union([
         Type.Literal("progress"),
         Type.Literal("waiting"),
         Type.Literal("blocked"),
         Type.Literal("dropped"),
+        Type.Literal("quiet"),
       ]),
       text: Type.String({ minLength: 1, maxLength: 16000 }),
     }),
@@ -520,7 +522,8 @@ export function createWorkCommands(
         case "progress":
           return sendProgress(api, text, context);
         case "dropped":
-          return dropRequest(api, context);
+        case "quiet":
+          return finishWithout(state, api, context);
         default:
           return askParent(api, { text, state }, context);
       }

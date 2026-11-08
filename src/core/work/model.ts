@@ -125,13 +125,13 @@ export interface WorkScopeState extends JsonObject {
   /** commands produces; task atomically clears this while recording the message checkpoint. */
   mailbox: ParentMessage | null;
   /**
-   * The latest blocking question, kept after delivery so inspection can show it. Steering
-   * marks it answered. Scopes stored before questions were recorded lack it; read defensively.
+   * The latest blocking question, kept after delivery so inspection can show it. Steering and
+   * the owner's input to a ticket mark it answered. Scopes stored before questions were recorded lack it; read defensively.
    */
   question: WorkQuestion | null;
   /** The latest nonblocking progress note; may be missing in older scopes too. */
   progress: string | null;
-  outcome: "dropped" | null;
+  outcome: "dropped" | "quiet" | null;
 }
 interface ParentMessage extends JsonObject {
   text: string;
@@ -199,7 +199,13 @@ export interface WorkReports {
       workId: TaskId;
       key: string;
       state:
-        "progress" | "waiting" | "blocked" | "ready" | "failed" | "dropped";
+        | "progress"
+        | "waiting"
+        | "blocked"
+        | "ready"
+        | "failed"
+        | "dropped"
+        | "quiet";
       text: string;
       handedOff?: boolean;
     },

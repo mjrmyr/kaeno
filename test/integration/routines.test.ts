@@ -237,6 +237,7 @@ it("runs a due routine as a ticket once per slot and relays its report to the ro
     expect(await core.router.ticket(ticket, context)).toMatchObject({
       ownThread: "routine:1",
       followed: [],
+      systemWakes: 0,
       replyThread: "routines",
     });
 

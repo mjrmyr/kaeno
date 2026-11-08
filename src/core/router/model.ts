@@ -6,8 +6,12 @@ import {
 import type { Stored } from "../durable/index.ts";
 import type { ChannelRoute } from "../outbox/index.ts";
 
-/** `owner` comes from the owner's own message or an owner-approved routine; nothing else may mutate. */
-export type Authority = "owner" | "none";
+/**
+ * `owner` comes from the owner's own message or an owner-approved routine; nothing else may mutate. `system` is a
+ * source's verified verdict that one of the owner's systems sent the event: it may reach and wake a worker, but
+ * grants nothing. `none` never reaches a worker.
+ */
+export type Authority = "owner" | "system" | "none";
 /**
  * The programmatic gate's answer per source (Fast Path filtering): `explicit` requests always reach the router,
  * `candidate` events reach it only to be judged against written policies, `ignore` is recorded and dropped.
@@ -53,16 +57,18 @@ export interface ThreadRecord {
 }
 export type TicketStatus = "queued" | "running" | "idle" | "ended";
 export type ReportState =
-  "progress" | "waiting" | "blocked" | "ready" | "failed" | "dropped";
+  "progress" | "waiting" | "blocked" | "ready" | "failed" | "dropped" | "quiet";
 export const FINAL_REPORTS: readonly ReportState[] = [
   "ready",
   "failed",
   "dropped",
+  "quiet",
 ];
 export interface TicketInput {
   id: string;
   trigger?: string;
   text?: string;
+  system?: boolean;
 }
 export interface TicketReport {
   state: ReportState;
@@ -81,8 +87,16 @@ export interface TicketRecord {
   followed: string[];
   replyThread: string;
   status: TicketStatus;
-  assignments: { workId: number; startedAt: number; endedAt?: number }[];
+  assignments: {
+    workId: number;
+    startedAt: number;
+    endedAt?: number;
+    /** Started by system events alone, with nothing from the owner since: it may end quietly. */
+    system?: boolean;
+  }[];
   pending: TicketInput[];
+  /** Wakes by system events since the owner's last input. */
+  systemWakes: number;
   reports: TicketReport[];
   ended?: { at: number; by: "owner" | "worker" | "host"; reason: string };
 }
@@ -158,6 +172,7 @@ export const LIMITS = {
   reports: 20,
   assignments: 50,
   pending: 32,
+  systemWakes: 5,
   idleTicketEndMs: 14 * 24 * 60 * 60_000,
   text: 4000,
   textMax: 8000,

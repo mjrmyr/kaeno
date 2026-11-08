@@ -30,6 +30,7 @@ const ticket = {
   conversation: 9,
   ownThread: "telegram:1/topic:5",
   followed: [],
+  systemWakes: 0,
   replyThread: "telegram:1",
   status: "running" as const,
   assignments: [],

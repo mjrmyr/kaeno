@@ -372,7 +372,7 @@ export function createWorkTask(
     parent: WorkParent,
     message: {
       key: string;
-      state: "waiting" | "blocked" | "ready" | "failed" | "dropped";
+      state: "waiting" | "blocked" | "ready" | "failed" | "dropped" | "quiet";
       ticket: string;
       work: string;
       handedOff?: boolean;
@@ -451,9 +451,6 @@ export function createWorkTask(
           scope.workId = task.id;
           scope.mailbox = null;
           scope.outcome = null;
-          if (scope.question) {
-            scope.question.answered = true;
-          }
           const previous = found
             ? (await latestResponse(tx, conversation.id))?.id
             : undefined;
@@ -537,16 +534,11 @@ export function createWorkTask(
             await runtime.conversation(conversation, context)
           )?.abort(context);
         }
-        const dropped =
-          (await runtime.snapshot(WorkScope, conversation, context))
-            ?.outcome === "dropped";
+        const outcome = (
+          await runtime.snapshot(WorkScope, conversation, context)
+        )?.outcome;
         const label = `Work #${task.id} (${title})`;
-        let state: "failed" | "dropped" | "ready" = dropped
-          ? "dropped"
-          : "ready";
-        if (failed) {
-          state = "failed";
-        }
+        const state = failed ? "failed" : (outcome ?? "ready");
         await deliverReport(
           runtime,
           parent,
@@ -605,7 +597,7 @@ export function createWorkTask(
 
 function preamble(ticket: boolean, tools: readonly string[]): string {
   const progress = tools.includes(REPORT)
-    ? " For a nonblocking update, call report with state=progress and keep working. Only if you cannot continue without the owner, call report with state=waiting (a question) or state=blocked (an obstacle you cannot remove): it ends your turn, and the answer arrives as a message. If the request turns out to need nothing, call report with state=dropped."
+    ? " For a nonblocking update, call report with state=progress and keep working. Only if you cannot continue without the owner, call report with state=waiting (a question) or state=blocked (an obstacle you cannot remove): it ends your turn, and the answer arrives as a message. If the request turns out to need nothing, call report with state=dropped. If a system event that woke you needs no action, call report with state=quiet: nobody is told and the ticket stays open."
     : " If you need information, state the limitation in your report.";
   const parent = tools.includes(MESSAGE_PARENT)
     ? " For a nonblocking update, call message_parent with kind=progress and keep working. Only if you cannot proceed without a decision or input, call message_parent with kind=question and stop."
@@ -613,5 +605,5 @@ function preamble(ticket: boolean, tools: readonly string[]): string {
   if (!ticket) {
     return `You are Kaeno WORK, responsible for one task. Do the work yourself with the tools you have and verify it. Messages from whoever started you may arrive while you work.${parent} Your final answer is your report: concise, verified and complete.`;
   }
-  return `You are Kaeno WORK, responsible for one ticket. Do the work yourself with the tools you have and verify it. The owner's messages in your ticket's thread arrive here directly while you work, and Kaeno's router may add notes; nobody else reads this conversation. Kaeno's router tells the owner what you report.${tools.includes(REPORT) ? progress : parent} Your final answer is your result: concise, verified and complete; it may be shortened for the owner, so lead with the conclusion.`;
+  return `You are Kaeno WORK, responsible for one ticket. Do the work yourself with the tools you have and verify it. The owner's messages and events from the owner's systems in your ticket's threads arrive here directly, and Kaeno's router may add notes; nobody else reads this conversation. Kaeno's router tells the owner what you report.${tools.includes(REPORT) ? progress : parent} Your final answer is your result: concise, verified and complete; it may be shortened for the owner, so lead with the conclusion.`;
 }
