@@ -92,11 +92,11 @@ Your own systems can report to Kaeno through webhooks, on a listener separate fr
 }
 ```
 
-Each source receives `POST /hooks/<name>`. A `generic` source takes `{ "id", "thread", "actor", "text", "closes"? }` signed with HMAC-SHA256 of the raw body under its secret (at least 32 characters, in a file next to the config), sent as `X-Kaeno-Signature-256: sha256=<hex>`:
+Each source receives `POST /hooks/<name>`. A `generic` source takes `{ "id", "thread", "actor", "text", "closes"? }` signed with HMAC-SHA256 of the raw body under its secret (at least 32 characters, in a file next to the config), sent as `X-Kaeno-Signature-256: sha256=<hex>`. The example reads the secret from its file inside the signing process, so it never appears on a command line, in `ps` or in shell history:
 
 ```sh
 body='{"id":"backup-2026-11-08","thread":"backups","actor":"nightly","text":"Backup failed: disk full"}'
-sig=$(printf %s "$body" | openssl dgst -sha256 -hmac "$(cat homelab.secret)" | cut -d' ' -f2)
+sig=$(printf %s "$body" | node -e 'const { readFileSync } = require("node:fs"); const key = readFileSync("homelab.secret", "utf8").trim(); process.stdout.write(require("node:crypto").createHmac("sha256", key).update(readFileSync(0)).digest("hex"))')
 curl -X POST localhost:8081/hooks/homelab -H "X-Kaeno-Signature-256: sha256=$sig" -d "$body"
 ```
 
