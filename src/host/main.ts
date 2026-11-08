@@ -5,6 +5,7 @@ import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { watchEvents, type ConversationId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import type { Server } from "node:http";
 import { z } from "zod";
 import { openKaeno } from "../core/application/index.ts";
 import { DEFAULT_AUTH_FILE, FileCredentialStore } from "./auth/index.ts";
@@ -17,6 +18,7 @@ import {
 import { parseModelRef } from "../extensions/agents/index.ts";
 import { ApiServer } from "../extensions/api/index.ts";
 import { loadTelegram } from "../extensions/telegram/index.ts";
+import { loadWebhooks, WebhookServer } from "../extensions/webhooks/index.ts";
 
 import { loadMcpConfiguration } from "../extensions/mcp/index.ts";
 import { memoryExtension, MemoryStore } from "../extensions/memory/index.ts";
@@ -146,6 +148,7 @@ models.setProvider(anthropicProvider());
 models.setProvider(openaiProvider());
 models.setProvider(openrouterProvider());
 const telegram = await loadTelegram(process.env);
+const webhooks = await loadWebhooks(process.env);
 const core = await openKaeno({
   storage: await openNodeSqliteStorage(data.durableFile),
   models,
@@ -158,13 +161,12 @@ const core = await openKaeno({
   work: { ...configuration.work, environment: execution.environment },
   onReport: (error) => console.error("harness:", error),
 });
-let server: ApiServer["server"] | undefined;
+const servers: Server[] = [];
 let closing: Promise<void> | undefined;
 function close(): Promise<void> {
   closing ??= (async () => {
     try {
-      const current = server;
-      if (current?.listening) {
+      for (const current of servers.filter((value) => value.listening)) {
         const stopped = new Promise<void>((resolve, reject) =>
           current.close((error) => (error ? reject(error) : resolve())),
         );
@@ -180,6 +182,16 @@ function close(): Promise<void> {
     }
   })();
   return closing;
+}
+async function listen(current: Server, at: number): Promise<void> {
+  servers.push(current);
+  await new Promise<void>((resolve, reject) => {
+    current.once("error", reject);
+    current.listen(at, () => {
+      current.removeListener("error", reject);
+      resolve();
+    });
+  });
 }
 try {
   const trace = await core.harness.watchTaskGraph(BACKGROUND_CONTEXT);
@@ -232,17 +244,17 @@ try {
     previous = tasks;
   });
 
-  const current = new ApiServer(core, token, { memory, routines }).server;
-  server = current;
-  await new Promise<void>((resolve, reject) => {
-    current.once("error", reject);
-    current.listen(port, () => {
-      current.removeListener("error", reject);
-      resolve();
-    });
-  });
-
+  await listen(new ApiServer(core, token, { memory, routines }).server, port);
   console.log(`kaeno listening on :${port}`);
+  if (webhooks) {
+    await listen(
+      new WebhookServer(core, webhooks.sources).server,
+      webhooks.port,
+    );
+    console.log(
+      `webhooks listening on :${webhooks.port} for ${webhooks.sources.map((source) => source.name).join(", ")}`,
+    );
+  }
 
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, () => {

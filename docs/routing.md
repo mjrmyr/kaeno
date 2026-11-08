@@ -53,6 +53,8 @@ A `ready` ticket counts as idle, so a CI failure on a pull request it opened sti
 
 A system event that cannot start a run stays in the ticket's pending inputs for its next one. After five system wakes with no input from the owner or router, the ticket reports `blocked` once and waits, so a push-fail-push loop cannot run unattended. A `quiet` report is only honoured for a run started by system events alone with no owner input since; otherwise it counts as `ready`, so the owner's message is never left unanswered.
 
+A webhook source's thread keys are prefixed with its name (`homelab:backups`), so no source can post into a channel's or another source's threads. A source can mark an event as closing its thread, for example a merged pull request: the event is still delivered, then no ticket follows that thread any more.
+
 ## Context: Inline & Spill and Chain of Recall
 
 The router's context is a cache. Every object it sees is rendered by `render.ts`:
@@ -83,7 +85,7 @@ Telegram threads:
 
 ## Not in this cut
 
-- **Proactive sources** (group chats, email, calendar, GitHub notifications as `candidate` triggers) and **acting ahead** (speculative background work). The gate and its modes exist; the sources do not yet.
+- **Rules for outside events** (standing owner rules that let the router accept an event the owner did not send) and **acting ahead** (speculative background work). Webhook sources exist (see the README); without rules, an event on a thread no ticket follows can only be ignored.
 - **A watchdog session** that judges whether workers make progress. Durable recovery and the environment reconciler cover infrastructure failures.
 - **Bring-your-own-machine endpoints.** Execution providers already separate the agent loop from its environments (Docker, microsandbox, Kubernetes); a remote-host provider fits that seam.
 - **Router sharding.** One batched router is enough at this scale.

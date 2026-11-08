@@ -26,10 +26,20 @@ it("boots the actual core entrypoint and shuts down cleanly", async () => {
   reservation.listen(0, "127.0.0.1");
   await once(reservation, "listening");
   const address = reservation.address();
-  if (!address || typeof address === "string") {
+  const hooks = createServer();
+  hooks.listen(0, "127.0.0.1");
+  await once(hooks, "listening");
+  const hooksAddress = hooks.address();
+  if (
+    !address ||
+    typeof address === "string" ||
+    !hooksAddress ||
+    typeof hooksAddress === "string"
+  ) {
     throw new Error("Expected TCP address");
   }
   await new Promise<void>((done) => reservation.close(() => done()));
+  await new Promise<void>((done) => hooks.close(() => done()));
   await mkdir(join(root, ".kaeno"));
   await mkdir(join(root, "agents/kaeno"), { recursive: true });
   await writeFile(
@@ -47,6 +57,21 @@ it("boots the actual core entrypoint and shuts down cleanly", async () => {
     }),
   );
   await writeFile(join(root, "docker.json"), "{}");
+  await writeFile(join(root, "homelab.secret"), "s".repeat(40));
+  await writeFile(
+    join(root, "webhooks.json"),
+    JSON.stringify({
+      port: hooksAddress.port,
+      sources: [
+        {
+          name: "homelab",
+          kind: "generic",
+          secretFile: "homelab.secret",
+          trust: "all",
+        },
+      ],
+    }),
+  );
   const token = "test-token-with-at-least-32-characters";
   const child = spawn(process.execPath, [resolve("src/host/main.ts")], {
     env: {
@@ -55,6 +80,7 @@ it("boots the actual core entrypoint and shuts down cleanly", async () => {
       KAENO_CONFIG: configFile,
       KAENO_DATA_DIR: join(root, "data"),
       KAENO_TOKEN: token,
+      KAENO_WEBHOOKS_CONFIG: join(root, "webhooks.json"),
       PORT: String(address.port),
     },
     cwd: root,
@@ -79,6 +105,14 @@ it("boots the actual core entrypoint and shuts down cleanly", async () => {
       },
       { timeout: 10000, interval: 50 },
     );
+    expect(
+      (
+        await fetch(`http://127.0.0.1:${hooksAddress.port}/hooks/homelab`, {
+          method: "POST",
+          body: "{}",
+        })
+      ).status,
+    ).toBe(401);
     const response = await fetch(`${base}/v1/tickets`, {
       headers: { authorization: `Bearer ${token}` },
     });

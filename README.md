@@ -74,6 +74,34 @@ Set `TELEGRAM_BOT_TOKEN` and point `KAENO_TELEGRAM_CONFIG` at a file with `{ "al
 
 Each task Kaeno takes on gets a thread of its own. With `"topics": true` (enable the bot's threaded mode in BotFather) that is a topic of the chat; otherwise, or when Telegram refuses to create one, it is a reply chain on your message. Messages in a ticket's topic, or replies to Kaeno's messages about it, go straight to its worker. Kaeno's messages there stay under 100 words. Commands: `/jobs` lists tickets, `/show k3` shows the latest report, `/cancel k3` stops one, `/stop` stops the ticket of the thread you are in (in the main chat: all of them), `/new` gives Kaeno a fresh context and leaves tickets running.
 
+## Webhooks
+
+Your own systems can report to Kaeno through webhooks, on a listener separate from the API. Set `KAENO_WEBHOOKS_CONFIG` to an owner-controlled file:
+
+```json
+{
+  "port": 8081,
+  "sources": [
+    {
+      "name": "homelab",
+      "kind": "generic",
+      "secretFile": "homelab.secret",
+      "trust": "all"
+    }
+  ]
+}
+```
+
+Each source receives `POST /hooks/<name>`. A `generic` source takes `{ "id", "thread", "actor", "text", "closes"? }` signed with HMAC-SHA256 of the raw body under its secret (at least 32 characters, in a file next to the config), sent as `X-Kaeno-Signature-256: sha256=<hex>`:
+
+```sh
+body='{"id":"backup-2026-11-08","thread":"backups","actor":"nightly","text":"Backup failed: disk full"}'
+sig=$(printf %s "$body" | openssl dgst -sha256 -hmac "$(cat homelab.secret)" | cut -d' ' -f2)
+curl -X POST localhost:8081/hooks/homelab -H "X-Kaeno-Signature-256: sha256=$sig" -d "$body"
+```
+
+`trust` decides who counts as one of your systems: `"all"` for a source only you send to, or `{ "actors": [...] }` for a source that also relays other people's events. Your systems' events reach and wake the tickets following their thread (`homelab:backups`), labelled as data: they grant nothing and answer no question. Anyone else's never reach a worker. `id` deduplicates redeliveries; `"closes": true` ends every ticket's subscription to the thread after delivering the event. See [who can reach a worker](docs/routing.md#who-can-reach-a-worker).
+
 ## Embed and extend
 
 The embedding entry point is `openKaeno` in `src/core/application/index.ts`. Callers supply resolved native assistant settings and explicitly install pi-durable extensions. WORK takes `work.agents`: plain agent profiles (`id`, `description`, resolved `setup`). `openKaeno` checks every agent against the approved worker tools and installed binding owners and throws on a misfit, so an agent that cannot run fails startup instead of being listed as unavailable. `loadEnvironment` in `src/host/composition/index.ts` resolves the same configured sources for local, Docker, and Kubernetes hosts; source acquisition and catalogs do not enter durable core.
