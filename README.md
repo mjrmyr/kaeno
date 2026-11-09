@@ -100,6 +100,8 @@ sig=$(printf %s "$body" | node -e 'const { readFileSync } = require("node:fs"); 
 curl -X POST localhost:8081/hooks/homelab -H "X-Kaeno-Signature-256: sha256=$sig" -d "$body"
 ```
 
+A `github` source takes GitHub's own webhook deliveries for pull requests, reviews, comments, issues and CI runs; see [Events from GitHub](docs/github.md#events-from-github).
+
 `trust` decides who counts as one of your systems: `"all"` for a source only you send to, or `{ "actors": [...] }` for a source that also relays other people's events. Your systems' events reach and wake the tickets following their thread (`homelab:backups`), labelled as data: they grant nothing and answer no question. Anyone else's never reach a worker. `id` deduplicates redeliveries; `"closes": true` ends every ticket's subscription to the thread after delivering the event. See [who can reach a worker](docs/routing.md#who-can-reach-a-worker).
 
 ## Embed and extend

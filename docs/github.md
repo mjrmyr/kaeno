@@ -14,7 +14,7 @@ The optional `src/extensions/github` extension lets a worker discover private re
 
    The diagnostic tools require **Pull requests: read**, **Checks: read**, **Actions: read**, **Commit statuses: read**, and **Metadata: read**; existing checkout uses Contents access. Retain Contents/Pull requests write only for the existing publishing workflow. No Workflows write permission is needed for these reads. After changing App permissions, approve the installation's updated permission request on GitHub. No additional Kaeno config keys or credentials are needed.
 
-2. Disable webhooks. This version needs no public callback endpoint, OAuth flow, client secret, or webhook secret.
+2. Webhooks are optional. Without them, the tools work as described here and Kaeno hears nothing from GitHub on its own. To let workers hear about reviews, comments, CI results and pushes on their pull requests, see [Events from GitHub](#events-from-github).
 3. Install the app on **selected repositories**. Start with a disposable private test repository.
 4. Generate an RSA private key and store it on the Kaeno host, outside repositories and sandboxes, for example `~/.kaeno/github-app.pem`. Restrict its permissions to the host owner (`chmod 600`). Do not paste it into chat or commit it.
 5. Create an owner-controlled file such as `~/.kaeno/github.json`:
@@ -117,7 +117,7 @@ These are external side effects, not SQLite transactions. GitHub access or PR ch
 
 V1 deliberately excludes:
 
-- Merge, force-push, administration, webhooks, and generic arbitrary GitHub API calls.
+- Merge, force-push, administration, and generic arbitrary GitHub API calls.
 - Pulling new upstream commits into an existing checkout; use new work for a fresh base.
 - Recursive submodule checkout and Git LFS object materialization.
 - Changes to workflow files unless GitHub separately grants the App the required Workflows permission. The recommended setup does not grant it.
@@ -126,6 +126,43 @@ V1 deliberately excludes:
 - Windows host support for this adapter (Git configuration uses `/dev/null`).
 
 The extension requires supported, patched host/worker Git versions. Git bundles are untrusted input; credentials never enter the worker, but host Git still parses objects supplied by it. Repository isolation does not make repository code or native extensions trusted.
+
+## Events from GitHub
+
+Kaeno's webhook channel has a `github` source kind (`src/channels/webhooks/github.ts`). It needs Kaeno's webhook listener to be reachable from GitHub, for example through Tailscale Funnel.
+
+1. In the App settings, turn on **Webhook**, set the URL to `https://<public host>/hooks/github`, and set a secret of at least 32 characters (`openssl rand -hex 32`). Choose content type `application/json` if asked; App webhooks always send JSON.
+2. Under **Subscribe to events**, select **Pull request**, **Pull request review**, **Pull request review comment**, **Issue comment**, **Issues** and **Workflow run**. Workflow runs need **Actions: read-only**, which the diagnostic tools already ask for. Approve the installation's updated permission request.
+3. Add the source to `KAENO_WEBHOOKS_CONFIG`, with the secret in a file next to it:
+
+   ```json
+   {
+     "name": "github",
+     "kind": "github",
+     "secretFile": "github.secret",
+     "self": "<app-slug>[bot]",
+     "trust": { "actors": ["<your-login>", "github-actions"] }
+   }
+   ```
+
+   The source must be named `github`. `self` is the account Kaeno acts as on GitHub: the App's bot login, shown as the author of its pull requests. `trust` lists the GitHub accounts whose activity may reach workers. CI results report as the actor `github-actions`.
+
+Kaeno checks GitHub's `X-Hub-Signature-256` signature and uses `X-GitHub-Delivery` to skip redeliveries. It turns these deliveries into events on the thread `github:<owner>/<repo>#<number>`:
+
+| Delivery                              | Actions                                                                                             | Actor            | Notes                                                             |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------- | ----------------------------------------------------------------- |
+| Pull request                          | opened, reopened, ready for review, converted to draft, pushed to (`synchronize`), closed or merged | Who acted        | Closing or merging ends every ticket's subscription to the thread |
+| Issues                                | opened, reopened, closed                                                                            | Who acted        | Closing ends subscriptions                                        |
+| Issue comment, review, review comment | created or submitted                                                                                | Who wrote it     | Bodies are cut at 4000 characters                                 |
+| Workflow run                          | completed, for runs that belong to pull requests                                                    | `github-actions` | One event on every pull request the run belongs to                |
+
+Anything else, including GitHub's `ping`, is acknowledged and ignored. So are events by `self`: a worker isn't woken by its own pushes and comments.
+
+A push is attributed to the GitHub account that pushed it, as reported by GitHub, not to the commit's author, which anyone can set. The owner pushing to a worker's pull request is a trusted account and wakes the worker; a stranger's push is only recorded and never reaches it.
+
+`github_publish` returns the pull request's `thread`. A worker that follows it with `follow_thread` is woken by these events while its ticket is idle, with the limits in [who can reach a worker](routing.md#who-can-reach-a-worker).
+
+The work branch must still stay on the last commit Kaeno published (see above). After someone else pushes to it, the worker hears about the push, but its next publish is rejected until it can build on those commits. Picking up other people's commits is not implemented yet.
 
 ## Embedding
 
