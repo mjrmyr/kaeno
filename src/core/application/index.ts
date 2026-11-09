@@ -19,6 +19,7 @@ export {
   ticketState,
 } from "../router/index.ts";
 export type {
+  Authority,
   Engine,
   GateMode,
   TicketRecord,

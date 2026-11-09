@@ -786,6 +786,13 @@ export class Engine {
     const record = await tx.doc(ThreadDoc, thread, thread);
     record.subscribers = record.subscribers.filter((id) => id !== ticketId);
   }
+  /** A source finished a thread, for example a merged pull request: no ticket follows it any more. */
+  async closeThread(tx: Tx, key: string): Promise<void> {
+    const thread = await tx.doc(ThreadDoc, key, key);
+    for (const ticketId of [...thread.subscribers]) {
+      await this.unsubscribe(tx, ticketId, key);
+    }
+  }
   async follow(tx: Tx, ticketId: string, thread: string): Promise<void> {
     const ticket = await tx.doc(TicketDoc, ticketId, null);
     const record = await tx.doc(ThreadDoc, thread, thread);
