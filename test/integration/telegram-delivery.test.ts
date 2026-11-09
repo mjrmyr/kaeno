@@ -7,7 +7,7 @@ import {
   TelegramState,
   telegramExtension,
   type TelegramTransport,
-} from "../../src/extensions/telegram/index.ts";
+} from "../../src/channels/telegram/index.ts";
 
 async function sent(core: Kaeno): Promise<Readonly<Record<string, string>>> {
   return (

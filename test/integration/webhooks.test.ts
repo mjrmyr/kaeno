@@ -25,7 +25,7 @@ import {
   genericAdapter,
   loadWebhooks,
   WebhookServer,
-} from "../../src/extensions/webhooks/index.ts";
+} from "../../src/channels/webhooks/index.ts";
 
 const model = { provider: "faux", modelId: "faux-1" };
 const SECRET = "homelab-webhook-secret-with-32-chars";

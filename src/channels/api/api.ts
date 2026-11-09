@@ -8,8 +8,8 @@ import {
   memoryIndex,
   updateEntry,
   type MemoryStore,
-} from "../memory/index.ts";
-import type { Routines } from "../routines/index.ts";
+} from "../../extensions/memory/index.ts";
+import type { Routines } from "../../extensions/routines/index.ts";
 
 function digest(value: string): Buffer {
   return createHash("sha256").update(value).digest();

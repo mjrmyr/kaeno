@@ -27,7 +27,7 @@ import {
   TelegramApiError,
   type TelegramTransport,
   type TelegramUpdate,
-} from "../../src/extensions/telegram/index.ts";
+} from "../../src/channels/telegram/index.ts";
 import { assignment, replies, ticketWhen } from "../mocks/router.ts";
 
 type Message = NonNullable<TelegramUpdate["message"]>;

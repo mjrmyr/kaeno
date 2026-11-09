@@ -16,9 +16,9 @@ import {
   loadGitHubConfiguration,
 } from "../extensions/github/index.ts";
 import { parseModelRef } from "../extensions/agents/index.ts";
-import { ApiServer } from "../extensions/api/index.ts";
-import { loadTelegram } from "../extensions/telegram/index.ts";
-import { loadWebhooks, WebhookServer } from "../extensions/webhooks/index.ts";
+import { ApiServer } from "../channels/api/index.ts";
+import { loadTelegram } from "../channels/telegram/index.ts";
+import { loadWebhooks, WebhookServer } from "../channels/webhooks/index.ts";
 
 import { loadMcpConfiguration } from "../extensions/mcp/index.ts";
 import { memoryExtension, MemoryStore } from "../extensions/memory/index.ts";

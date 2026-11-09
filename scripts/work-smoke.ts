@@ -14,7 +14,7 @@ import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openKaeno } from "../src/core/application/index.ts";
 import { browserExtension } from "../src/extensions/browser/index.ts";
-import { ApiServer } from "../src/extensions/api/index.ts";
+import { ApiServer } from "../src/channels/api/index.ts";
 import { MemoryStore } from "../src/extensions/memory/index.ts";
 import {
   loadExecution,

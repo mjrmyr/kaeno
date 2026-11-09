@@ -14,7 +14,7 @@ import { DatabaseSync } from "node:sqlite";
 import { expect, it } from "vitest";
 import { ask, until } from "../mocks/router.ts";
 import { openKaeno } from "../../src/core/application/index.ts";
-import { ApiServer } from "../../src/extensions/api/index.ts";
+import { ApiServer } from "../../src/channels/api/index.ts";
 import {
   memoryExtension,
   saveEntry,
