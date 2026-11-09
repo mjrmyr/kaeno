@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
@@ -184,7 +185,7 @@ const core = await openKaeno({
   extensions: [...configuration.extensions, ...backend.extensions],
   work: { ...configuration.work, environment: backend.environment },
 });
-const server = new ApiServer(core, {
+const server = new ApiServer(core, randomBytes(32).toString("hex"), {
   memory: new MemoryStore(new DatabaseSync(":memory:")),
 }).server;
 await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

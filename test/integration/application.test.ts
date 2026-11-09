@@ -6,6 +6,20 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, it, vi } from "vitest";
 
+it("refuses to start without a token", async () => {
+  const child = spawn(process.execPath, [resolve("src/host/main.ts")], {
+    env: { ...process.env, KAENO_TOKEN: "short" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let output = "";
+  child.stderr.on("data", (chunk) => {
+    output += String(chunk);
+  });
+  const [code] = await once(child, "exit");
+  expect(code).not.toBe(0);
+  expect(output).toContain("Set KAENO_TOKEN");
+}, 15000);
+
 it("boots the actual core entrypoint and shuts down cleanly", async () => {
   const root = await mkdtemp(join(tmpdir(), "kaeno-application-"));
   const reservation = createServer();
@@ -70,7 +84,21 @@ it("boots the actual core entrypoint and shuts down cleanly", async () => {
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual([]);
-    expect(await (await fetch(`${base}/v1/memory`)).json()).toEqual({
+    expect((await fetch(`${base}/v1/tickets`)).status).toBe(401);
+    expect(
+      (
+        await fetch(`${base}/v1/tickets`, {
+          headers: { authorization: `Bearer ${token}x` },
+        })
+      ).status,
+    ).toBe(401);
+    expect(
+      await (
+        await fetch(`${base}/v1/memory`, {
+          headers: { authorization: `Bearer ${token}` },
+        })
+      ).json(),
+    ).toEqual({
       preferences: [],
       memories: [],
     });

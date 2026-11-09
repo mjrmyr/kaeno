@@ -1,4 +1,5 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { z } from "zod";
 import { recall, type Kaeno } from "../../core/application/index.ts";
@@ -9,6 +10,10 @@ import {
   type MemoryStore,
 } from "../memory/index.ts";
 import type { Routines } from "../routines/index.ts";
+
+function digest(value: string): Buffer {
+  return createHash("sha256").update(value).digest();
+}
 
 async function readJson(req: IncomingMessage): Promise<unknown> {
   let raw = "";
@@ -24,12 +29,14 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
 
 export class ApiServer {
   readonly server: Server;
-  /** Routes of an omitted feature answer 404. */
+  /** Every route but `/healthz` needs `Authorization: Bearer <token>`. Routes of an omitted feature answer 404. */
   constructor(
     core: Kaeno,
+    token: string,
     features: { memory?: MemoryStore; routines?: Routines } = {},
   ) {
     const { memory, routines } = features;
+    const expected = digest(`Bearer ${token}`);
     this.server = createServer(async (req, res) => {
       function json(status: number, value: unknown) {
         res.writeHead(status, { "content-type": "application/json" });
@@ -40,6 +47,13 @@ export class ApiServer {
         const url = new URL(req.url ?? "/", "http://localhost");
         if (req.method === "GET" && url.pathname === "/healthz") {
           return json(200, { ok: true });
+        }
+        if (
+          !timingSafeEqual(digest(req.headers.authorization ?? ""), expected)
+        ) {
+          return json(401, {
+            error: "Unauthorized: send Kaeno's token as a bearer token",
+          });
         }
 
         if (req.method === "GET" && url.pathname === "/v1/tickets") {

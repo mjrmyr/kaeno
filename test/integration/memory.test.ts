@@ -179,7 +179,9 @@ it("the HTTP API lists the index, reads, edits and forgets entries", async () =>
     extensions: [],
   });
   const memory = store();
-  const api = new ApiServer(core, { memory }).server;
+  const token = "memory-test-token-with-32-characters";
+  const headers = { authorization: `Bearer ${token}` };
+  const api = new ApiServer(core, token, { memory }).server;
   try {
     memory.mutate((state) => {
       saveEntry(state, {
@@ -200,11 +202,12 @@ it("the HTTP API lists the index, reads, edits and forgets entries", async () =>
     const address = api.address();
     const base = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}/v1/memory`;
 
-    expect(await (await fetch(base)).json()).toEqual({
+    expect((await fetch(base)).status).toBe(401);
+    expect(await (await fetch(base, { headers })).json()).toEqual({
       preferences: [{ id: "m1", text: "Answer in German", savedAt: 1 }],
       memories: [{ id: "m2", title: "Partner", savedAt: 2 }],
     });
-    expect(await (await fetch(`${base}/m2`)).json()).toEqual({
+    expect(await (await fetch(`${base}/m2`, { headers })).json()).toEqual({
       id: "m2",
       kind: "memory",
       title: "Partner",
@@ -212,6 +215,7 @@ it("the HTTP API lists the index, reads, edits and forgets entries", async () =>
       savedAt: 2,
     });
     const put = await fetch(`${base}/m2`, {
+      headers,
       method: "PUT",
       body: JSON.stringify({ title: "Partner", text: "Mia, birthday 12 May" }),
     });
@@ -220,17 +224,23 @@ it("the HTTP API lists the index, reads, edits and forgets entries", async () =>
       expect.objectContaining({ text: "Mia, birthday 12 May" }),
     );
     const invalid = await fetch(`${base}/m1`, {
+      headers,
       method: "PUT",
       body: JSON.stringify({ title: "x", text: "y" }),
     });
     expect(invalid.status).toBe(400);
     expect(
-      await (await fetch(`${base}/m1`, { method: "DELETE" })).json(),
+      await (await fetch(`${base}/m1`, { headers, method: "DELETE" })).json(),
     ).toEqual({ id: "m1", removed: true });
-    expect((await fetch(`${base}/m1`)).status).toBe(404);
+    expect((await fetch(`${base}/m1`, { headers })).status).toBe(404);
     expect(
-      (await fetch(`${base}/m1`, { method: "PUT", body: '{"text":"x"}' }))
-        .status,
+      (
+        await fetch(`${base}/m1`, {
+          headers,
+          method: "PUT",
+          body: '{"text":"x"}',
+        })
+      ).status,
     ).toBe(404);
   } finally {
     await new Promise<void>((resolve) => api.close(() => resolve()));

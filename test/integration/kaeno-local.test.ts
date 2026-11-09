@@ -23,15 +23,22 @@ afterEach(async () => {
   }
 });
 
+const TOKEN = "client-token";
 async function serve(handler: RequestListener) {
-  server = createServer(handler);
+  server = createServer((req, res) => {
+    if (req.headers.authorization !== `Bearer ${TOKEN}`) {
+      res.writeHead(401).end("missing token");
+      return;
+    }
+    return handler(req, res);
+  });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
   if (!address || typeof address === "string") {
     throw new Error("Missing server address");
   }
-  return `http://127.0.0.1:${address.port}`;
+  return { url: `http://127.0.0.1:${address.port}`, token: TOKEN };
 }
 
 const context = normalizeContext({
@@ -193,4 +200,11 @@ it("lists routine changes and sends owner decisions by change ID only", async ()
     "POST /v1/routines/changes/c7/approve",
     "POST /v1/routines/changes/c8/reject",
   ]);
+});
+
+it("sends the server's token and names the server when it is refused", async () => {
+  const base = await serve((_req, res) => res.end("{}"));
+  await expect(listChanges({ url: base.url, token: "wrong" })).rejects.toThrow(
+    `Kaeno at ${base.url}: HTTP 401`,
+  );
 });

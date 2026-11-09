@@ -10,13 +10,19 @@ import {
 } from "@earendil-works/pi-ai";
 import { z } from "zod";
 
+/** One Kaeno server and the token its API requires. */
+export interface Server {
+  url: string;
+  token: string;
+}
+const root = (server: Server) => server.url.replace(/\/$/, "");
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 export const threadPath = (session: string) =>
   `/v1/threads/pi:${hash(session).slice(0, 40)}`;
-export const deliveryKey = (baseUrl: string, session: string) =>
-  `${baseUrl.replace(/\/$/, "")}${threadPath(session)}`;
-export const receiptPrefix = (baseUrl: string, session: string) =>
-  `${deliveryKey(baseUrl, session)}#reply:`;
+export const deliveryKey = (server: Server, session: string) =>
+  `${root(server)}${threadPath(session)}`;
+export const receiptPrefix = (server: Server, session: string) =>
+  `${deliveryKey(server, session)}#reply:`;
 const replyPage = z.object({
   replies: z.array(
     z.object({ id: z.number(), requestId: z.string(), text: z.string() }),
@@ -26,15 +32,20 @@ const replyPage = z.object({
 });
 
 export async function request(
-  baseUrl: string,
+  server: Server,
   path: string,
   init?: RequestInit,
   fetcher = fetch,
 ): Promise<Response> {
-  const response = await fetcher(`${baseUrl.replace(/\/$/, "")}${path}`, init);
+  const headers = new Headers(init?.headers);
+  headers.set("authorization", `Bearer ${server.token}`);
+  const response = await fetcher(`${root(server)}${path}`, {
+    ...init,
+    headers,
+  });
   if (!response.ok) {
     throw new Error(
-      `Kaeno at ${baseUrl}: HTTP ${response.status}: ${await response.text()}`,
+      `Kaeno at ${server.url}: HTTP ${response.status}: ${await response.text()}`,
     );
   }
   return response;
@@ -45,11 +56,11 @@ const changeList = z.array(
 );
 /** Routine changes Kaeno proposed. They apply only through `decideChange`, an owner action. */
 export async function listChanges(
-  baseUrl: string,
+  server: Server,
   fetcher = fetch,
 ): Promise<z.infer<typeof changeList>> {
   const response = await request(
-    baseUrl,
+    server,
     "/v1/routines/changes",
     undefined,
     fetcher,
@@ -58,7 +69,7 @@ export async function listChanges(
 }
 
 export async function decideChange(
-  baseUrl: string,
+  server: Server,
   id: string,
   decision: "approve" | "reject",
   fetcher = fetch,
@@ -67,7 +78,7 @@ export async function decideChange(
     throw new Error(`Not a change ID: "${id}" (expected e.g. c42)`);
   }
   await request(
-    baseUrl,
+    server,
     `/v1/routines/changes/${id}/${decision}`,
     { method: "POST" },
     fetcher,
@@ -75,14 +86,14 @@ export async function decideChange(
 }
 
 export async function readReplies(
-  baseUrl: string,
+  server: Server,
   session: string,
   after = 0,
   signal?: AbortSignal,
   fetcher = fetch,
 ) {
   const response = await request(
-    baseUrl,
+    server,
     `${threadPath(session)}/replies?after=${after}`,
     { signal },
     fetcher,
@@ -92,7 +103,7 @@ export async function readReplies(
 
 // Kaeno owns the conversation and execution tools; Pi is only a text terminal.
 export function streamKaeno(
-  baseUrl: string,
+  server: Server,
   model: Model<Api>,
   context: TranscriptContext,
   options?: SimpleStreamOptions,
@@ -144,7 +155,7 @@ export function streamKaeno(
       const payload = { text, requestId };
       const replacement = await options?.onPayload?.(payload, model);
       const response = await request(
-        baseUrl,
+        server,
         `${threadPath(session)}/turn`,
         {
           method: "POST",
@@ -167,7 +178,7 @@ export function streamKaeno(
       let after = 0;
       for (;;) {
         const page = await readReplies(
-          baseUrl,
+          server,
           session,
           after,
           signal,
@@ -178,7 +189,7 @@ export function streamKaeno(
         );
         if (reply) {
           // Persisted with Pi's assistant message; the inbox won't display it again.
-          output.responseId = `${receiptPrefix(baseUrl, session)}${reply.id}`;
+          output.responseId = `${receiptPrefix(server, session)}${reply.id}`;
           output.content.push({ type: "text", text: reply.text });
           stream.push({ type: "text_start", contentIndex: 0, partial: output });
           stream.push({

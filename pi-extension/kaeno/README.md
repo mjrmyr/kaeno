@@ -2,15 +2,16 @@
 
 Text-only Pi providers for the Kaeno HTTP API, one per Kaeno server:
 
-| Provider / model | Server                              | Default URL                 | Override          | Commands                                    |
-| ---------------- | ----------------------------------- | --------------------------- | ----------------- | ------------------------------------------- |
-| `kaeno`          | your homelab                        | `http://homelab-kaeno:8080` | `KAENO_URL`       | `/kaeno-replies`, `/kaeno-stop`             |
-| `kaeno-local`    | Kaeno on this machine (`npm start`) | `http://127.0.0.1:8080`     | `KAENO_LOCAL_URL` | `/kaeno-local-replies`, `/kaeno-local-stop` |
+| Provider / model | Server                              | Default URL                 | Override          | Token               | Commands                                    |
+| ---------------- | ----------------------------------- | --------------------------- | ----------------- | ------------------- | ------------------------------------------- |
+| `kaeno`          | your homelab                        | `http://homelab-kaeno:8080` | `KAENO_URL`       | `KAENO_TOKEN`       | `/kaeno-replies`, `/kaeno-stop`             |
+| `kaeno-local`    | Kaeno on this machine (`npm start`) | `http://127.0.0.1:8080`     | `KAENO_LOCAL_URL` | `KAENO_LOCAL_TOKEN` | `/kaeno-local-replies`, `/kaeno-local-stop` |
 
 Both are always available; the selected model decides which server a session talks to. Kaeno owns model calls,
 conversation history, tools, and workers; Pi only sends the latest user message
-and displays completed replies, including later worker reports. No Kaeno API key is needed. Model-provider
-credentials belong in Kaeno's `.env`, not Pi.
+and displays completed replies, including later worker reports. Set each server's token (the `KAENO_TOKEN` that
+server was started with) in the variable above before starting Pi; a missing or wrong token fails with HTTP 401.
+Model-provider credentials belong in Kaeno's `.env`, not Pi.
 
 ## Install
 
@@ -85,8 +86,8 @@ KAENO_URL=http://homelab-kaeno.example.ts.net:8080 pi --model kaeno
 KAENO_LOCAL_URL=http://127.0.0.1:8081 pi --model kaeno-local
 ```
 
-The current Kaeno API is unauthenticated. Do not expose it to untrusted networks;
-on the homelab, Tailscale ACLs are the access control.
+Every request carries the server's token as a bearer token. It travels in plain text over HTTP, so keep
+using Tailscale (or TLS) for the homelab.
 
 ## Delivery regression check
 
