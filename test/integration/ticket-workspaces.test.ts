@@ -11,7 +11,6 @@ import {
   type FauxResponseFactory,
 } from "@earendil-works/pi-ai/providers/faux";
 import {
-  defineExtension,
   MemoryStorage,
   type ConversationId,
   type JsonObject,
@@ -139,9 +138,8 @@ async function fixture(options: {
       instructions: "ROUTER",
       tools: ["route", "reply", "recall", "list_tickets", "stop_ticket"],
     },
-    extensions: [
+    channels: [
       {
-        durable: defineExtension({ name: "test-channel", tools: [] }),
         delivery: {
           channel: "test",
           send: async (route, text) => {

@@ -83,6 +83,7 @@ it("rejects core and extension imports that cross layer boundaries", async () =>
     for (const path of [
       "src/core/work",
       "src/extensions/agents",
+      "src/channels/chat",
       "src/core/application",
       "src/host/composition",
       "src/misc",
@@ -106,7 +107,11 @@ it("rejects core and extension imports that cross layer boundaries", async () =>
     );
     await writeFile(
       join(directory, "src/extensions/agents/index.ts"),
-      'import type { Loaded } from "../../host/composition/index.ts"; export interface Definition { name: string; loaded: Loaded } export const tool = "start_work";',
+      'import type { Loaded } from "../../host/composition/index.ts"; import type { Chat } from "../../channels/chat/index.ts"; export interface Definition { name: string; loaded: Loaded; chat: Chat } export const tool = "start_work";',
+    );
+    await writeFile(
+      join(directory, "src/channels/chat/index.ts"),
+      'import type { Loaded } from "../../host/composition/index.ts"; import type { Definition } from "../../extensions/agents/index.ts"; import type { Work } from "../../core/work/index.ts"; export interface Chat { loaded: Loaded; definition: Definition; work: Work }',
     );
     await writeFile(
       join(directory, "src/core/work/index.ts"),
@@ -141,11 +146,17 @@ it("rejects core and extension imports that cross layer boundaries", async () =>
       'Core feature "application" cannot re-export "extensions/agents"',
     );
     expect(result).toContain('Extension "agents" cannot import the host');
+    expect(result).toContain('Extension "agents" cannot import channels');
+    expect(result).toContain('Channel "chat" cannot import the host');
+    expect(result).toContain('Channel "chat" cannot import extensions');
+    expect(result).toContain(
+      "src/channels/chat/index.ts:1:132 Import core only through src/core/application/index.ts.",
+    );
     expect(result).toContain(
       "src/host/composition/index.ts:1:1 Import core only through src/core/application/index.ts.",
     );
     expect(result).toContain(
-      'Place "src/misc" under src/core, src/extensions or src/host.',
+      'Place "src/misc" under src/core, src/extensions, src/channels or src/host.',
     );
     expect(result).toContain(
       'Use the WORK name constants from core instead of the literal "start_work".',

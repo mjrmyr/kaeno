@@ -23,11 +23,11 @@ import { expect, it, vi } from "vitest";
 import { openKaeno, type Kaeno } from "../../src/core/application/index.ts";
 import { Engine } from "../../src/core/router/index.ts";
 import {
-  telegramExtension,
+  telegramChannel,
   TelegramApiError,
   type TelegramTransport,
   type TelegramUpdate,
-} from "../../src/extensions/telegram/index.ts";
+} from "../../src/channels/telegram/index.ts";
 import { assignment, replies, ticketWhen } from "../mocks/router.ts";
 
 type Message = NonNullable<TelegramUpdate["message"]>;
@@ -198,8 +198,8 @@ async function open(options: {
     storage: options.storage ?? new MemoryStorage(),
     models,
     assistant: { model, instructions: "ROUTER", tools: ["route", "reply"] },
-    extensions: [
-      telegramExtension({
+    channels: [
+      telegramChannel({
         allowedChatIds: options.allowedChatIds ?? [111, 222],
         ...(options.topics === undefined ? {} : { topics: options.topics }),
         client: options.inbox.client,

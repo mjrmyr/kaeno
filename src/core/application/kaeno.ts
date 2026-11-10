@@ -65,21 +65,33 @@ export interface KaenoExtension {
   readOnlyTools?: readonly string[];
   /** The one native execution-environment provider. */
   environment?: HarnessOptions["env"];
-  delivery?: {
-    channel: string;
-    /** `thread` is the key the message belongs to, so a source can map replies to it back. */
-    send(route: ChannelRoute, text: string, thread: string): Promise<void>;
-    typing?(route: ChannelRoute): Promise<void>;
-    maxWords?: number;
-    /** A ticket's own thread for an event that arrived on `route`: a topic, or a reply chain. */
-    openThread?(
-      route: ChannelRoute,
-      title: string,
-    ): Promise<{ key: string; route: ChannelRoute } | undefined>;
-  };
   /** Boundary check of this extension's saved bindings; runs before anything resumes. */
   validateBinding?(binding: Binding): void;
   /** Start a listener or reconciler after recovery checks; return its cleanup. */
+  start?(
+    core: Kaeno,
+    signal: AbortSignal,
+  ): Promise<void | (() => Promise<void>)>;
+}
+
+/** Outbound transport used by core without knowledge of its implementation. */
+export interface ChannelDelivery {
+  channel: string;
+  /** `thread` lets a channel map transport replies back to their application thread. */
+  send(route: ChannelRoute, text: string, thread: string): Promise<void>;
+  typing?(route: ChannelRoute): Promise<void>;
+  maxWords?: number;
+  /** A ticket's own topic or reply chain. */
+  openThread?(
+    route: ChannelRoute,
+    title: string,
+  ): Promise<{ key: string; route: ChannelRoute } | undefined>;
+}
+
+/** Transport integration, with no agent tools, environments or binding ownership. */
+export interface KaenoChannel {
+  delivery?: ChannelDelivery;
+  /** Attach and start after recovery checks, before durable work resumes. */
   start?(
     core: Kaeno,
     signal: AbortSignal,
@@ -105,6 +117,7 @@ export interface OpenKaenoOptions {
   /** The programmatic gate per trigger source; unlisted sources are explicit. */
   sources?: Readonly<Record<string, GateMode>>;
   extensions?: readonly KaenoExtension[];
+  channels?: readonly KaenoChannel[];
   work?: WorkOptions;
   onReport?: HarnessOptions["onReport"];
 }
@@ -270,7 +283,7 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
   ];
 
   const names = new Set(["kaeno-tool-authority"]);
-  const deliveries = new Map<string, NonNullable<KaenoExtension["delivery"]>>();
+  const deliveries = new Map<string, ChannelDelivery>();
   const byName = new Map<string, KaenoExtension>();
   let environment: HarnessOptions["env"];
   const toolNames = new Set<string>();
@@ -301,14 +314,15 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
       }
       environment = extension.environment;
     }
-    if (extension.delivery) {
-      if (deliveries.has(extension.delivery.channel)) {
-        throw new Error(
-          `Duplicate delivery channel: ${extension.delivery.channel}`,
-        );
-      }
-      deliveries.set(extension.delivery.channel, extension.delivery);
+  }
+  for (const { delivery } of options.channels ?? []) {
+    if (!delivery) {
+      continue;
     }
+    if (deliveries.has(delivery.channel)) {
+      throw new Error(`Duplicate delivery channel: ${delivery.channel}`);
+    }
+    deliveries.set(delivery.channel, delivery);
   }
 
   const durable = extensions.map((extension) => extension.durable);
@@ -419,7 +433,7 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
         } catch (error) {
           errors.push(error);
         }
-        // Keep extension clients alive until in-flight durable invocations stop.
+        // Keep extension and channel clients alive until durable invocations stop.
         try {
           await harness.close(BACKGROUND_CONTEXT);
         } catch (error) {
@@ -500,8 +514,8 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
       cleanups.push(async () => clearInterval(timer));
     }
 
-    for (const extension of extensions) {
-      const cleanup = await extension.start?.(core, stopping.signal);
+    for (const integration of [...extensions, ...(options.channels ?? [])]) {
+      const cleanup = await integration.start?.(core, stopping.signal);
       if (cleanup) {
         cleanups.push(cleanup);
       }

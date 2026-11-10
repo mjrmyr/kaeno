@@ -9,7 +9,7 @@ import {
   fauxProvider,
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import { defineExtension, type JsonObject } from "@earendil-works/pi-durable";
+import { type JsonObject } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -128,9 +128,8 @@ async function open(path: string, provider: SandboxProvider): Promise<Kaeno> {
       instructions: "ROUTER",
       tools: ["route", "reply", "recall", "list_tickets", "stop_ticket"],
     },
-    extensions: [
+    channels: [
       {
-        durable: defineExtension({ name: "test-channel", tools: [] }),
         delivery: {
           channel: "test",
           send: async () => {},

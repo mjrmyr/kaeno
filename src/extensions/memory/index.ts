@@ -20,3 +20,4 @@ export type {
 } from "./memory.ts";
 export { MEMORY_EXTENSION, memoryExtension } from "./extension.ts";
 export { MemoryStore } from "./store.ts";
+export { Memory } from "./service.ts";

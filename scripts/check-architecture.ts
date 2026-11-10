@@ -15,9 +15,10 @@ const options = ts.parseJsonConfigFileContent(
 const program = ts.createProgram(options.fileNames, options.options);
 const checker = program.getTypeChecker();
 const errors: string[] = [];
-// Layers come from the path: src/<layer>/<feature>/... Core never depends on extensions or the host;
-// extensions may use core and each other; only the host composes concrete features.
-const layers = new Set(["core", "extensions", "host"]);
+// Layers come from the path: src/<layer>/<feature>/... Core never depends on the other layers;
+// Extensions may use core and each other; channels may use core, never extensions.
+// Only the host connects channels to extensions through consumer-owned capabilities.
+const layers = new Set(["core", "extensions", "channels", "host"]);
 async function filesIn(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const groups = await Promise.all(
@@ -130,7 +131,7 @@ for (const path of paths) {
     report(
       file,
       file,
-      `Place "src/${layer}" under src/core, src/extensions or src/host.`,
+      `Place "src/${layer}" under src/core, src/extensions, src/channels or src/host.`,
     );
   }
   const unit = path.endsWith(".test.ts") && owner !== undefined;
@@ -351,8 +352,29 @@ for (const path of paths) {
           `Extension "${nameOf(owner ?? "extensions/")}" cannot import the host; the host composes extensions.`,
         );
       }
+      if (layer === "extensions" && targetLayer === "channels") {
+        report(
+          file,
+          node,
+          `Extension "${nameOf(owner ?? "extensions/")}" cannot import channels; the host connects them.`,
+        );
+      }
+      if (layer === "channels" && targetLayer === "extensions") {
+        report(
+          file,
+          node,
+          `Channel "${nameOf(owner ?? "channels/")}" cannot import extensions; the host supplies consumer-owned capabilities.`,
+        );
+      }
+      if (layer === "channels" && targetLayer === "host") {
+        report(
+          file,
+          node,
+          `Channel "${nameOf(owner ?? "channels/")}" cannot import the host; the host composes channels.`,
+        );
+      }
       if (
-        (layer === "extensions" || layer === "host") &&
+        (layer === "extensions" || layer === "channels" || layer === "host") &&
         targetLayer === "core" &&
         target !== resolve(root, "src/core/application/index.ts")
       ) {
