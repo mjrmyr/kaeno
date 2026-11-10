@@ -15,7 +15,7 @@ import { DatabaseSync } from "node:sqlite";
 import { openKaeno } from "../src/core/application/index.ts";
 import { browserExtension } from "../src/extensions/browser/index.ts";
 import { ApiServer } from "../src/channels/api/index.ts";
-import { MemoryStore } from "../src/extensions/memory/index.ts";
+import { Memory, MemoryStore } from "../src/extensions/memory/index.ts";
 import {
   loadExecution,
   loadEnvironment,
@@ -186,7 +186,7 @@ const core = await openKaeno({
   work: { ...configuration.work, environment: backend.environment },
 });
 const server = new ApiServer(core, randomBytes(32).toString("hex"), {
-  memory: new MemoryStore(new DatabaseSync(":memory:")),
+  memory: new Memory(new MemoryStore(new DatabaseSync(":memory:"))),
 }).server;
 await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 try {

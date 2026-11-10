@@ -21,7 +21,11 @@ import { loadTelegram } from "../channels/telegram/index.ts";
 import { loadWebhooks, WebhookServer } from "../channels/webhooks/index.ts";
 
 import { loadMcpConfiguration } from "../extensions/mcp/index.ts";
-import { memoryExtension, MemoryStore } from "../extensions/memory/index.ts";
+import {
+  Memory,
+  memoryExtension,
+  MemoryStore,
+} from "../extensions/memory/index.ts";
 import { Routines, RoutineStore } from "../extensions/routines/index.ts";
 import { loadZoteroConfiguration } from "../extensions/zotero/index.ts";
 import { browserExtension } from "../extensions/browser/index.ts";
@@ -244,7 +248,10 @@ try {
     previous = tasks;
   });
 
-  await listen(new ApiServer(core, token, { memory, routines }).server, port);
+  await listen(
+    new ApiServer(core, token, { memory: new Memory(memory), routines }).server,
+    port,
+  );
   console.log(`kaeno listening on :${port}`);
   if (webhooks) {
     await listen(

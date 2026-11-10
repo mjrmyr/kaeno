@@ -2,7 +2,7 @@
 
 An extension owns its integration: configuration, clients, business rules, authorization and private durable state. It can offer **tools and skills** to agents, **definition readers** to startup composition, or both. A native runtime projection supplies durable definitions, binding validation and optional lifecycle integration when needed. Core consumes resolved conversation setups and runtime projections, not readers, skill catalogs or extension-specific configuration.
 
-Channels are not extensions. `src/channels/` holds the ways the owner and their systems reach Kaeno: the HTTP API, Telegram and webhooks. Each owns its transport and its own check of who may send, and calls core through `src/core/application/index.ts`. Channels may use extensions; extensions never import channels, and only the host starts them.
+Channels are not extensions. `src/channels/` holds the ways the owner and their systems reach Kaeno: the HTTP API, Telegram and webhooks. Each owns its transport and its own check of who may send, and calls core through `src/core/application/index.ts`. Channels and extensions never import each other. Channels declare consumer-owned capability interfaces (for example `src/channels/api/ports.ts`); the host supplies extension implementations and starts the channels. Keep transport parsing and responses in channels, feature behavior in extensions, and genuinely shared application contracts in core.
 
 ## Install, permit, select
 
