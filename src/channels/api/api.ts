@@ -3,13 +3,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { z } from "zod";
 import { recall, type Kaeno } from "../../core/application/index.ts";
-import {
-  forgetEntry,
-  memoryIndex,
-  updateEntry,
-  type MemoryStore,
-} from "../../extensions/memory/index.ts";
-import type { Routines } from "../../extensions/routines/index.ts";
+import type { MemoryAccess, RoutineAccess } from "./ports.ts";
 
 function digest(value: string): Buffer {
   return createHash("sha256").update(value).digest();
@@ -33,7 +27,7 @@ export class ApiServer {
   constructor(
     core: Kaeno,
     token: string,
-    features: { memory?: MemoryStore; routines?: Routines } = {},
+    features: { memory?: MemoryAccess; routines?: RoutineAccess } = {},
   ) {
     const { memory, routines } = features;
     const expected = digest(`Bearer ${token}`);
@@ -149,7 +143,7 @@ export class ApiServer {
         }
 
         if (memory && req.method === "GET" && url.pathname === "/v1/memory") {
-          return json(200, memoryIndex(memory.read()));
+          return json(200, memory.list());
         }
 
         // Owner edits from this API are not turns: they change memory directly, like a settings page.
@@ -159,27 +153,21 @@ export class ApiServer {
         if (memory && entry) {
           const memoryId = entry[1];
           if (req.method === "GET") {
-            const { entries } = memory.read();
-            return Object.hasOwn(entries, memoryId)
-              ? json(200, { id: memoryId, ...entries[memoryId] })
-              : json(404, { error: "Not found" });
+            const found = memory.get(memoryId);
+            return found ? json(200, found) : json(404, { error: "Not found" });
           }
           if (req.method === "PUT") {
             const content = z
               .object({ title: z.string().optional(), text: z.string() })
               .strict()
               .parse(await readJson(req));
-            const updated = memory.mutate((state) =>
-              updateEntry(state, memoryId, content, Date.now()),
-            );
+            const updated = memory.update(memoryId, content);
             return updated
               ? json(200, { id: memoryId })
               : json(404, { error: "Not found" });
           }
           if (req.method === "DELETE") {
-            const removed = memory.mutate((state) =>
-              forgetEntry(state, memoryId),
-            );
+            const removed = memory.remove(memoryId);
             return json(200, { id: memoryId, removed });
           }
           return json(404, { error: "Not found" });

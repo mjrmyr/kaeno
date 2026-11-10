@@ -18,6 +18,7 @@ import { ApiServer } from "../../src/channels/api/index.ts";
 import {
   memoryExtension,
   saveEntry,
+  Memory,
   MemoryStore,
   MEMORY_TOOLS,
 } from "../../src/extensions/memory/index.ts";
@@ -181,7 +182,7 @@ it("the HTTP API lists the index, reads, edits and forgets entries", async () =>
   const memory = store();
   const token = "memory-test-token-with-32-characters";
   const headers = { authorization: `Bearer ${token}` };
-  const api = new ApiServer(core, token, { memory }).server;
+  const api = new ApiServer(core, token, { memory: new Memory(memory) }).server;
   try {
     memory.mutate((state) => {
       saveEntry(state, {

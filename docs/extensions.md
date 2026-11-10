@@ -2,7 +2,11 @@
 
 An extension owns its integration: configuration, clients, business rules, authorization and private durable state. It can offer **tools and skills** to agents, **definition readers** to startup composition, or both. A native runtime projection supplies durable definitions, binding validation and optional lifecycle integration when needed. Core consumes resolved conversation setups and runtime projections, not readers, skill catalogs or extension-specific configuration.
 
-Channels are not extensions. `src/channels/` holds the ways the owner and their systems reach Kaeno: the HTTP API, Telegram and webhooks. Each owns its transport and its own check of who may send, and calls core through `src/core/application/index.ts`. Channels may use extensions; extensions never import channels, and only the host starts them.
+Channels are not extensions. `src/channels/` holds the ways the owner and their systems reach Kaeno: the HTTP API, Telegram and webhooks. Each owns its transport and its own check of who may send, and calls core through `src/core/application/index.ts`. Channels and extensions never import each other. Channels declare consumer-owned capability interfaces (for example `src/channels/api/ports.ts`); the host supplies extension implementations and starts the channels. Keep transport parsing and responses in channels, feature behavior in extensions, and genuinely shared application contracts in core.
+
+Core-managed channels register through `OpenKaenoOptions.channels` as `KaenoChannel`, not through `extensions`. A channel can supply `delivery` (`ChannelDelivery`: send, optional typing and thread creation) and `start(core, signal)` returning optional async cleanup. Incoming-only channels need no delivery capability. Channels cannot register agent tools, execution environments or binding validators. Telegram uses this contract; the API and webhook HTTP servers remain host-managed. Channel state, such as Telegram offsets and reply mappings, remains channel-owned and does not require a native extension registration.
+
+Delivery handlers are registered before recovery checks. Extensions start first, then channels, after recovery checks and before scheduling resumes. Close aborts their shared signal, stops durable work, then runs cleanup in reverse startup order. A channel must clean up its own partial initialization if its start throws before returning cleanup.
 
 ## Install, permit, select
 
