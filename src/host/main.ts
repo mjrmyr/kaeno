@@ -154,14 +154,11 @@ models.setProvider(openrouterProvider());
 const telegram = await loadTelegram(process.env);
 const webhooks = await loadWebhooks(process.env);
 const core = await openKaeno({
+  channels: telegram ? [telegram] : [],
   storage: await openNodeSqliteStorage(data.durableFile),
   models,
   assistant: configuration.assistant,
-  extensions: [
-    ...configuration.extensions,
-    ...execution.extensions,
-    ...(telegram ? [telegram] : []),
-  ],
+  extensions: [...configuration.extensions, ...execution.extensions],
   work: { ...configuration.work, environment: execution.environment },
   onReport: (error) => console.error("harness:", error),
 });

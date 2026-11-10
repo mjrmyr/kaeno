@@ -9,11 +9,7 @@ import {
   fauxProvider,
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import {
-  defineExtension,
-  MemoryStorage,
-  type JsonObject,
-} from "@earendil-works/pi-durable";
+import { MemoryStorage, type JsonObject } from "@earendil-works/pi-durable";
 import { createHmac } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -94,9 +90,8 @@ async function fixture() {
       instructions: "ROUTER",
       tools: ["route", "reply", "recall", "list_tickets", "stop_ticket"],
     },
-    extensions: [
+    channels: [
       {
-        durable: defineExtension({ name: "test-channel", tools: [] }),
         delivery: {
           channel: "test",
           send: async () => {},

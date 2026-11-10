@@ -9,11 +9,7 @@ import {
   fauxProvider,
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import {
-  defineExtension,
-  MemoryStorage,
-  type JsonObject,
-} from "@earendil-works/pi-durable";
+import { MemoryStorage, type JsonObject } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { tmpdir } from "node:os";
 import { expect, it } from "vitest";
@@ -133,9 +129,8 @@ async function fixture(options: { suspend?: boolean } = {}) {
       instructions: "ROUTER",
       tools: ["route", "reply", "recall", "list_tickets", "stop_ticket"],
     },
-    extensions: [
+    channels: [
       {
-        durable: defineExtension({ name: "test-channel", tools: [] }),
         delivery: {
           channel: "test",
           send: async (_route, text) => {

@@ -6,7 +6,6 @@ import {
   fauxProvider,
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import { defineExtension } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -235,11 +234,9 @@ async function runPhase(name: string, directory: string): Promise<void> {
     storage: await openNodeSqliteStorage(database),
     models,
     assistant: configuration.assistant,
-    extensions: [
-      ...configuration.extensions,
-      ...execution.extensions,
+    extensions: [...configuration.extensions, ...execution.extensions],
+    channels: [
       {
-        durable: defineExtension({ name: "smoke-channel", tools: [] }),
         delivery: {
           channel: "smoke",
           send: async () => {},
