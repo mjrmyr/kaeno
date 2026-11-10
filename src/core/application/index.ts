@@ -1,6 +1,8 @@
 export { openKaeno } from "./kaeno.ts";
 export type {
   Kaeno,
+  KaenoChannel,
+  ChannelDelivery,
   KaenoExtension,
   OpenKaenoOptions,
   WorkOptions,

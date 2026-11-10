@@ -148,7 +148,7 @@ it("rejects core and extension imports that cross layer boundaries", async () =>
     expect(result).toContain('Extension "agents" cannot import the host');
     expect(result).toContain('Extension "agents" cannot import channels');
     expect(result).toContain('Channel "chat" cannot import the host');
-    expect(result).not.toContain("src/channels/chat/index.ts:1:64");
+    expect(result).toContain('Channel "chat" cannot import extensions');
     expect(result).toContain(
       "src/channels/chat/index.ts:1:132 Import core only through src/core/application/index.ts.",
     );
