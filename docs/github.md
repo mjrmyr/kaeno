@@ -64,7 +64,31 @@ The assistant receives the capability too. Set an explicit `tools` list containi
 
 - `github_list_repositories {}` returns IDs, current names, and default branches for repositories currently accessible to the installation.
 - `github_checkout { repository, branch? }` prepares one branch per repository in the existing worker environment. It returns the absolute checkout path and initial commit SHA. Repeated calls do not reset files. A different branch needs new work.
-- `github_publish { repository, title, body }` snapshots tracked and non-ignored local files, preserving binary files, deletions, executable bits, and symlinks. It publishes a work-specific branch and creates or reuses its draft PR. It does not run tests.
+- `github_publish { repository, title, body }` snapshots tracked and non-ignored local files, preserving binary files, deletions, executable bits, and symlinks. It publishes a work-specific branch and creates or reuses its draft PR. It does not run tests or move local HEAD.
+- `github_fetch { repository }` fetches the existing work branch into `refs/remotes/kaeno/work`, returning its SHA and checkout path. It does not change HEAD, the index or working files, and does not fetch the PR's base branch. The worker integrates changes using ordinary Git commands; publishing requires the fetched commit to be an ancestor of HEAD. GitHub credentials remain on the host.
+
+### Incorporating pushes to a work branch
+
+After another account pushes to the worker's PR branch:
+
+1. Call `github_fetch` for the repository.
+2. Inspect `git status` in the returned checkout path. Preserve local edits with a commit or stash, then merge or rebase onto `refs/remotes/kaeno/work`. Publishing snapshots files without moving HEAD, so even previously published files may still appear as local changes; preserve them before merging.
+3. Resolve and stage conflicts, finish the merge/rebase, restore any stashed edits, and run tests.
+4. Call `github_publish`. The new snapshot is parented to the fetched remote commit. If someone pushes again meanwhile, publication is refused; fetch and integrate again.
+
+For example, using the worker's coding tools after fetching:
+
+```sh
+cd <checkout-path>
+git status
+# If there are local changes to preserve:
+git add .
+git -c user.name=Kaeno -c user.email=kaeno@localhost commit -m "Preserve local work"
+git -c user.name=Kaeno -c user.email=kaeno@localhost merge --no-edit refs/remotes/kaeno/work
+# Resolve conflicts and complete the merge if necessary, then run project checks.
+```
+
+No automatic merge, reset or force-push is performed. Deleted branches and non-forward history changes are rejected. An explicit fetch supersedes any failed publish snapshot while preserving current workspace files; ordinary publish retries, without a fetch, still complete the original immutable snapshot. After a response-loss failure, the fetched branch may already include that snapshot.
 
 ### Read tools
 
@@ -111,14 +135,16 @@ We chose this over authenticated Git inside the worker: arbitrary project script
 
 Checkout saves its base SHA before materializing files. It stages a clone separately and renames it into place. Recovery adopts an already-renamed checkout without discarding edits. A missing previously-ready workspace is an error, not permission to silently recreate it and lose changes.
 
-Publish saves an immutable intent before network writes. It uses a stable conversation/repository branch, checks the expected remote head, performs ordinary non-force Git pushes, and reconciles an existing PR before creating another. A lost response after pushing or creating a PR can be retried, including after restart. A retry completes the saved snapshot: edits made since that attempt need another publish call. The work branch must remain on the last extension-published commit. Unexpected updates or deletion are rejected. Closed or non-draft work PRs are rejected before updating their branch; start new work for another proposal.
+Publish saves an immutable intent before network writes. It uses a stable conversation/repository branch, checks the expected remote head, performs ordinary non-force Git pushes, and reconciles an existing PR before creating another. A lost response after pushing or creating a PR can be retried, including after restart. A retry completes the saved snapshot: edits made since that attempt need another publish call. The expected remote head is the last published commit, or the fetched head after the worker integrates it. Unexpected updates are rejected until explicitly fetched and integrated. Closed or non-draft work PRs are rejected before updating their branch; start new work for another proposal.
+
+Fetch pins its SHA in the invocation memo before importing objects. Recovery fetches that exact commit and repeats the import without changing workspace files. The fetched SHA is saved with the existing conversation-owned checkout, so publishing after a restart uses the same expected head. Unfinished merges/rebases and unmerged index entries cannot be published.
 
 These are external side effects, not SQLite transactions. GitHub access or PR changes can race an already-authorized in-flight request. There is no claim of exactly-once execution across external systems. **Idempotent operations** provide stable intent and reconciliation instead.
 
 V1 deliberately excludes:
 
 - Merge, force-push, administration, and generic arbitrary GitHub API calls.
-- Pulling new upstream commits into an existing checkout; use new work for a fresh base.
+- Fetching the PR's base branch into an existing checkout; `github_fetch` only updates the existing work branch. Use new work for a fresh base.
 - Recursive submodule checkout and Git LFS object materialization.
 - Changes to workflow files unless GitHub separately grants the App the required Workflows permission. The recommended setup does not grant it.
 - Large repositories: full-history bundles are limited to 100 MiB. The limit is checked after host fetching/bundling, so this is not a host disk quota.
@@ -162,7 +188,7 @@ A push is attributed to the GitHub account that pushed it, as reported by GitHub
 
 `github_publish` returns the pull request's `thread`. A worker that follows it with `follow_thread` is woken by these events while its ticket is idle, with the limits in [who can reach a worker](routing.md#who-can-reach-a-worker).
 
-The work branch must still stay on the last commit Kaeno published (see above). After someone else pushes to it, the worker hears about the push, but its next publish is rejected until it can build on those commits. Picking up other people's commits is not implemented yet.
+After someone else pushes to the work branch, the worker can call `github_fetch`, integrate the fetched ref using its coding tools, and publish on top of it. See [incorporating pushes](#incorporating-pushes-to-a-work-branch). The webhook only delivers the notification; it never mutates the worker's workspace.
 
 ## Embedding
 

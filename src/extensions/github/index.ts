@@ -8,6 +8,7 @@ export {
   GITHUB_EXTENSION,
   GITHUB_TOOLS,
 } from "./access.ts";
+export { GITHUB_READ_TOOLS } from "./read-tools.ts";
 export { HostGit } from "./git.ts";
 export { setupSsh } from "./ssh.ts";
 export type { RepositoryTransport } from "./git.ts";

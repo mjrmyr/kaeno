@@ -30,6 +30,8 @@ import { commitSchema, HostGit, type RepositoryTransport } from "./git.ts";
 import {
   exportCheckout,
   installCheckout,
+  importFetchedBranch,
+  requireIntegratedHead,
   snapshotCheckout,
 } from "./workspace.ts";
 
@@ -70,6 +72,7 @@ const checkoutSchema = z.object({
   sha: commitSchema,
   ready: z.boolean(),
   published: commitSchema.nullable(),
+  fetched: commitSchema.optional(),
   pending: intentSchema.optional(),
 });
 const stateSchema = z.object({
@@ -244,6 +247,75 @@ export function githubExtension(
       });
     },
   });
+  const fetchWork = defineTool({
+    name: "github_fetch",
+    description:
+      "Fetch the existing published work branch into refs/remotes/kaeno/work without changing your files or HEAD. Merge or rebase it with your coding tools, resolve conflicts, and test before publishing. An explicit fetch supersedes a failed publish snapshot; your current files are preserved.",
+    parameters: Type.Object({ repository: Type.Integer({ minimum: 1 }) }),
+    replay: "safe",
+    executionMode: "sequential",
+    execute: async (args, api, context) => {
+      const env = api.env;
+      if (!env) {
+        throw new Error(
+          "GitHub fetching requires a worker execution environment",
+        );
+      }
+      const token = await tokenFor(api, context, args.repository);
+      const repository = await client.repository(
+        token,
+        args.repository,
+        context.abortSignal,
+      );
+      const state = stateSchema.parse(
+        (await api.snapshot(Workspace, api.conversationId, context)) ?? {
+          checkouts: {},
+        },
+      );
+      const saved = state.checkouts[String(args.repository)];
+      if (!saved?.ready || (!saved.published && !saved.pending)) {
+        throw new Error("GitHub: publish a work branch before fetching it");
+      }
+      const intent = await api.memo("github-fetch", context);
+      const source = await transport.checkout(
+        `https://github.com/${repository.full_name}.git`,
+        intent ? commitSchema.parse(intent) : `refs/heads/${saved.branch}`,
+        token,
+        context.abortSignal,
+      );
+      const sha = commitSchema.parse(source.sha);
+      if (intent && sha !== intent) {
+        throw new Error("GitHub: fetched work branch changed during recovery");
+      }
+      await api.memo("github-fetch", sha, context);
+      await importFetchedBranch(
+        env,
+        saved.path,
+        source.bundle,
+        sha,
+        saved.fetched ?? saved.published ?? saved.sha,
+        context,
+      );
+      await api.commit(async (tx) => {
+        const doc = await tx.doc(Workspace, api.conversationId);
+        const current = stateSchema.parse(doc);
+        const { pending: _pending, ...checkout } = saved;
+        current.checkouts[String(args.repository)] = {
+          ...checkout,
+          fetched: sha,
+        };
+        doc.checkouts = current.checkouts;
+      }, context);
+      return text({
+        repository: repository.full_name,
+        path: saved.path,
+        branch: saved.branch,
+        sha,
+        ref: "refs/remotes/kaeno/work",
+        note: "Files and HEAD are unchanged. Merge or rebase the fetched ref, resolve conflicts, and test before publishing. Any failed publish snapshot has been superseded.",
+      });
+    },
+  });
   const publish = defineTool({
     name: GITHUB_TOOLS[2],
     description:
@@ -284,17 +356,25 @@ export function githubExtension(
           const sha = await snapshotCheckout(
             env,
             saved.path,
-            saved.published ?? saved.sha,
+            saved.fetched ?? saved.published ?? saved.sha,
             args.title,
             new Date().toISOString(),
             context,
           );
+          if (saved.fetched) {
+            await requireIntegratedHead(
+              env,
+              saved.path,
+              saved.fetched,
+              context,
+            );
+          }
           if (sha === saved.sha && saved.published === null) {
             throw new Error("GitHub: no changes to publish");
           }
           candidate = {
             sha,
-            expected: saved.published,
+            expected: saved.fetched ?? saved.published,
             title: args.title,
             body: args.body,
           };
@@ -347,7 +427,7 @@ export function githubExtension(
       await api.commit(async (tx) => {
         const doc = await tx.doc(Workspace, api.conversationId);
         const current = stateSchema.parse(doc);
-        const { pending: _pending, ...completed } = saved;
+        const { pending: _pending, fetched: _fetched, ...completed } = saved;
         current.checkouts[String(args.repository)] = {
           ...completed,
           published: operation.sha,
@@ -383,7 +463,13 @@ export function githubExtension(
     runtime: {
       durable: defineExtension({
         name: GITHUB_EXTENSION,
-        tools: [list, checkout, publish, ...githubReadTools(client, tokenFor)],
+        tools: [
+          list,
+          checkout,
+          publish,
+          fetchWork,
+          ...githubReadTools(client, tokenFor),
+        ],
         sections: [
           section(
             "github",
