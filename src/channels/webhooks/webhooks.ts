@@ -9,18 +9,21 @@ import {
 import { z } from "zod";
 import type { Authority, Kaeno } from "../../core/application/index.ts";
 
-/** One event a source reported, in Kaeno's terms. `thread` is scoped to its source. */
+/** One event a source reported, in Kaeno's terms. `threads` are scoped to its source. */
 export interface WebhookEvent {
   id: string;
-  thread: string;
+  threads: string[];
   actor: string;
   text: string;
-  /** The thread is finished, for example a merged pull request: tickets stop following it. */
+  /** The threads are finished, for example a merged pull request: tickets stop following them. */
   closes: boolean;
 }
-/** Verifies that a request really comes from its system and turns it into an event. */
+/**
+ * Verifies that a request really comes from its system and turns it into an event, or into null when the
+ * system reported nothing Kaeno acts on.
+ */
 export interface WebhookAdapter {
-  read(headers: IncomingHttpHeaders, body: Buffer): WebhookEvent;
+  read(headers: IncomingHttpHeaders, body: Buffer): WebhookEvent | null;
 }
 /** `all`: every verified event is the owner's system. Otherwise only the listed actors are. */
 export type WebhookTrust = "all" | { actors: readonly string[] };
@@ -42,10 +45,16 @@ export const genericEventSchema = z
   })
   .strict();
 
-function equal(given: string, expected: string): boolean {
-  const left = Buffer.from(given);
-  const right = Buffer.from(expected);
-  return left.length === right.length && timingSafeEqual(left, right);
+/** Whether `header` is `sha256=<hex>` of the HMAC-SHA256 of `body` under `secret`, compared in constant time. */
+export function signed(header: unknown, secret: string, body: Buffer): boolean {
+  if (typeof header !== "string") {
+    return false;
+  }
+  const given = Buffer.from(header);
+  const expected = Buffer.from(
+    `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
+  );
+  return given.length === expected.length && timingSafeEqual(given, expected);
 }
 
 /**
@@ -55,12 +64,13 @@ function equal(given: string, expected: string): boolean {
 export function genericAdapter(secret: string): WebhookAdapter {
   return {
     read(headers, body) {
-      const signature = headers["x-kaeno-signature-256"];
-      const expected = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
-      if (typeof signature !== "string" || !equal(signature, expected)) {
+      if (!signed(headers["x-kaeno-signature-256"], secret, body)) {
         throw new WebhookUnauthorized("Invalid signature");
       }
-      return genericEventSchema.parse(JSON.parse(body.toString("utf8")));
+      const { thread, ...event } = genericEventSchema.parse(
+        JSON.parse(body.toString("utf8")),
+      );
+      return { ...event, threads: [thread] };
     },
   };
 }
@@ -106,7 +116,7 @@ export class WebhookServer {
           return json(404, { error: "Not found" });
         }
         const body = await readBody(req);
-        let event: WebhookEvent;
+        let event: WebhookEvent | null;
         try {
           event = source.adapter.read(req.headers, body);
         } catch (error) {
@@ -115,18 +125,26 @@ export class WebhookServer {
           }
           throw error;
         }
-        const thread = `${source.name}:${event.thread}`;
+        if (!event) {
+          return json(202, { ignored: true });
+        }
+        const { id, actor, text, closes } = event;
+        const threads = event.threads.map(
+          (thread) => `${source.name}:${thread}`,
+        );
         const received = await core.harness.commit(async (tx) => {
           const result = await core.router.receive(tx, {
-            key: `${source.name}:${event.id}`,
+            key: `${source.name}:${id}`,
             source: source.name,
-            threads: [thread],
-            actor: event.actor,
-            authority: authorityOf(source.trust, event.actor),
-            content: event.text,
+            threads,
+            actor,
+            authority: authorityOf(source.trust, actor),
+            content: text,
           });
-          if (event.closes && !result.duplicate) {
-            await core.router.closeThread(tx, thread);
+          if (closes && !result.duplicate) {
+            for (const thread of threads) {
+              await core.router.closeThread(tx, thread);
+            }
           }
           return result;
         }, BACKGROUND_CONTEXT);

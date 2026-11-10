@@ -360,7 +360,8 @@ export function githubExtension(
         sha: operation.sha,
         pullRequest: pull.html_url,
         number: pull.number,
-        note: "Published the saved snapshot. Edits made after a failed publish require another publish call.",
+        thread: `github:${repository.full_name}#${pull.number}`,
+        note: "Published the saved snapshot. Edits made after a failed publish require another publish call. Follow thread to hear about reviews, comments, CI results and pushes on this pull request.",
       });
     },
   });

@@ -19,12 +19,16 @@ import { expect, it } from "vitest";
 import { openKaeno } from "../../src/core/application/index.ts";
 import {
   genericAdapter,
+  GITHUB_ACTIONS,
+  githubAdapter,
   loadWebhooks,
   WebhookServer,
 } from "../../src/channels/webhooks/index.ts";
 
 const model = { provider: "faux", modelId: "faux-1" };
 const SECRET = "homelab-webhook-secret-with-32-chars";
+const SELF = "kaeno-app[bot]";
+const PULL = "github:mjrmyr/kaeno#12";
 function call(name: string, args: JsonObject) {
   return answer([fauxToolCall(name, args)], { stopReason: "toolUse" });
 }
@@ -127,6 +131,11 @@ async function fixture() {
       adapter: genericAdapter(SECRET),
       trust: { actors: ["ci-bot"] },
     },
+    {
+      name: "github",
+      adapter: githubAdapter(SECRET, SELF),
+      trust: { actors: ["mjrmyr", GITHUB_ACTIONS] },
+    },
   ]).server;
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -150,6 +159,24 @@ async function fixture() {
           : {
               "x-kaeno-signature-256": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
             },
+    });
+    return { status: response.status, body: await response.json() };
+  }
+  async function postGitHub(
+    kind: string,
+    payload: JsonObject,
+    delivery: string,
+    secret = SECRET,
+  ) {
+    const body = JSON.stringify(payload);
+    const response = await fetch(`${base}/hooks/github`, {
+      method: "POST",
+      body,
+      headers: {
+        "x-github-event": kind,
+        "x-github-delivery": delivery,
+        "x-hub-signature-256": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
+      },
     });
     return { status: response.status, body: await response.json() };
   }
@@ -189,6 +216,7 @@ async function fixture() {
   return {
     core,
     post,
+    postGitHub,
     ticket,
     idleAfter,
     followingTicket,
@@ -340,6 +368,156 @@ it("records a redelivered event once", async () => {
   });
 });
 
+function pull(action: string, sender: string, extra: JsonObject = {}) {
+  return {
+    action,
+    sender: { login: sender },
+    repository: { full_name: "mjrmyr/kaeno" },
+    pull_request: {
+      number: 12,
+      title: "Fix the parser",
+      html_url: "https://github.com/mjrmyr/kaeno/pull/12",
+      merged: false,
+      head: { ref: "kaeno/fix", sha: "0123456789abcdef" },
+    },
+    ...extra,
+  };
+}
+
+it("wakes the worker on a trusted account's push to its pull request, never on its own or a stranger's", async () => {
+  await withFixture(async (fx) => {
+    await fx.followingTicket(PULL);
+    const seen = fx.workerRequests.length;
+
+    const own = await fx.postGitHub(
+      "pull_request",
+      pull("synchronize", SELF),
+      "d1",
+    );
+    const stranger = await fx.postGitHub(
+      "pull_request",
+      pull("synchronize", "stranger"),
+      "d2",
+    );
+    const owner = await fx.postGitHub(
+      "pull_request",
+      pull("synchronize", "mjrmyr"),
+      "d3",
+    );
+
+    expect(own.body).toEqual({ ignored: true });
+    expect(
+      await fx.core.router.trigger(stranger.body.trigger, context),
+    ).toMatchObject({
+      threads: [PULL],
+      authority: "none",
+      disposition: { kind: "filtered" },
+    });
+    expect(
+      await fx.core.router.trigger(owner.body.trigger, context),
+    ).toMatchObject({
+      key: "github:d3",
+      actor: "mjrmyr",
+      authority: "system",
+      disposition: { kind: "passed", tickets: ["k1"] },
+    });
+    await fx.idleAfter(2);
+    const delivered = JSON.stringify(fx.workerRequests.slice(seen));
+    expect(delivered).toContain(
+      "mjrmyr pushed to pull request mjrmyr/kaeno#12",
+    );
+    expect(delivered).not.toContain("stranger");
+  });
+});
+
+it("reports a finished CI run to every pull request it ran for", async () => {
+  await withFixture(async (fx) => {
+    await fx.followingTicket(PULL);
+
+    const run = await fx.postGitHub(
+      "workflow_run",
+      {
+        action: "completed",
+        sender: { login: SELF },
+        repository: { full_name: "mjrmyr/kaeno" },
+        workflow_run: {
+          name: "verify",
+          conclusion: "failure",
+          head_sha: "fedcba9876543210",
+          html_url: "https://github.com/mjrmyr/kaeno/actions/runs/1",
+          pull_requests: [{ number: 12 }, { number: 13 }],
+        },
+      },
+      "d1",
+    );
+
+    expect(
+      await fx.core.router.trigger(run.body.trigger, context),
+    ).toMatchObject({
+      threads: [PULL, "github:mjrmyr/kaeno#13"],
+      actor: GITHUB_ACTIONS,
+      authority: "system",
+      disposition: { kind: "passed", tickets: ["k1"] },
+    });
+    await fx.idleAfter(2);
+    expect(JSON.stringify(fx.workerRequests.at(-1)?.messages)).toContain(
+      'Workflow \\"verify\\" failure at fedcba9',
+    );
+  });
+});
+
+it("stops following a pull request once it is merged", async () => {
+  await withFixture(async (fx) => {
+    await fx.followingTicket(PULL);
+
+    const merged = await fx.postGitHub(
+      "pull_request",
+      pull("closed", "mjrmyr", {
+        pull_request: {
+          ...pull("closed", "mjrmyr").pull_request,
+          merged: true,
+        },
+      }),
+      "d1",
+    );
+
+    expect(
+      (await fx.core.router.trigger(merged.body.trigger, context)).disposition,
+    ).toMatchObject({ kind: "passed", tickets: ["k1"] });
+    await fx.idleAfter(2);
+    expect(JSON.stringify(fx.workerRequests.at(-1)?.messages)).toContain(
+      "mjrmyr merged pull request mjrmyr/kaeno#12",
+    );
+    expect((await fx.ticket())?.followed).toEqual([]);
+  });
+});
+
+it("refuses GitHub deliveries without GitHub's signature and ignores events Kaeno does not act on", async () => {
+  await withFixture(async (fx) => {
+    expect(
+      (
+        await fx.postGitHub(
+          "pull_request",
+          pull("synchronize", "mjrmyr"),
+          "d1",
+          "x".repeat(40),
+        )
+      ).status,
+    ).toBe(401);
+    expect((await fx.post("github", event("e1"))).status).toBe(401);
+    for (const [kind, payload] of [
+      ["ping", { zen: "Keep it logically awesome." }],
+      ["pull_request", pull("labeled", "mjrmyr")],
+      ["constructor", pull("opened", "mjrmyr")],
+    ] as const) {
+      expect((await fx.postGitHub(kind, payload, "d2")).body).toEqual({
+        ignored: true,
+      });
+    }
+    expect(await fx.core.router.recentTriggers(context)).toEqual([]);
+  });
+});
+
 it("loads sources with secrets next to the config and refuses unsafe ones", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-webhooks-"));
   try {
@@ -369,6 +547,20 @@ it("loads sources with secrets next to the config and refuses unsafe ones", asyn
       "belong to Kaeno's channels",
     );
     await expect(load([homelab, homelab])).rejects.toThrow("unique");
+    const github = {
+      name: "github",
+      kind: "github",
+      secretFile: "homelab.secret",
+      self: SELF,
+      trust: { actors: ["mjrmyr", GITHUB_ACTIONS] },
+    };
+    expect(
+      (await load([homelab, github]))?.sources.map((source) => source.name),
+    ).toEqual(["homelab", "github"]);
+    await expect(load([{ ...github, name: "gh" }])).rejects.toThrow(
+      "workers follow its threads as github:",
+    );
+    await expect(load([{ ...homelab, self: SELF }])).rejects.toThrow();
     await expect(
       load([
         { name: "homelab", kind: "generic", secretFile: "homelab.secret" },

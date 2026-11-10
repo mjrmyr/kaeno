@@ -1,31 +1,49 @@
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { z } from "zod";
+import { githubAdapter } from "./github.ts";
 import { genericAdapter, type WebhookSource } from "./webhooks.ts";
 
 const RESERVED = ["telegram", "pi", "http"];
+
+const sourceFields = {
+  secretFile: z.string().min(1),
+  trust: z.union([
+    z.literal("all"),
+    z.object({ actors: z.array(z.string().min(1)).min(1) }).strict(),
+  ]),
+};
 
 const configSchema = z
   .object({
     port: z.number().int().min(1).max(65535),
     sources: z
       .array(
-        z
-          .object({
-            name: z
-              .string()
-              .regex(/^[a-z0-9-]{1,40}$/)
-              .refine((name) => !RESERVED.includes(name), {
-                message: `Source names ${RESERVED.join(", ")} belong to Kaeno's channels`,
+        z.discriminatedUnion("kind", [
+          z
+            .object({
+              kind: z.literal("generic"),
+              name: z
+                .string()
+                .regex(/^[a-z0-9-]{1,40}$/)
+                .refine((name) => !RESERVED.includes(name), {
+                  message: `Source names ${RESERVED.join(", ")} belong to Kaeno's channels`,
+                }),
+              ...sourceFields,
+            })
+            .strict(),
+          z
+            .object({
+              kind: z.literal("github"),
+              name: z.literal("github", {
+                message:
+                  'A GitHub source is named "github": workers follow its threads as github:<owner>/<repo>#<number>',
               }),
-            kind: z.literal("generic"),
-            secretFile: z.string().min(1),
-            trust: z.union([
-              z.literal("all"),
-              z.object({ actors: z.array(z.string().min(1)).min(1) }).strict(),
-            ]),
-          })
-          .strict(),
+              self: z.string().min(1).optional(),
+              ...sourceFields,
+            })
+            .strict(),
+        ]),
       )
       .min(1)
       .refine(
@@ -60,7 +78,10 @@ export async function loadWebhooks(
     }
     sources.push({
       name: source.name,
-      adapter: genericAdapter(secret),
+      adapter:
+        source.kind === "github"
+          ? githubAdapter(secret, source.self)
+          : genericAdapter(secret),
       trust: source.trust,
     });
   }
