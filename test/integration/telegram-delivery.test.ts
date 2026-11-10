@@ -5,7 +5,7 @@ import { expect, it, vi } from "vitest";
 import { openKaeno, type Kaeno } from "../../src/core/application/index.ts";
 import {
   TelegramState,
-  telegramExtension,
+  telegramChannel,
   type TelegramTransport,
 } from "../../src/channels/telegram/index.ts";
 
@@ -37,7 +37,7 @@ async function started(options: { topics?: boolean } = {}) {
     download: vi.fn<TelegramTransport["download"]>(),
   };
   const onError = vi.fn<(error: unknown) => void>();
-  const extension = telegramExtension({
+  const channel = telegramChannel({
     allowedChatIds: [111],
     client,
     onError,
@@ -50,14 +50,14 @@ async function started(options: { topics?: boolean } = {}) {
       model: { provider: "faux", modelId: "faux-1" },
       instructions: "R",
     },
-    extensions: [extension],
+    channels: [channel],
   });
   const state = {
     get sent() {
       return sent(core);
     },
   };
-  const delivery = extension.delivery;
+  const delivery = channel.delivery;
   if (!delivery?.openThread) {
     throw new Error("Telegram has no delivery");
   }

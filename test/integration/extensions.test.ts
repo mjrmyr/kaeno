@@ -24,6 +24,7 @@ import {
   openKaeno,
   type Kaeno,
   type KaenoExtension,
+  type KaenoChannel,
 } from "../../src/core/application/index.ts";
 
 import { ConversationBindings } from "../../src/core/conversation/index.ts";
@@ -135,6 +136,8 @@ it("composes native tools/tasks/docs, transactional channel ingress and delivery
       environmentCalls++;
       return environment;
     },
+  };
+  const channel: KaenoChannel = {
     delivery: {
       channel: "test-channel",
       send: async (route, text) => {
@@ -162,6 +165,7 @@ it("composes native tools/tasks/docs, transactional channel ingress and delivery
       models,
       assistant: { ...assistant, tools: [tool.name] },
       extensions: [extension, service("second")],
+      channels: [channel],
     });
     const opened = core;
     await expect(
@@ -230,6 +234,7 @@ it("composes native tools/tasks/docs, transactional channel ingress and delivery
       models,
       assistant: { ...assistant, tools: [tool.name] },
       extensions: [extension, service("second")],
+      channels: [channel],
     });
     expect(await core.router.routerConversation(context)).toBe(router);
     expect(await core.harness.snapshot(Ingress, context)).toMatchObject({
@@ -258,16 +263,14 @@ it("rejects a removed delivery capability before resuming its pending delivery",
   const directory = await mkdtemp(join(tmpdir(), "kaeno-route-"));
   const path = join(directory, "core.sqlite");
   const { models } = catalog();
-  const durable = defineExtension({ name: "channel-adapter" });
   try {
     await expect(
       openKaeno({
         storage: await openNodeSqliteStorage(path),
         models,
         assistant,
-        extensions: [
+        channels: [
           {
-            durable,
             delivery: { channel: "removed", send: async () => {} },
             start: async (core) => {
               await core.harness.commit(async (tx) => {
@@ -297,7 +300,7 @@ it("rejects a removed delivery capability before resuming its pending delivery",
         storage: await openNodeSqliteStorage(path),
         models,
         assistant,
-        extensions: [{ durable }],
+        channels: [],
       }),
     ).rejects.toThrow("Missing delivery channel: removed");
   } finally {
@@ -336,9 +339,6 @@ it.each(["extension", "task", "tool", "channel", "environment", "read-only"])(
           : {}),
         ...(kind === "task" ? { tasks: [task] } : {}),
       }),
-      ...(kind === "channel"
-        ? { delivery: { channel: "same", send: async () => {} } }
-        : {}),
       ...(kind === "environment" ? { environment: () => undefined } : {}),
       ...(kind === "read-only" && index === 1
         ? { readOnlyTools: [tool.name] }
@@ -353,6 +353,12 @@ it.each(["extension", "task", "tool", "channel", "environment", "read-only"])(
         models: createModels(),
         assistant,
         extensions,
+        channels:
+          kind === "channel"
+            ? [0, 1].map(() => ({
+                delivery: { channel: "same", send: async () => {} },
+              }))
+            : [],
       }),
     ).rejects.toThrow();
     expect(starts).toBe(0);

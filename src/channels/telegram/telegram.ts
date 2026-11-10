@@ -1,7 +1,6 @@
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import {
   defineDoc,
-  defineExtension,
   type TaskId,
   type Tx,
   type UserInput,
@@ -13,7 +12,7 @@ import {
   type ChannelRoute,
   type Stored,
   type Kaeno,
-  type KaenoExtension,
+  type KaenoChannel,
 } from "../../core/application/index.ts";
 import {
   TelegramApiError,
@@ -61,7 +60,7 @@ const imageTypes = new Set([
 const help =
   "Kaeno here. Send me anything as text or a photo; each task gets its own thread, and replies there go straight to its worker. /jobs lists tickets; /show <ticket> shows its latest report; /cancel <ticket> stops one; /stop stops this thread's ticket (or all tickets in the main chat); /new gives Kaeno a fresh context and leaves tickets running.";
 
-export interface TelegramExtensionOptions {
+export interface TelegramChannelOptions {
   allowedChatIds: readonly number[];
   topics?: boolean;
   client: TelegramTransport;
@@ -78,9 +77,7 @@ function chainThread(chatId: number, anchor: number): string {
   return `telegram:${chatId}/reply:${anchor}`;
 }
 
-export function telegramExtension(
-  options: TelegramExtensionOptions,
-): KaenoExtension {
+export function telegramChannel(options: TelegramChannelOptions): KaenoChannel {
   const allowed = new Set(options.allowedChatIds);
   let attached: Kaeno | undefined;
   let topicsRetryAt = 0;
@@ -393,7 +390,6 @@ export function telegramExtension(
     }
   }
   return {
-    durable: defineExtension({ name: "kaeno-telegram" }),
     delivery: {
       channel: "telegram",
       maxWords: 100,

@@ -91,8 +91,10 @@ async function fixture(options: {
       ],
     },
     extensions: [
+      { durable: defineExtension({ name: "test-tools", tools: extra }) },
+    ],
+    channels: [
       {
-        durable: defineExtension({ name: "test-channel", tools: extra }),
         delivery: {
           channel: "test",
           maxWords: 100,
