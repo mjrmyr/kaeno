@@ -42,6 +42,11 @@ it("advertises only selected tools and distinguishes missing assignment from mis
   expect(discovery).toContain("Use github_list_repositories");
   expect(discovery).not.toContain("Use github_checkout");
   expect(discovery).not.toContain("Use github_publish");
+  expect(discovery).not.toContain("Use github_fetch");
+  const fetching = githubPrompt(["github_fetch"], true);
+  expect(fetching).toContain("refs/remotes/kaeno/work");
+  expect(fetching).toContain("merge or rebase");
+  expect(fetching).not.toContain("Use github_publish");
   expect(githubPrompt(GITHUB_TOOLS, true)).toContain("Use github_publish");
   expect(githubPrompt(GITHUB_TOOLS, true)).toContain(
     "GitHub controls accessible repositories and permissions",

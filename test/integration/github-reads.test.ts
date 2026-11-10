@@ -13,8 +13,8 @@ import {
   githubBinding,
   githubExtension,
   GITHUB_TOOLS,
+  GITHUB_READ_TOOLS,
 } from "../../src/extensions/github/index.ts";
-const GITHUB_READ_TOOLS = GITHUB_TOOLS.slice(3);
 
 const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
   .privateKey.export({ format: "pem", type: "pkcs8" })

@@ -95,7 +95,80 @@ export async function installCheckout(
   );
 }
 
-/** Capture files, not arbitrary local commit history; parent is the last extension-published commit. */
+/** Import objects without changing HEAD, the index or working files. Safe to repeat. */
+export async function importFetchedBranch(
+  env: ExecutionEnv,
+  path: string,
+  bundle: Uint8Array,
+  sha: string,
+  previous: string,
+  context: Context,
+): Promise<void> {
+  const bundlePath = getOrThrow(
+    await env.createTempFile({ prefix: "kaeno-github-fetch-" }, context),
+  );
+  try {
+    getOrThrow(await env.writeFile(bundlePath, bundle, context));
+    await workspaceGit(
+      env,
+      path,
+      ["fetch", "--no-tags", "--", bundlePath, "refs/heads/kaeno-base"],
+      context,
+    );
+    const received = await workspaceGit(
+      env,
+      path,
+      ["rev-parse", "FETCH_HEAD^{commit}"],
+      context,
+    );
+    if (received !== sha) {
+      throw new Error(
+        "GitHub: fetched bundle does not match the saved fetch intent",
+      );
+    }
+    const ancestor = await workspaceGit(
+      env,
+      path,
+      ["merge-base", previous, sha],
+      context,
+    );
+    if (ancestor !== previous) {
+      throw new Error(
+        "GitHub: work branch history was rewritten; refusing to adopt it",
+      );
+    }
+    await workspaceGit(
+      env,
+      path,
+      ["update-ref", "refs/remotes/kaeno/work", sha],
+      context,
+    );
+  } finally {
+    getOrThrow(await env.remove(bundlePath, { force: true }, context));
+  }
+}
+
+/** A fetched head must be incorporated by the worker, not merely downloaded. */
+export async function requireIntegratedHead(
+  env: ExecutionEnv,
+  path: string,
+  sha: string,
+  context: Context,
+): Promise<void> {
+  const ancestor = await workspaceGit(
+    env,
+    path,
+    ["merge-base", sha, "HEAD"],
+    context,
+  );
+  if (ancestor !== sha) {
+    throw new Error(
+      "GitHub: merge or rebase onto the fetched work branch before publishing",
+    );
+  }
+}
+
+/** Capture files, not arbitrary local commit history; parent is the accepted remote head. */
 export async function snapshotCheckout(
   env: ExecutionEnv,
   path: string,
@@ -104,6 +177,37 @@ export async function snapshotCheckout(
   date: string,
   context: Context,
 ): Promise<string> {
+  // Snapshotting uses a separate index, so explicitly check the worker's real merge state.
+  const unmerged = await workspaceGit(
+    env,
+    path,
+    ["ls-files", "--unmerged"],
+    context,
+  );
+  for (const marker of [
+    "MERGE_HEAD",
+    "rebase-merge",
+    "rebase-apply",
+    "CHERRY_PICK_HEAD",
+    "REVERT_HEAD",
+  ]) {
+    const markerPath = await workspaceGit(
+      env,
+      path,
+      ["rev-parse", "--path-format=absolute", "--git-path", marker],
+      context,
+    );
+    if (getOrThrow(await env.exists(markerPath, context))) {
+      throw new Error(
+        "GitHub: finish or abort the in-progress Git operation before publishing",
+      );
+    }
+  }
+  if (unmerged) {
+    throw new Error(
+      "GitHub: resolve and stage merge conflicts before publishing",
+    );
+  }
   const index = getOrThrow(
     await env.createTempFile({ prefix: "kaeno-github-index-" }, context),
   );

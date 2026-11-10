@@ -8,6 +8,7 @@ export const GITHUB_TOOLS = [
   "github_list_repositories",
   "github_checkout",
   "github_publish",
+  "github_fetch",
   ...GITHUB_READ_TOOLS,
 ] as const;
 
@@ -58,6 +59,11 @@ export function githubPrompt(
   if (selected.includes("github_checkout")) {
     lines.push(
       "Use github_checkout to prepare a repository in your sandbox. It returns the checkout path and base commit. Edit and test there with your coding tools.",
+    );
+  }
+  if (selected.includes("github_fetch")) {
+    lines.push(
+      "Use github_fetch after someone pushes to your published work branch. It imports refs/remotes/kaeno/work without changing files or HEAD. Preserve local edits, then merge or rebase with your coding tools, resolve conflicts, and test. Fetch supersedes any failed publish snapshot, preserving current files. It does not synchronize the PR's base branch.",
     );
   }
   if (selected.includes("github_publish")) {
