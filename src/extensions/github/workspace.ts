@@ -215,10 +215,10 @@ export async function snapshotCheckout(
   getOrThrow(await env.remove(index, { force: true }, context));
   const variables = {
     GIT_INDEX_FILE: index,
-    GIT_AUTHOR_NAME: "Kaeno",
-    GIT_AUTHOR_EMAIL: "kaeno@localhost",
-    GIT_COMMITTER_NAME: "Kaeno",
-    GIT_COMMITTER_EMAIL: "kaeno@localhost",
+    GIT_AUTHOR_NAME: "kaeno",
+    GIT_AUTHOR_EMAIL: "bot@kaeno.io",
+    GIT_COMMITTER_NAME: "kaeno",
+    GIT_COMMITTER_EMAIL: "bot@kaeno.io",
     GIT_AUTHOR_DATE: date,
     GIT_COMMITTER_DATE: date,
   };

@@ -85,8 +85,8 @@ cd <checkout-path>
 git status
 # If there are local changes to preserve:
 git add .
-git -c user.name=Kaeno -c user.email=kaeno@localhost commit -m "Preserve local work"
-git -c user.name=Kaeno -c user.email=kaeno@localhost merge --no-edit refs/remotes/kaeno/work
+git -c user.name=kaeno -c user.email=bot@kaeno.io commit -m "Preserve local work"
+git -c user.name=kaeno -c user.email=bot@kaeno.io merge --no-edit refs/remotes/kaeno/work
 # Resolve conflicts and complete the merge if necessary, then run project checks.
 ```
 
