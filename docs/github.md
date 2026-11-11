@@ -2,6 +2,10 @@
 
 The optional `src/extensions/github` extension lets a worker discover private repositories, check out code in its existing execution environment, inspect pull request/CI diagnostics, and propose changes through a ready-for-review pull request. GitHub is not a core service or an agent-definition field. Other platforms can supply independent native extensions using the same composition seam.
 
+For an investigation of review edits after the publishing WORK ends, see the
+[PR continuation proposal](github-pr-continuation-proposal.md). It describes a
+proposed adoption API, not a currently available recovery tool.
+
 ## Owner setup
 
 1. Create a GitHub App with these repository permissions:
