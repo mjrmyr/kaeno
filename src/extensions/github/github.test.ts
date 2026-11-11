@@ -60,3 +60,11 @@ it("advertises only selected tools and distinguishes missing assignment from mis
     "GitHub controls accessible repositories and permissions",
   );
 });
+
+it("explains ticket publication selection without a resume tool", () => {
+  const prompt = githubPrompt(["github_checkout"], true);
+  expect(prompt).toContain("pullRequest");
+  expect(prompt).toContain("newPublication: true");
+  expect(prompt).toContain("own files and accepted head");
+  expect(GITHUB_TOOLS).not.toContain("github_resume");
+});

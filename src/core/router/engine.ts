@@ -22,7 +22,7 @@ import {
   requireConversation,
   type Stored,
 } from "../durable/index.ts";
-import { WorkScope } from "../work/index.ts";
+import { readParent, WorkScope } from "../work/index.ts";
 import {
   admitDelivery,
   readReplies,
@@ -673,10 +673,47 @@ export class Engine {
     conversation: ConversationId,
     context: Context,
   ): Promise<string | undefined> {
-    return (
-      (await this.harness().snapshot(TicketRef, conversation, context))
-        ?.ticket ?? undefined
+    return this.harness().commit(
+      (tx) => this.ticketOfConversation(tx, conversation),
+      context,
     );
+  }
+  /** Resolve durable ownership, including completed WORK and nested children. */
+  async ticketOfConversation(
+    tx: Tx,
+    conversation: ConversationId,
+  ): Promise<string | undefined> {
+    const seen = new Set<ConversationId>();
+    while (!seen.has(conversation)) {
+      seen.add(conversation);
+      const { ticket } = await tx.doc(TicketRef, conversation);
+      if (ticket) {
+        return ticket;
+      }
+      const { workId } = await tx.doc(WorkScope, conversation);
+      if (workId === null) {
+        return undefined;
+      }
+      const record = await tx.task(workId);
+      if (!record) {
+        return undefined;
+      }
+      const input = record.input;
+      if (
+        input === null ||
+        typeof input !== "object" ||
+        Array.isArray(input) ||
+        input.parent === undefined
+      ) {
+        return undefined;
+      }
+      const parent = readParent(input.parent);
+      if (parent.kind === "ticket") {
+        return parent.ticket;
+      }
+      conversation = parent.conversationId;
+    }
+    return undefined;
   }
   /** A report from a ticket's Assignment. Reports on an ended ticket are dropped. */
   async report(tx: Tx, reported: Reported): Promise<void> {
@@ -799,7 +836,7 @@ export class Engine {
     conversation: ConversationId,
     thread: string,
   ): Promise<boolean> {
-    const { ticket } = await tx.doc(TicketRef, conversation);
+    const ticket = await this.ticketOfConversation(tx, conversation);
     if (!ticket) {
       return false;
     }

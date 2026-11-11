@@ -148,17 +148,18 @@ export async function importFetchedBranch(
   }
 }
 
-/** A fetched head must be incorporated by the worker, not merely downloaded. */
+/** A fetched head must be integrated; an accepted fetched parent must also include the shared publication. */
 export async function requireIntegratedHead(
   env: ExecutionEnv,
   path: string,
   sha: string,
   context: Context,
+  head = "HEAD",
 ): Promise<void> {
   const ancestor = await workspaceGit(
     env,
     path,
-    ["merge-base", sha, "HEAD"],
+    ["merge-base", sha, head],
     context,
   );
   if (ancestor !== sha) {

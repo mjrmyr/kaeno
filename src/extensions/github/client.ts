@@ -374,11 +374,10 @@ export class GitHubClient {
     return { id: created.id, html_url: created.html_url };
   }
 
-  async findWorkPull(
+  async lookupWorkPull(
     token: string,
     repository: GitHubRepository,
     branch: string,
-    base: string,
     signal?: AbortSignal,
   ): Promise<GitHubPull | undefined> {
     const owner = repository.full_name.split("/")[0];
@@ -401,15 +400,28 @@ export class GitHubClient {
       (pull) =>
         pull.head.ref === branch && pull.head.repo?.id === repository.id,
     );
-    if (existing) {
-      if (existing.state !== "open" || existing.base.ref !== base) {
-        throw new Error(
-          "GitHub: existing work PR is closed or has a different base; start new work",
-        );
-      }
-      return existing;
+    return existing;
+  }
+
+  async findWorkPull(
+    token: string,
+    repository: GitHubRepository,
+    branch: string,
+    base: string,
+    signal?: AbortSignal,
+  ): Promise<GitHubPull | undefined> {
+    const existing = await this.lookupWorkPull(
+      token,
+      repository,
+      branch,
+      signal,
+    );
+    if (existing && (existing.state !== "open" || existing.base.ref !== base)) {
+      throw new Error(
+        "GitHub: existing work PR is closed or has a different base; start new work",
+      );
     }
-    return undefined;
+    return existing;
   }
 
   async workPull(

@@ -198,6 +198,13 @@ Use `github_comment` to reply on GitHub after addressing feedback. The bot's res
 
 After someone else pushes to the work branch, the worker can call `github_fetch`, integrate the fetched ref using its coding tools, and publish on top of it. See [incorporating pushes](#incorporating-pushes-to-a-work-branch). The webhook only delivers the notification; it never mutates the worker's workspace.
 
+## Ticket-owned publications
+
+Fresh workers in a ticket can continue its open PR without a resume/adoption tool.
+`github_checkout` accepts `pullRequest` to disambiguate parallel PRs, or
+`newPublication: true` to start another. Closed PRs are not continued; local files
+and accepted/fetched heads remain worker-local. See [ticket-owned GitHub publications](github-pr-continuation-proposal.md) for ownership, migration, and safety.
+
 ## Embedding
 
 ```ts
