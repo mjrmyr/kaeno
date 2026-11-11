@@ -45,6 +45,12 @@ Provider API keys come from the environment (`ANTHROPIC_API_KEY`, `OPENAI_API_KE
 
 To provision a login from a read-only source such as a Kubernetes Secret, set `KAENO_AUTH_SEED_FILE` to that file. At startup Kaeno imports it into `KAENO_AUTH_FILE` once per distinct seed: an unchanged seed is ignored so refreshed tokens survive restarts, and a changed seed (a new login) replaces the live credentials. After the first refresh the seed's own tokens are spent, so it only helps on a fresh `KAENO_AUTH_FILE`. A configured seed that is missing or invalid fails startup.
 
+## Homelab observation (planned)
+
+The [homelab observation plan](docs/homelab-observation.md) describes a read-only,
+privacy-filtered Kubernetes observer and phased Kaeno integration. It is a design
+proposal, not an implemented capability or a deployment change.
+
 ## Owner memory
 
 Kaeno keeps a durable memory of its owner in the router, kept across compaction. **Preferences** (how you want things done) are always in its prompt in full. **Memories** (facts) appear there by title only, and Kaeno reads the ones it needs with `memory_read`. Only your own messages can change memory: every change cites the message asking for it, and work reports are untrusted and cannot. Workers never see memory; the router puts the facts a task needs into its note. Browse and edit it with `GET /v1/memory`, `GET`/`PUT`/`DELETE /v1/memory/:id`. See [personal continuity](docs/continuity.md) for the design and the proposed persistent workspace.
