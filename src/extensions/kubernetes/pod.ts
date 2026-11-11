@@ -9,6 +9,8 @@ export interface Reservation {
   token: string;
   image: string;
   phase: "waiting" | "held";
+  claim: string;
+  ready: boolean;
 }
 export const SANDBOX_LABEL = "app.kubernetes.io/name=kaeno-sandbox";
 export const OWNER_LABEL = "kaeno.io/owner";
@@ -30,6 +32,8 @@ export function assertIdentity(
       String(reservation.conversationId) ||
     pod.metadata.annotations["kaeno.io/token-sha256"] !==
       tokenHash(reservation.token) ||
+    pod.spec.volumes.find((volume) => volume.name === "workspace")
+      ?.persistentVolumeClaim?.claimName !== reservation.claim ||
     pod.spec.containers.length !== 1 ||
     pod.spec.containers[0].image !== reservation.image
   ) {
@@ -93,7 +97,7 @@ export function sandboxPod(
           workingDir: "/workspace",
           env: [
             { name: "KAENO_ENV_TOKEN", value: reservation.token },
-            { name: "HOME", value: "/home/agent" },
+            { name: "HOME", value: "/workspace" },
             { name: "TMPDIR", value: "/tmp" },
           ],
           ports: [{ name: "envd", containerPort: 7070 }],
@@ -109,14 +113,15 @@ export function sandboxPod(
           resources: options.resources,
           volumeMounts: [
             { name: "workspace", mountPath: "/workspace" },
-            { name: "home", mountPath: "/home/agent" },
             { name: "tmp", mountPath: "/tmp" },
           ],
         },
       ],
       volumes: [
-        { name: "workspace", emptyDir: { sizeLimit: "5Gi" } },
-        { name: "home", emptyDir: { sizeLimit: "1Gi" } },
+        {
+          name: "workspace",
+          persistentVolumeClaim: { claimName: reservation.claim },
+        },
         { name: "tmp", emptyDir: { sizeLimit: "2Gi" } },
       ],
     },
