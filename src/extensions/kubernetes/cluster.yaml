@@ -18,6 +18,9 @@ rules:
   - apiGroups: [""]
     resources: [resourcequotas]
     verbs: [get]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, create, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

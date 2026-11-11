@@ -32,6 +32,14 @@ const podSchema = z.object({
   spec: z.object({
     runtimeClassName: z.string().optional(),
     containers: z.array(z.object({ image: z.string() })),
+    volumes: z
+      .array(
+        z.object({
+          name: z.string(),
+          persistentVolumeClaim: z.object({ claimName: z.string() }).optional(),
+        }),
+      )
+      .default([]),
   }),
   status: z
     .object({
@@ -50,6 +58,21 @@ const podSchema = z.object({
     }),
 });
 export type Pod = z.infer<typeof podSchema>;
+const claimSchema = z.object({
+  metadata: z.object({
+    name: z.string(),
+    uid: z.string().min(1),
+    labels: z.record(z.string(), z.string()).default({}),
+    annotations: z.record(z.string(), z.string()).default({}),
+    deletionTimestamp: z.string().nullable().optional(),
+  }),
+  spec: z.object({
+    accessModes: z.array(z.string()),
+    volumeMode: z.string().default("Filesystem"),
+  }),
+  status: z.object({ phase: z.string().optional() }).default({}),
+});
+export type PersistentVolumeClaim = z.infer<typeof claimSchema>;
 export class ApiError extends Error {
   readonly status: number;
   readonly quotaExceeded: boolean;
@@ -180,6 +203,28 @@ export class KubernetesClient {
     return z
       .object({ items: z.array(podSchema).default([]) })
       .parse(value ?? {}).items;
+  }
+  async claim(
+    name: string,
+    signal?: AbortSignal,
+  ): Promise<PersistentVolumeClaim | undefined> {
+    const value = await this.call(
+      "GET",
+      `persistentvolumeclaims/${name}`,
+      undefined,
+      signal,
+    );
+    return value === undefined ? undefined : claimSchema.parse(value);
+  }
+  async createClaim(manifest: object, signal?: AbortSignal): Promise<void> {
+    await this.call("POST", "persistentvolumeclaims", manifest, signal);
+  }
+  async removeClaim(name: string, uid: string): Promise<void> {
+    await this.call("DELETE", `persistentvolumeclaims/${name}`, {
+      apiVersion: "v1",
+      kind: "DeleteOptions",
+      preconditions: { uid },
+    });
   }
   async quota(
     name: string,

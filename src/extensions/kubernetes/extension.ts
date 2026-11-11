@@ -1,9 +1,9 @@
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, defineExtension } from "@earendil-works/pi-durable";
-import type { EnvTarget } from "@earendil-works/pi-durable";
+import type { EnvTarget, ConversationId } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import {
@@ -24,6 +24,12 @@ import {
   type Reservation,
 } from "./pod.ts";
 import { capacity, resourcesSchema } from "./resources.ts";
+import {
+  assertWorkspace,
+  workspaceClaim,
+  workspaceSchema,
+  type Workspace,
+} from "./workspace.ts";
 
 const dnsName = z
   .string()
@@ -55,6 +61,7 @@ export const configurationSchema = z
     /** Optional RuntimeClass, e.g. Kata Containers for per-pod microVM isolation. */
     runtimeClassName: dnsName.optional(),
     readyTimeoutMs: z.number().int().positive().default(240_000),
+    workspace: workspaceSchema,
   })
   .strict();
 export type KubernetesConfiguration = z.input<typeof configurationSchema>;
@@ -74,6 +81,7 @@ export interface KubernetesExtensionOptions extends KubernetesConfiguration {
 const Sandboxes = defineDoc<{
   target: string;
   reservations: Stored<Reservation>[];
+  workspaces?: Stored<Workspace>[];
 }>({
   kind: "kaeno.kubernetes-sandboxes",
   version: 1,
@@ -109,6 +117,7 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
   readonly cwd = "/workspace";
   readonly identity: string;
   private readonly target: string;
+  private readonly transitions = new Map<number, Promise<void>>();
   private readonly config: z.output<typeof configurationSchema>;
   private readonly client: KubernetesClient;
   private readonly createEnvironment: KubernetesExtensionOptions["createEnvironment"];
@@ -128,6 +137,7 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
       quota: config.quota,
       service: config.service,
       serviceAccount: config.serviceAccount,
+      workspace: config.workspace,
       // Omitted when unset so identities saved before this option still match.
       ...(config.runtimeClassName === undefined
         ? {}
@@ -138,20 +148,21 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
 
   /**
    * Saved reservations name pods under the target they were created with, so the target may
-   * only change once none remain. With an empty queue nothing is tracked, and the next
-   * `ensure` adopts the configured target.
+   * only change once no reservations or retained workspaces remain. The next
+   * `ensure` then adopts the configured target.
    */
   private assertTarget(state: {
     target: string;
     reservations: readonly unknown[];
+    workspaces?: readonly unknown[];
   }): void {
     if (
       state.target &&
       state.target !== this.target &&
-      state.reservations.length > 0
+      (state.reservations.length > 0 || (state.workspaces?.length ?? 0) > 0)
     ) {
       throw new Error(
-        `Kubernetes saved cluster or sandbox configuration differs while ${state.reservations.length} sandbox reservation(s) remain; restore it until that work finishes`,
+        `Kubernetes saved cluster or sandbox configuration differs while sandbox reservations or workspaces remain; restore it until that work finishes`,
       );
     }
   }
@@ -167,15 +178,87 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
     return capacity(hard, this.config.resources, overhead);
   }
 
-  async ensure(
+  private async inOrder(
+    conversation: number,
+    transition: () => Promise<void>,
+  ): Promise<void> {
+    const previous = this.transitions.get(conversation) ?? Promise.resolve();
+    const current = previous.catch(() => {}).then(transition);
+    this.transitions.set(conversation, current);
+    try {
+      await current;
+    } finally {
+      if (this.transitions.get(conversation) === current) {
+        this.transitions.delete(conversation);
+      }
+    }
+  }
+
+  ensure(
     work: WorkInstance,
     runtime: WorkEnvironmentRuntime,
     context: Context,
   ): Promise<void> {
+    return this.inOrder(Number(work.conversationId), () =>
+      this.ensureWork(work, runtime, context),
+    );
+  }
+
+  private async ensureWork(
+    work: WorkInstance,
+    runtime: WorkEnvironmentRuntime,
+    context: Context,
+  ): Promise<void> {
+    const prior = await runtime.snapshot(Sandboxes, context);
+    if (prior) {
+      this.assertTarget(prior);
+    }
+    for (const other of prior?.reservations ?? []) {
+      if (
+        other.conversationId !== Number(work.conversationId) ||
+        other.workId === Number(work.workId)
+      ) {
+        continue;
+      }
+      const task = await runtime.commit(
+        (tx) => tx.task(parseTaskId(other.workId)),
+        context,
+      );
+      if (task && task.state.status !== "terminal") {
+        throw new Error(
+          "Kubernetes conversation already has an unfinished Assignment",
+        );
+      }
+      await this.stopPod(
+        {
+          workId: parseTaskId(other.workId),
+          conversationId: work.conversationId,
+        },
+        runtime,
+      );
+    }
     const reservation = await runtime.commit(async (tx) => {
       const state = await tx.doc(Sandboxes);
       this.assertTarget(state);
       state.target = this.target;
+      state.workspaces ??= [];
+      const workspaces = state.workspaces;
+      let workspace = workspaces.find(
+        (entry) => entry.conversationId === Number(work.conversationId),
+      );
+      if (!workspace) {
+        workspace = {
+          conversationId: Number(work.conversationId),
+          claim: `${this.config.owner}-workspace-${work.conversationId}`,
+          key: randomUUID(),
+          uid: null,
+          holder: Number(work.workId),
+          retiring: false,
+        };
+        workspaces.push(workspace);
+      }
+      workspace.holder = Number(work.workId);
+      workspace.retiring = false;
       let saved = state.reservations.find(
         (entry) => entry.workId === Number(work.workId),
       );
@@ -195,6 +278,8 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
           token: randomBytes(32).toString("hex"),
           image: this.config.image,
           phase: "waiting",
+          claim: workspace.claim,
+          ready: false,
         };
         state.reservations.push(saved);
       }
@@ -210,11 +295,11 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
       );
       if (existing) {
         assertIdentity(existing, reservation, this.config);
-      } else if (reservation.phase === "held") {
-        // A saved admitted sandbox may have contained work. Never silently replace
-        // its emptyDir after pod loss, including recovery after a host restart.
+      } else if (reservation.ready) {
+        // Do not replay in-flight execution after pod loss. A PVC preserves files,
+        // but does not make replay of commands safe.
         throw new Error(
-          `Kubernetes sandbox ${reservation.pod} disappeared; its workspace cannot be restored`,
+          `Kubernetes sandbox ${reservation.pod} disappeared; execution cannot be restored automatically; workspace PVC is retained`,
         );
       }
       const granted = await runtime.commit(async (tx) => {
@@ -257,6 +342,7 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
       }
       await delay(250, undefined, { signal });
     }
+    await this.ensureWorkspace(work, runtime, context);
     // Quota accounting can lag deletion. Bound retries without re-acquiring capacity.
     for (let attempt = 1; attempt <= 5; attempt++) {
       signal?.throwIfAborted();
@@ -273,7 +359,7 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
           throw error;
         }
         if (attempt === 5) {
-          await this.release(work, runtime);
+          await this.stopPod(work, runtime);
           throw new Error("Kubernetes quota still exceeded after 5 attempts", {
             cause: error,
           });
@@ -302,6 +388,18 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
             condition.type === "Ready" && condition.status === "True",
         )
       ) {
+        await runtime.commit(async (tx) => {
+          const state = await tx.doc(Sandboxes);
+          const own = state.reservations.find(
+            (entry) => entry.workId === Number(work.workId),
+          );
+          if (!own) {
+            throw new Error(
+              "Kubernetes reservation was released before readiness",
+            );
+          }
+          own.ready = true;
+        }, context);
         return;
       }
       await delay(1000, undefined, { signal });
@@ -328,7 +426,7 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
     }
     const pod = await this.client.pod(reservation.pod, context.abortSignal);
     if (!pod) {
-      return `Kubernetes sandbox ${reservation.pod} disappeared; its workspace cannot be restored`;
+      return `Kubernetes sandbox ${reservation.pod} disappeared; execution cannot be restored automatically; workspace PVC is retained`;
     }
     assertIdentity(pod, reservation, this.config);
     const reason = failure(pod);
@@ -337,7 +435,116 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
       : undefined;
   }
 
-  async release(
+  private async ensureWorkspace(
+    work: WorkInstance,
+    runtime: WorkEnvironmentRuntime,
+    context: Context,
+  ): Promise<void> {
+    const state = await runtime.snapshot(Sandboxes, context);
+    const workspace = state?.workspaces?.find(
+      (entry) => entry.conversationId === Number(work.conversationId),
+    );
+    if (!workspace) {
+      throw new Error("Kubernetes workspace reservation is missing");
+    }
+    let claim = await this.client.claim(workspace.claim, context.abortSignal);
+    if (!claim) {
+      if (workspace.uid !== null) {
+        throw new Error(
+          `Kubernetes workspace ${workspace.claim} disappeared; refusing to replace it with empty storage`,
+        );
+      }
+      await this.client.createClaim(
+        workspaceClaim(workspace, this.config),
+        context.abortSignal,
+      );
+      claim = await this.client.claim(workspace.claim, context.abortSignal);
+    }
+    if (!claim) {
+      throw new Error(
+        `Kubernetes workspace ${workspace.claim} was not created`,
+      );
+    }
+    assertWorkspace(claim, workspace, this.config);
+    if (claim.metadata.deletionTimestamp || claim.status.phase === "Lost") {
+      throw new Error(
+        `Kubernetes workspace ${workspace.claim} is terminating or lost`,
+      );
+    }
+    const uid = claim.metadata.uid;
+    await runtime.commit(async (tx) => {
+      const saved = await tx.doc(Sandboxes);
+      const own = saved.workspaces?.find(
+        (entry) => entry.key === workspace.key,
+      );
+      if (!own) {
+        throw new Error("Kubernetes workspace was released during admission");
+      }
+      own.uid = uid;
+    }, context);
+    // Do not wait for Bound: WaitForFirstConsumer storage classes need the Pod first.
+  }
+
+  suspend(work: WorkInstance, runtime: WorkEnvironmentRuntime): Promise<void> {
+    return this.inOrder(Number(work.conversationId), () =>
+      this.stopPod(work, runtime),
+    );
+  }
+
+  release(work: WorkInstance, runtime: WorkEnvironmentRuntime): Promise<void> {
+    return this.inOrder(Number(work.conversationId), async () => {
+      await this.stopPod(work, runtime);
+      await this.removeWorkspace(work, runtime);
+    });
+  }
+
+  private async removeWorkspace(
+    work: WorkInstance,
+    runtime: WorkEnvironmentRuntime,
+  ): Promise<void> {
+    const state = await runtime.snapshot(Sandboxes, BACKGROUND_CONTEXT);
+    if (!state) {
+      return;
+    }
+    this.assertTarget(state);
+    const workspace = state.workspaces?.find(
+      (entry) => entry.conversationId === Number(work.conversationId),
+    );
+    if (!workspace || workspace.holder !== Number(work.workId)) {
+      return;
+    }
+    if (
+      state.reservations.some(
+        (entry) => entry.conversationId === workspace.conversationId,
+      )
+    ) {
+      throw new Error(
+        `Kubernetes workspace ${workspace.claim} still has a sandbox reservation`,
+      );
+    }
+    const claim = await this.client.claim(workspace.claim);
+    if (claim) {
+      assertWorkspace(claim, workspace, this.config);
+      await this.client.removeClaim(workspace.claim, claim.metadata.uid);
+    }
+    for (let attempt = 0; attempt < 40; attempt++) {
+      if (!(await this.client.claim(workspace.claim))) {
+        await runtime.commit(async (tx) => {
+          const saved = await tx.doc(Sandboxes);
+          saved.workspaces = (saved.workspaces ?? []).filter(
+            (entry) => entry.key !== workspace.key,
+          );
+        }, BACKGROUND_CONTEXT);
+        return;
+      }
+      await delay(250);
+    }
+    throw new Error(
+      `Kubernetes workspace ${workspace.claim} still terminating; storage remains tracked`,
+    );
+  }
+
+  private async stopPod(
     work: WorkInstance,
     runtime: WorkEnvironmentRuntime,
   ): Promise<void> {
@@ -377,6 +584,7 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
   async reconcile(
     live: readonly WorkInstance[],
     runtime: WorkEnvironmentRuntime,
+    retained: readonly ConversationId[],
   ): Promise<void> {
     const state = await runtime.snapshot(Sandboxes, BACKGROUND_CONTEXT);
     if (state) {
@@ -401,7 +609,7 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
     for (const reservation of state?.reservations ?? []) {
       try {
         if (!(await unfinished(reservation.workId))) {
-          await this.release(
+          await this.suspend(
             {
               workId: parseTaskId(reservation.workId),
               conversationId: parseConversationId(reservation.conversationId),
@@ -453,6 +661,58 @@ class KubernetesWorkEnvironment implements WorkEnvironment {
       }
     } catch (error) {
       errors.push(error);
+    }
+    const keep = new Set(retained.map(Number));
+    for (const workspace of state?.workspaces ?? []) {
+      try {
+        await this.inOrder(workspace.conversationId, async () => {
+          const current = await runtime.snapshot(Sandboxes, BACKGROUND_CONTEXT);
+          const own = current?.workspaces?.find(
+            (entry) => entry.key === workspace.key,
+          );
+          if (!own) {
+            return;
+          }
+          const retire =
+            !keep.has(own.conversationId) && !(await unfinished(own.holder));
+          // The caller collected retained conversations before our snapshot. A new
+          // ticket can finish in that gap. Require two unretained observations,
+          // and reset the mark whenever an Assignment acquires the workspace.
+          if (
+            !retire ||
+            !workspace.retiring ||
+            !own.retiring ||
+            workspace.holder !== own.holder
+          ) {
+            if (own.retiring !== retire) {
+              await runtime.commit(async (tx) => {
+                const saved = await tx.doc(Sandboxes);
+                const entry = saved.workspaces?.find(
+                  (candidate) => candidate.key === own.key,
+                );
+                if (entry) {
+                  entry.retiring = retire;
+                }
+              }, BACKGROUND_CONTEXT);
+            }
+            return;
+          }
+          await this.removeWorkspace(
+            {
+              workId: parseTaskId(own.holder),
+              conversationId: parseConversationId(own.conversationId),
+            },
+            runtime,
+          );
+        });
+      } catch (error) {
+        errors.push(
+          new Error(
+            `Kubernetes workspace cleanup failed for ${workspace.claim}`,
+            { cause: error },
+          ),
+        );
+      }
     }
     if (errors.length > 0) {
       throw new AggregateError(

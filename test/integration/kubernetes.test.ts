@@ -22,7 +22,7 @@ import {
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -93,6 +93,24 @@ afterEach(async () => {
 
 function cluster() {
   const pods = new Map<string, z.infer<typeof manifestSchema>>();
+  const claims = new Map<
+    string,
+    {
+      metadata: {
+        name: string;
+        uid: string;
+        labels: Record<string, string>;
+        annotations: Record<string, string>;
+        deletionTimestamp?: string;
+      };
+      spec: object;
+      status?: { phase: string };
+    }
+  >();
+  const claimRequests: { method: string; path: string; body: string }[] = [];
+  let nextClaim = 0;
+  let claimPostStatus = 201;
+  let claimDeleting = false;
   let quota: Record<string, string> = { pods: "1" };
   let waitingReason: string | undefined;
   let status = "Running";
@@ -109,10 +127,48 @@ function cluster() {
     const method = init?.method ?? "GET";
     const path = url.pathname;
     const body = String(init?.body ?? "");
-    requests.push({ method, path, body });
+    const storage = path.includes("persistentvolumeclaims");
+    (storage ? claimRequests : requests).push({ method, path, body });
     expect(new Headers(init?.headers).get("authorization")).toBe(
       `Bearer ${token}`,
     );
+    if (storage) {
+      const name = path.split("/").at(-1) ?? "";
+      if (method === "POST") {
+        if (claimPostStatus !== 201) {
+          return new Response(`sensitive ${token}`, {
+            status: claimPostStatus,
+          });
+        }
+        const manifest = JSON.parse(body);
+        if (claims.has(manifest.metadata.name)) {
+          return new Response(null, { status: 409 });
+        }
+        const claim = {
+          ...manifest,
+          metadata: { ...manifest.metadata, uid: `volume-${++nextClaim}` },
+        };
+        claims.set(claim.metadata.name, claim);
+        return Response.json(claim, { status: 201 });
+      }
+      const claim = claims.get(name);
+      if (method === "DELETE") {
+        if (name === rejectDelete) {
+          return new Response(null, { status: 403 });
+        }
+        if (
+          claim &&
+          JSON.parse(body).preconditions.uid !== claim.metadata.uid
+        ) {
+          return new Response(null, { status: 409 });
+        }
+        if (!claimDeleting) {
+          claims.delete(name);
+        }
+        return Response.json({});
+      }
+      return claim ? Response.json(claim) : new Response(null, { status: 404 });
+    }
     const runtimeClass =
       /^\/apis\/node\.k8s\.io\/v1\/runtimeclasses\/(.+)$/.exec(path)?.[1];
     if (runtimeClass !== undefined) {
@@ -176,6 +232,14 @@ function cluster() {
   });
   return {
     pods,
+    claims,
+    claimRequests,
+    claimPostStatus: (value: number) => {
+      claimPostStatus = value;
+    },
+    claimDeleting: (value: boolean) => {
+      claimDeleting = value;
+    },
     api,
     requests,
     quota: (value: typeof quota) => {
@@ -233,11 +297,13 @@ async function fixture(overrides: Partial<KubernetesExtensionOptions> = {}) {
     context,
   );
   cleanups.push(() => harness.close(context));
-  async function work(): Promise<WorkInstance> {
-    const conversation = await harness.createConversation(
-      { ownership: { kind: "ownerless" } },
-      context,
-    );
+  async function work(previous?: WorkInstance): Promise<WorkInstance> {
+    const conversation = previous
+      ? { id: previous.conversationId }
+      : await harness.createConversation(
+          { ownership: { kind: "ownerless" } },
+          context,
+        );
     const workId = await harness.commit(
       (tx) =>
         tx.createTask(Hold, null, {
@@ -301,6 +367,268 @@ it("creates isolated pods, reuses identity, rotates credentials, and releases id
     rig.server.requests.filter((request) => request.method === "DELETE"),
   ).toHaveLength(1);
 });
+
+it("retains a conversation PVC while suspended, frees capacity, and fences stale Assignment cleanup", async () => {
+  const rig = await fixture({
+    workspace: { size: "2Gi", storageClassName: "local-path" },
+  });
+  const first = await rig.work();
+  await rig.environment.ensure(first, rig.harness, context);
+  const original = [...rig.server.pods.values()][0];
+  const claim = [...rig.server.claims.values()][0];
+  expect(claim.spec).toMatchObject({
+    accessModes: ["ReadWriteOnce"],
+    storageClassName: "local-path",
+    resources: { requests: { storage: "2Gi" } },
+  });
+  expect(original.spec.volumes).toContainEqual({
+    name: "workspace",
+    persistentVolumeClaim: { claimName: claim.metadata.name },
+  });
+  await rig.environment.suspend?.(first, rig.harness);
+  await rig.environment.suspend?.(first, rig.harness);
+  expect(rig.server.pods.size).toBe(0);
+  expect(rig.server.claims.size).toBe(1);
+  const unrelated = await rig.work();
+  await rig.environment.ensure(unrelated, rig.harness, context);
+  await rig.environment.release(unrelated, rig.harness);
+  rig.harness.resume();
+  await rig.harness.waitForTask(first.workId, context);
+  await rig.environment.reconcile([], rig.harness, [first.conversationId]);
+  expect(rig.server.claims.size).toBe(1);
+  const second = await rig.work(first);
+  await rig.environment.ensure(second, rig.harness, context);
+  const replacement = [...rig.server.pods.values()][0];
+  expect(replacement.metadata.name).not.toBe(original.metadata.name);
+  expect(replacement.metadata.annotations["kaeno.io/token-sha256"]).not.toBe(
+    original.metadata.annotations["kaeno.io/token-sha256"],
+  );
+  expect(replacement.spec.volumes).toEqual(original.spec.volumes);
+  expect([...rig.server.claims.values()][0].metadata.uid).toBe(
+    claim.metadata.uid,
+  );
+  await rig.environment.suspend?.(first, rig.harness);
+  await rig.environment.release(first, rig.harness);
+  expect(rig.server.pods.size).toBe(1);
+  expect(rig.server.claims.size).toBe(1);
+  await rig.environment.release(second, rig.harness);
+  await rig.environment.release(second, rig.harness);
+  expect(rig.server.claims.size).toBe(0);
+  const deletion = rig.server.claimRequests.find(
+    (request) =>
+      request.method === "DELETE" && request.path.endsWith(claim.metadata.name),
+  );
+  expect(JSON.parse(deletion?.body ?? "{}").preconditions.uid).toBe(
+    claim.metadata.uid,
+  );
+});
+
+it.each(["missing", "uid", "owner", "key", "lost", "terminating"])(
+  "refuses to replace or adopt %s storage on the next Assignment",
+  async (mode) => {
+    const rig = await fixture();
+    const first = await rig.work();
+    await rig.environment.ensure(first, rig.harness, context);
+    await rig.environment.suspend?.(first, rig.harness);
+    rig.harness.resume();
+    await rig.harness.waitForTask(first.workId, context);
+    const claim = [...rig.server.claims.values()][0];
+    if (mode === "missing") {
+      rig.server.claims.clear();
+    }
+    if (mode === "uid") {
+      claim.metadata.uid = "replacement";
+    }
+    if (mode === "owner") {
+      claim.metadata.labels["kaeno.io/owner"] = "foreign";
+    }
+    if (mode === "key") {
+      claim.metadata.annotations["kaeno.io/workspace"] = "foreign";
+    }
+    if (mode === "lost") {
+      claim.status = { phase: "Lost" };
+    }
+    if (mode === "terminating") {
+      claim.metadata.deletionTimestamp = new Date().toISOString();
+    }
+    const next = await rig.work(first);
+    await expect(
+      rig.environment.ensure(next, rig.harness, context),
+    ).rejects.toThrow(/empty storage|identity mismatch|terminating or lost/);
+    expect(
+      rig.server.claimRequests.filter((request) => request.method === "POST"),
+    ).toHaveLength(1);
+    expect(rig.server.pods.size).toBe(0);
+    expect(
+      rig.server.claimRequests.filter((request) => request.method === "DELETE"),
+    ).toHaveLength(0);
+  },
+);
+
+it("reconciles a lost PVC creation response before starting any execution", async () => {
+  const rig = await fixture();
+  const original = rig.server.api.getMockImplementation();
+  if (!original) {
+    throw new Error("Missing API transport");
+  }
+  let lose = true;
+  rig.server.api.mockImplementation(async (input, init) => {
+    const response = await original(input, init);
+    if (
+      lose &&
+      init?.method === "POST" &&
+      String(input).endsWith("/persistentvolumeclaims")
+    ) {
+      lose = false;
+      throw new Error("lost PVC response");
+    }
+    return response;
+  });
+  const work = await rig.work();
+  await expect(
+    rig.environment.ensure(work, rig.harness, context),
+  ).rejects.toThrow("lost PVC response");
+  expect(rig.server.pods.size).toBe(0);
+  await rig.environment.ensure(work, rig.harness, context);
+  expect(
+    rig.server.claimRequests.filter((request) => request.method === "POST"),
+  ).toHaveLength(1);
+  expect(rig.server.pods.size).toBe(1);
+});
+
+it("retains failed PVC deletions for reconciliation and never deletes storage while its pod remains", async () => {
+  const rig = await fixture();
+  const work = await rig.work();
+  await rig.environment.ensure(work, rig.harness, context);
+  rig.server.rejectDelete(`owner-work-${work.workId}`);
+  await expect(rig.environment.release(work, rig.harness)).rejects.toThrow(
+    "HTTP 403",
+  );
+  expect(
+    rig.server.claimRequests.filter((request) => request.method === "DELETE"),
+  ).toHaveLength(0);
+  const claim = [...rig.server.claims.keys()][0];
+  rig.server.rejectDelete(claim);
+  await expect(rig.environment.release(work, rig.harness)).rejects.toThrow(
+    "HTTP 403",
+  );
+  expect(rig.server.pods.size).toBe(0);
+  expect(rig.server.claims.size).toBe(1);
+  rig.server.rejectDelete();
+  rig.harness.resume();
+  await rig.harness.waitForTask(work.workId, context);
+  await rig.environment.reconcile([], rig.harness, []);
+  await rig.environment.reconcile([], rig.harness, []);
+  expect(rig.server.claims.size).toBe(0);
+});
+
+it("keeps the storage target pinned even with no running pods", async () => {
+  const rig = await fixture();
+  const work = await rig.work();
+  await rig.environment.ensure(work, rig.harness, context);
+  await rig.environment.suspend?.(work, rig.harness);
+  const changed = kubernetesExtension({
+    ...rig.options,
+    workspace: { storageClassName: "other" },
+  });
+  await expect(
+    changed.environment.reconcile([], rig.harness, [work.conversationId]),
+  ).rejects.toThrow("configuration differs");
+  expect(rig.server.claims.size).toBe(1);
+});
+
+it("does not delete a newly finished ticket from one stale retained-conversation scan", async () => {
+  const rig = await fixture();
+  const work = await rig.work();
+  await rig.environment.ensure(work, rig.harness, context);
+  await rig.environment.suspend?.(work, rig.harness);
+  rig.harness.resume();
+  await rig.harness.waitForTask(work.workId, context);
+  await rig.environment.reconcile([], rig.harness, []);
+  expect(rig.server.claims.size).toBe(1);
+  await rig.environment.reconcile([], rig.harness, [work.conversationId]);
+  expect(rig.server.claims.size).toBe(1);
+  await rig.environment.reconcile([], rig.harness, []);
+  expect(rig.server.claims.size).toBe(1);
+  await rig.environment.reconcile([], rig.harness, []);
+  expect(rig.server.claims.size).toBe(0);
+});
+
+it("orders a new Assignment after a suspend already deleting its old pod", async () => {
+  const rig = await fixture();
+  const first = await rig.work();
+  await rig.environment.ensure(first, rig.harness, context);
+  rig.harness.resume();
+  await rig.harness.waitForTask(first.workId, context);
+  const next = await rig.work(first);
+  const original = rig.server.api.getMockImplementation();
+  if (!original) {
+    throw new Error("Missing API transport");
+  }
+  let finishDelete: (() => void) | undefined;
+  const blocked = new Promise<void>((resolve) => {
+    finishDelete = resolve;
+  });
+  let entered = false;
+  rig.server.api.mockImplementation(async (input, init) => {
+    if (
+      init?.method === "DELETE" &&
+      new URL(String(input)).pathname.endsWith(
+        `pods/owner-work-${first.workId}`,
+      )
+    ) {
+      entered = true;
+      await blocked;
+    }
+    return original(input, init);
+  });
+  const stopped = rig.environment.suspend?.(first, rig.harness);
+  const started = rig.environment.ensure(next, rig.harness, context);
+  await vi.waitFor(() => expect(entered).toBe(true));
+  expect([...rig.server.pods.keys()]).toEqual([`owner-work-${first.workId}`]);
+  finishDelete?.();
+  await Promise.all([stopped, started]);
+  expect([...rig.server.pods.keys()]).toEqual([`owner-work-${next.workId}`]);
+  expect(rig.server.claims.size).toBe(1);
+});
+
+it("bounds PVC deletion waits and retains storage tracking for a retry", async () => {
+  const rig = await fixture();
+  const work = await rig.work();
+  await rig.environment.ensure(work, rig.harness, context);
+  rig.server.claimDeleting(true);
+  vi.useFakeTimers();
+  await Promise.all([
+    expect(rig.environment.release(work, rig.harness)).rejects.toThrow(
+      "storage remains tracked",
+    ),
+    vi.advanceTimersByTimeAsync(10_000),
+  ]);
+  expect(rig.server.pods.size).toBe(0);
+  expect(rig.server.claims.size).toBe(1);
+  rig.server.claimDeleting(false);
+  await rig.environment.release(work, rig.harness);
+  expect(rig.server.claims.size).toBe(0);
+});
+
+it("surfaces PVC authorization failures without exposing API credentials", async () => {
+  const rig = await fixture();
+  rig.server.claimPostStatus(403);
+  const result = rig.environment.ensure(await rig.work(), rig.harness, context);
+  await expect(result).rejects.toThrow("HTTP 403");
+  await expect(result).rejects.not.toThrow("cluster-secret");
+  expect(rig.server.pods.size).toBe(0);
+});
+
+it.each(["0Gi", "-1Gi", "oops", "5", "1.5Gi"])(
+  "rejects invalid workspace size %s",
+  async (size) => {
+    const rig = await fixture();
+    expect(() =>
+      kubernetesExtension({ ...rig.options, workspace: { size } }),
+    ).toThrow();
+  },
+);
 
 it("queues FIFO against live quota and notices quota increases without restart", async () => {
   const rig = await fixture();
@@ -412,7 +740,7 @@ it.each(["Succeeded", "Failed"])(
   },
 );
 
-it("fails rather than recreating a lost admitted workspace on supervision reentry", async () => {
+it("fails rather than replaying a lost ready execution pod, retaining its workspace PVC", async () => {
   const rig = await fixture();
   const work = await rig.work();
   await rig.environment.ensure(work, rig.harness, context);
@@ -426,6 +754,7 @@ it("fails rather than recreating a lost admitted workspace on supervision reentr
   expect(
     rig.server.requests.filter((request) => request.method === "POST"),
   ).toHaveLength(1);
+  expect(rig.server.claims.size).toBe(1);
   await rig.environment.release(work, rig.harness);
 });
 
@@ -547,7 +876,7 @@ it.each([false, true])(
     }
     rig.server.api.mockImplementation(async (input, init) => {
       const response = await original(input, init);
-      if (init?.method !== "POST") {
+      if (init?.method !== "POST" || !String(input).endsWith("/pods")) {
         return response;
       }
       if (mismatched) {
@@ -577,7 +906,7 @@ it("recovers from transient quota rejection without losing its held reservation"
   }
   let attempts = 0;
   rig.server.api.mockImplementation(async (input, init) => {
-    if (init?.method === "POST") {
+    if (init?.method === "POST" && String(input).endsWith("/pods")) {
       attempts++;
       rig.server.postStatus(attempts <= 2 ? 403 : 201);
     }
@@ -762,6 +1091,7 @@ it("keeps identities without a RuntimeClass and rejects adding one to saved work
       quota: "kaeno-sandbox",
       service: "kaeno-sandbox",
       serviceAccount: "kaeno-sandbox",
+      workspace: { size: "5Gi" },
     })}`,
   );
   const work = await rig.work();
@@ -796,7 +1126,7 @@ it("adopts a changed target once no sandbox reservations remain", async () => {
   // The adopted target is now the saved one: the previous configuration is refused.
   await expect(
     rig.environment.reconcile([second], rig.harness, []),
-  ).rejects.toThrow("1 sandbox reservation(s) remain");
+  ).rejects.toThrow("sandbox reservations or workspaces remain");
 });
 
 it("validates resource quantities and rejects a quota that cannot fit a sandbox", async () => {
@@ -890,7 +1220,7 @@ it("reopens SQLite, adopts saved pod/token/image, and rejects retargeting saved 
   }
   rig.server.api.mockImplementation(async (input, init) => {
     const response = await original(input, init);
-    if (init?.method === "POST") {
+    if (init?.method === "POST" && String(input).endsWith("/pods")) {
       throw new Error("Lost response after pod creation");
     }
     return response;
@@ -1022,16 +1352,18 @@ it("reports startup cleanup errors without blocking recovery and retries on the 
   expect(onReport).toHaveBeenCalledTimes(1);
 });
 
-it("runs WORK through a pod execution environment and rejects child admission when quota is full", async () => {
+it("preserves real workspace files across ticket Assignments and SQLite restart while replacing pods and freeing quota", async () => {
   const root = await mkdtemp(join(tmpdir(), "kaeno-kubernetes-worker-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const rig = await fixture();
   let localUrl = "";
-  const extension = kubernetesExtension({
+  let workspacePath = "";
+  const executionServers = new Map<string, ReturnType<typeof createServer>>();
+  const options: KubernetesExtensionOptions = {
     ...rig.options,
     fetch: async (input, init) => {
       const response = await rig.server.api(input, init);
-      if (init?.method === "POST") {
+      if (init?.method === "POST" && String(input).endsWith("/pods")) {
         const manifest = z
           .object({
             spec: z.object({
@@ -1051,24 +1383,70 @@ it("runs WORK through a pod execution environment and rejects child admission wh
         if (!token) {
           throw new Error("Missing execution token");
         }
+        const pod = [...rig.server.pods.values()].find(
+          (entry) =>
+            entry.metadata.name === JSON.parse(String(init.body)).metadata.name,
+        );
+        const volumes = z
+          .array(
+            z.object({
+              name: z.string(),
+              persistentVolumeClaim: z
+                .object({ claimName: z.string() })
+                .optional(),
+            }),
+          )
+          .parse(pod?.spec.volumes);
+        const claim = volumes.find((volume) => volume.name === "workspace")
+          ?.persistentVolumeClaim?.claimName;
+        if (!claim || !rig.server.claims.has(claim)) {
+          throw new Error("Pod must mount an existing PVC");
+        }
+        const mounted = join(root, "claims", claim);
+        workspacePath = mounted;
+        await mkdir(mounted, { recursive: true });
         const server = new EnvironmentServer(
           token,
-          () => new NodeExecutionEnv({ cwd: root }),
-          root,
+          () => new NodeExecutionEnv({ cwd: mounted }),
+          mounted,
         ).server;
+        executionServers.set(
+          JSON.parse(String(init.body)).metadata.name,
+          server,
+        );
         server.listen(0, "127.0.0.1");
         await once(server, "listening");
-        cleanups.push(
-          () =>
-            new Promise<void>((resolve, reject) =>
+        cleanups.push(async () => {
+          if (server.listening) {
+            await new Promise<void>((resolve, reject) =>
               server.close((error) => (error ? reject(error) : resolve())),
-            ),
-        );
+            );
+          }
+        });
         const address = server.address();
         if (!address || typeof address === "string") {
           throw new Error("Missing envd address");
         }
         localUrl = `http://127.0.0.1:${address.port}`;
+      }
+      if (init?.method === "DELETE") {
+        const url = new URL(String(input));
+        const name = url.pathname.split("/").at(-1) ?? "";
+        const server = executionServers.get(name);
+        if (server?.listening) {
+          await new Promise<void>((resolve, reject) =>
+            server.close((error) => (error ? reject(error) : resolve())),
+          );
+        }
+        if (
+          url.pathname.includes("persistentvolumeclaims") &&
+          !rig.server.claims.has(name)
+        ) {
+          await rm(join(root, "claims", name), {
+            recursive: true,
+            force: true,
+          });
+        }
       }
       return response;
     },
@@ -1077,9 +1455,10 @@ it("runs WORK through a pod execution environment and rejects child admission wh
         /^http:\/\/owner-work-\d+\.kaeno-sandbox\.test\.svc\.cluster\.local:7070$/,
       );
       expect(cwd).toBe("/workspace");
-      return new RemoteExecutionEnv(localUrl, token, id, root, fetch);
+      return new RemoteExecutionEnv(localUrl, token, id, workspacePath, fetch);
     },
-  });
+  };
+  let extension = kubernetesExtension(options);
   const probe = defineTool({
     name: "probe",
     description: "Exercise the worker environment",
@@ -1089,16 +1468,21 @@ it("runs WORK through a pod execution environment and rejects child admission wh
       if (!api.env) {
         throw new Error("Missing worker environment");
       }
-      getOrThrow(
-        await api.env.writeFile("proof.txt", "pod workspace", toolContext),
+      const restored = getOrThrow(
+        await api.env.exists("proof.txt", toolContext),
       );
+      if (!restored) {
+        getOrThrow(
+          await api.env.writeFile("proof.txt", "pod workspace", toolContext),
+        );
+      }
       return {
         content: [
           {
             type: "text",
-            text: getOrThrow(
-              await api.env.readTextFile("proof.txt", toolContext),
-            ),
+            text:
+              `${restored ? "restored" : "created"}:` +
+              getOrThrow(await api.env.readTextFile("proof.txt", toolContext)),
           },
         ],
       };
@@ -1111,7 +1495,7 @@ it("runs WORK through a pod execution environment and rejects child admission wh
     setup: {
       model,
       instructions: "CODER",
-      tools: [probe.name, "start_work"],
+      tools: [probe.name, "start_work", "report"],
     },
   };
   const faux = fauxProvider();
@@ -1119,6 +1503,7 @@ it("runs WORK through a pod execution environment and rejects child admission wh
   models.setProvider(faux.provider);
   let proof = "";
   let refusal = "";
+  let asked = false;
   faux.setResponses(
     Array.from({ length: 20 }, () => async (request) => {
       const worker = getCurrentSystemPrompt(request.messages).includes(
@@ -1145,45 +1530,102 @@ it("runs WORK through a pod execution environment and rejects child admission wh
       }
       if (last?.role === "toolResult" && last.toolName === "start_work") {
         refusal = JSON.stringify(last.content);
+        if (!asked) {
+          asked = true;
+          return call("report", {
+            state: "waiting",
+            text: "Please continue after checking the saved workspace",
+          });
+        }
         return fauxAssistantMessage("DONE");
       }
       return call("probe", {});
     }),
   );
-  const core = await openKaeno({
-    storage: new MemoryStorage(),
-    models,
-    assistant: {
-      model,
-      instructions: "ROUTER",
-      tools: [...ROUTER_ASSISTANT_TOOLS],
-    },
-    extensions: [
-      extension.extension,
-      { durable: defineExtension({ name: "probe", tools: [probe] }) },
-    ],
-    work: {
-      agents: [coder],
-      tools: [probe.name, "start_work"],
-      environment: extension.environment,
-      maxConcurrent: 4,
-    },
-  });
+  async function open() {
+    return openKaeno({
+      storage: await openNodeSqliteStorage(join(root, "durable.sqlite")),
+      models,
+      assistant: {
+        model,
+        instructions: "ROUTER",
+        tools: [...ROUTER_ASSISTANT_TOOLS],
+      },
+      extensions: [
+        extension.extension,
+        { durable: defineExtension({ name: "probe", tools: [probe] }) },
+      ],
+      work: {
+        agents: [coder],
+        tools: [probe.name, "start_work", "report"],
+        environment: extension.environment,
+        maxConcurrent: 4,
+      },
+    });
+  }
+  let core = await open();
   cleanups.push(() => core.close());
-  await startTicket(core, {
+  const ticket = await startTicket(core, {
     agent: "coder",
     title: "Code",
     content: "Exercise the environment, then try to delegate.",
   });
   await vi.waitFor(
     () => {
-      expect(proof).toContain("pod workspace");
+      expect(proof).toContain("created:pod workspace");
       expect(refusal).toContain("No free work slot: 1 of 1");
       expect(rig.server.pods.size).toBe(0);
     },
     { timeout: 5000 },
   );
+  expect(rig.server.claims.size).toBe(1);
+  expect(
+    (await core.router.ticket(ticket, context)).reports.at(-1)?.state,
+  ).toBe("waiting");
+  const originalClaim = [...rig.server.claims.values()][0];
+  await core.close();
+  extension = kubernetesExtension(options);
+  core = await open();
+  expect(rig.server.pods.size).toBe(0);
+  expect(rig.server.claims.size).toBe(1);
+  proof = "";
+  await core.harness.commit(async (tx) => {
+    const trigger = await core.router.receive(tx, {
+      key: "test:resume",
+      source: "test",
+      threads: ["test:resume"],
+      actor: "owner",
+      authority: "owner",
+      content: "Read the saved workspace and continue",
+    });
+    await core.router.attach(tx, { trigger: trigger.id, ticket });
+  }, context);
+  await vi.waitFor(
+    async () => {
+      expect(proof).toContain("restored:pod workspace");
+      expect(
+        (await core.router.ticket(ticket, context)).assignments,
+      ).toHaveLength(2);
+      expect((await core.router.ticket(ticket, context)).status).toBe("idle");
+      expect(rig.server.pods.size).toBe(0);
+    },
+    { timeout: 5000 },
+  );
+  expect([...rig.server.claims.values()][0].metadata.uid).toBe(
+    originalClaim.metadata.uid,
+  );
   expect(
     rig.server.requests.filter((request) => request.method === "POST"),
+  ).toHaveLength(2);
+  expect(
+    rig.server.claimRequests.filter((request) => request.method === "POST"),
   ).toHaveLength(1);
+  expect(executionServers.size).toBe(2);
+  await core.harness.commit(
+    (tx) => core.router.stopTicket(tx, ticket, "owner", "done"),
+    context,
+  );
+  await core.work?.reconcileEnvironment(context);
+  await core.work?.reconcileEnvironment(context);
+  expect(rig.server.claims.size).toBe(0);
 });

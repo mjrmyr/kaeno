@@ -9,6 +9,8 @@ export interface Reservation {
   token: string;
   image: string;
   phase: "waiting" | "held";
+  claim: string;
+  ready: boolean;
 }
 export const SANDBOX_LABEL = "app.kubernetes.io/name=kaeno-sandbox";
 export const OWNER_LABEL = "kaeno.io/owner";
@@ -30,6 +32,8 @@ export function assertIdentity(
       String(reservation.conversationId) ||
     pod.metadata.annotations["kaeno.io/token-sha256"] !==
       tokenHash(reservation.token) ||
+    pod.spec.volumes.find((volume) => volume.name === "workspace")
+      ?.persistentVolumeClaim?.claimName !== reservation.claim ||
     pod.spec.containers.length !== 1 ||
     pod.spec.containers[0].image !== reservation.image
   ) {
@@ -115,7 +119,10 @@ export function sandboxPod(
         },
       ],
       volumes: [
-        { name: "workspace", emptyDir: { sizeLimit: "5Gi" } },
+        {
+          name: "workspace",
+          persistentVolumeClaim: { claimName: reservation.claim },
+        },
         { name: "home", emptyDir: { sizeLimit: "1Gi" } },
         { name: "tmp", emptyDir: { sizeLimit: "2Gi" } },
       ],
