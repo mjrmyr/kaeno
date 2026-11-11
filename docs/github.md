@@ -1,6 +1,6 @@
 # GitHub App extension
 
-The optional `src/extensions/github` extension lets a worker discover private repositories, check out code in its existing execution environment, inspect pull request/CI diagnostics, and propose changes through a draft pull request. GitHub is not a core service or an agent-definition field. Other platforms can supply independent native extensions using the same composition seam.
+The optional `src/extensions/github` extension lets a worker discover private repositories, check out code in its existing execution environment, inspect pull request/CI diagnostics, and propose changes through a ready-for-review pull request. GitHub is not a core service or an agent-definition field. Other platforms can supply independent native extensions using the same composition seam.
 
 ## Owner setup
 
@@ -40,7 +40,8 @@ description: Implement and test changes in authorized repositories.
 ---
 
 Discover the requested repository, check it out, make the change, and run relevant
-checks. Publish a draft PR and report its URL and the verification evidence.
+checks. Publish a ready-for-review PR and report its URL and verification evidence.
+When review feedback wakes you, address it and reply on the PR with github_comment.
 ```
 
 Add `skills: [your-engineering-skill]` if you have installed an engineering workflow skill. Skills provide instructions, not permissions. Explicit tool lists remain exact; include WORK tools such as `start_work` and `message_parent` if this worker needs them.
@@ -64,7 +65,8 @@ The assistant receives the capability too. Set an explicit `tools` list containi
 
 - `github_list_repositories {}` returns IDs, current names, and default branches for repositories currently accessible to the installation.
 - `github_checkout { repository, branch? }` prepares one branch per repository in the existing worker environment. It returns the absolute checkout path and initial commit SHA. Repeated calls do not reset files. A different branch needs new work.
-- `github_publish { repository, title, body }` snapshots tracked and non-ignored local files, preserving binary files, deletions, executable bits, and symlinks. It publishes a work-specific branch and creates or reuses its draft PR. It does not run tests or move local HEAD.
+- `github_publish { repository, title, body }` snapshots tracked and non-ignored local files, preserving binary files, deletions, executable bits, and symlinks. It publishes a work-specific branch and creates or reuses its ready-for-review PR, converting an existing draft to ready. It does not run tests or move local HEAD. When the caller is a ticket worker, publishing atomically subscribes its ticket to the PR thread alongside recording publish completion. The result includes `thread`, `following`, and `draft: false`; `following` is false for conversations outside a ticket.
+- `github_comment { repository, pullRequest, body }` posts a top-level PR comment, for example a reply describing how review feedback was addressed. It does not submit a review or an inline review reply. Router calls require owner basis like other write tools; worker calls use the existing frozen tool selection and installation assignment. Ordinary final answers still report through Kaeno, not GitHub.
 - `github_fetch { repository }` fetches the existing work branch into `refs/remotes/kaeno/work`, returning its SHA and checkout path. It does not change HEAD, the index or working files, and does not fetch the PR's base branch. The worker integrates changes using ordinary Git commands; publishing requires the fetched commit to be an ancestor of HEAD. GitHub credentials remain on the host.
 
 ### Incorporating pushes to a work branch
@@ -123,7 +125,7 @@ configured installation for all agents
   -> authenticated host Git <-> credential-free bundle <-> worker api.env
 ```
 
-The loader returns one installed GitHub integration containing its agent capabilities and startup definition readers. The application assigns contributions through the common [extension policy](extensions.md), without maintaining tool inventories or constructing GitHub bindings. The private binder receives only actually selected contributions; composition supplies its canonical owner. Native definitions remain the single tool inventory. Core owns only resolved setups, opaque bindings and runtime registration; it parses no GitHub configuration.
+The loader returns one installed GitHub integration containing its agent capabilities and startup definition readers. The application assigns contributions through the common [extension policy](extensions.md), without maintaining tool inventories or constructing GitHub bindings. The private binder receives only actually selected contributions; composition supplies its canonical owner. Native definitions remain the single tool inventory. Core owns resolved setups, opaque bindings, runtime registration and the ticket subscription capability; it parses no GitHub configuration. At lifecycle start the extension captures core's `followThread(tx, conversation, thread)` capability. Publish calls it in its completion transaction; core resolves the conversation's ticket and updates both subscription indexes. The GitHub extension never imports a channel, and core never parses a GitHub tool result or thread format.
 
 A binding records only the installation ID. GitHub enforces repository access and permissions on every operation. A binding never selects tools. Every child worker selecting GitHub contributions receives the same configured installation in its own frozen setup. Private keys, App JWTs, and installation tokens are never written to bindings, prompts, results, Git remote URLs, or worker files.
 
@@ -135,7 +137,9 @@ We chose this over authenticated Git inside the worker: arbitrary project script
 
 Checkout saves its base SHA before materializing files. It stages a clone separately and renames it into place. Recovery adopts an already-renamed checkout without discarding edits. A missing previously-ready workspace is an error, not permission to silently recreate it and lose changes.
 
-Publish saves an immutable intent before network writes. It uses a stable conversation/repository branch, checks the expected remote head, performs ordinary non-force Git pushes, and reconciles an existing PR before creating another. A lost response after pushing or creating a PR can be retried, including after restart. A retry completes the saved snapshot: edits made since that attempt need another publish call. The expected remote head is the last published commit, or the fetched head after the worker integrates it. Unexpected updates are rejected until explicitly fetched and integrated. Closed or non-draft work PRs are rejected before updating their branch; start new work for another proposal.
+Publish saves an immutable intent before network writes. It uses a stable conversation/repository branch, checks the expected remote head, performs ordinary non-force Git pushes, and reconciles an existing PR before creating another. A lost response after pushing or creating a PR can be retried, including after restart. A retry completes the saved snapshot: edits made since that attempt need another publish call. The expected remote head is the last published commit, or the fetched head after the worker integrates it. Unexpected updates are rejected until explicitly fetched and integrated. Closed work PRs and PRs with a different base are rejected before updating their branch; start new work for another proposal. Ready-for-review work PRs remain publishable. Existing drafts are marked ready through GitHub's GraphQL mutation; failed conversion leaves publication incomplete and retryable.
+
+Comments save an immutable pending intent before sending. A hidden invocation-specific HTML marker lets a retry reconcile a posted comment after response loss, including a fresh tool call after restart. Retrying a failed comment for the same repository/PR completes the saved body, not new text passed with the retry; use another call afterward for a different reply. This reconciliation assumes GitHub exposes the posted comment and its marker remains intact; it is not a cross-system exactly-once guarantee. Comment listing is paginated and all authentication remains on the host.
 
 Fetch pins its SHA in the invocation memo before importing objects. Recovery fetches that exact commit and repeats the import without changing workspace files. The fetched SHA is saved with the existing conversation-owned checkout, so publishing after a restart uses the same expected head. Unfinished merges/rebases and unmerged index entries cannot be published.
 
@@ -186,7 +190,11 @@ Anything else, including GitHub's `ping`, is acknowledged and ignored. So are ev
 
 A push is attributed to the GitHub account that pushed it, as reported by GitHub, not to the commit's author, which anyone can set. The owner pushing to a worker's pull request is a trusted account and wakes the worker; a stranger's push is only recorded and never reaches it.
 
-`github_publish` returns the pull request's `thread`. A worker that follows it with `follow_thread` is woken by these events while its ticket is idle, with the limits in [who can reach a worker](routing.md#who-can-reach-a-worker).
+`github_publish` returns the pull request's `thread` and automatically follows it for the publishing ticket. No separate model-selected `follow_thread` call is required. Trusted events wake the idle ticket, with the limits in [who can reach a worker](routing.md#who-can-reach-a-worker). `follow_thread` is still available for other dependencies, and `unsubscribe_thread` opts out. Republishing follows the work PR again.
+
+The subscription is established after GitHub confirms the PR and in the same durable transaction as local publish completion. Remote writes and SQLite are not one transaction: an event arriving before that subscription commits can still reach the router instead. This does not change core's owner-authority checks for accepting or attaching unsolicited system events.
+
+Use `github_comment` to reply on GitHub after addressing feedback. The bot's resulting webhook is ignored by `self`, preventing self-wake loops. Newly admitted work gets the comment tool through default composition; saved work retains its frozen selection. Existing tickets are not retroactively subscribed merely by upgrading: their next successful publish establishes the subscription, or their worker can explicitly follow the thread.
 
 After someone else pushes to the work branch, the worker can call `github_fetch`, integrate the fetched ref using its coding tools, and publish on top of it. See [incorporating pushes](#incorporating-pushes-to-a-work-branch). The webhook only delivers the notification; it never mutates the worker's workspace.
 

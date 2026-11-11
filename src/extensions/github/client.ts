@@ -27,6 +27,7 @@ const pullSchema = z.object({
   html_url: z.string().url(),
   state: z.enum(["open", "closed"]),
   draft: z.boolean(),
+  node_id: z.string().min(1),
   head: z.object({
     ref: z.string(),
     repo: z.object({ id: z.number() }).nullable(),
@@ -330,7 +331,50 @@ export class GitHubClient {
     }
   }
 
-  async findDraftPull(
+  /** Reconcile a lost POST response using an invocation-specific marker before posting again. */
+  async comment(
+    token: string,
+    repository: GitHubRepository,
+    number: number,
+    body: string,
+    marker: string,
+    signal?: AbortSignal,
+  ): Promise<{ id: number; html_url: string }> {
+    // Issue comments share this endpoint; verify the target really is a pull request.
+    await this.pull(token, repository, number, signal);
+    const schema = z.object({
+      id: z.number().int().positive(),
+      html_url: z.string().url(),
+      body: z.string().nullish(),
+    });
+    const path = `/repos/${repository.full_name}/issues/${number}/comments`;
+    for (let page = 1; ; page++) {
+      const comments = z
+        .array(schema)
+        .parse(
+          await this.request(
+            `${path}?per_page=100&page=${page}`,
+            token,
+            signal,
+          ),
+        );
+      const existing = comments.find((comment) =>
+        comment.body?.endsWith(marker),
+      );
+      if (existing) {
+        return { id: existing.id, html_url: existing.html_url };
+      }
+      if (comments.length < 100) {
+        break;
+      }
+    }
+    const created = schema.parse(
+      await this.request(path, token, signal, { body: `${body}\n\n${marker}` }),
+    );
+    return { id: created.id, html_url: created.html_url };
+  }
+
+  async findWorkPull(
     token: string,
     repository: GitHubRepository,
     branch: string,
@@ -358,13 +402,9 @@ export class GitHubClient {
         pull.head.ref === branch && pull.head.repo?.id === repository.id,
     );
     if (existing) {
-      if (
-        existing.state !== "open" ||
-        !existing.draft ||
-        existing.base.ref !== base
-      ) {
+      if (existing.state !== "open" || existing.base.ref !== base) {
         throw new Error(
-          "GitHub: existing work PR is closed, non-draft, or has a different base; start new work",
+          "GitHub: existing work PR is closed or has a different base; start new work",
         );
       }
       return existing;
@@ -372,7 +412,7 @@ export class GitHubClient {
     return undefined;
   }
 
-  async draftPull(
+  async workPull(
     token: string,
     repository: GitHubRepository,
     branch: string,
@@ -381,23 +421,37 @@ export class GitHubClient {
     body: string,
     signal?: AbortSignal,
   ): Promise<GitHubPull> {
-    const existing = await this.findDraftPull(
+    const existing = await this.findWorkPull(
       token,
       repository,
       branch,
       base,
       signal,
     );
-    if (existing) {
-      return existing;
+    const pull =
+      existing ??
+      pullSchema.parse(
+        await this.request(
+          `/repos/${repository.full_name}/pulls`,
+          token,
+          signal,
+          { head: branch, base, title, body, draft: false },
+        ),
+      );
+    if (pull.draft) {
+      const result = await this.request("/graphql", token, signal, {
+        query:
+          "mutation Ready($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { isDraft } } }",
+        variables: { id: pull.node_id },
+      });
+      z.object({
+        data: z.object({
+          markPullRequestReadyForReview: z.object({
+            pullRequest: z.object({ isDraft: z.literal(false) }),
+          }),
+        }),
+      }).parse(result);
     }
-    return pullSchema.parse(
-      await this.request(
-        `/repos/${repository.full_name}/pulls`,
-        token,
-        signal,
-        { head: branch, base, title, body, draft: true },
-      ),
-    );
+    return { ...pull, draft: false };
   }
 }

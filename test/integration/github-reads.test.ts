@@ -126,9 +126,17 @@ function setup(
     let output: string | undefined;
     let error = false;
     faux.setResponses([
-      fauxAssistantMessage([fauxToolCall(name, args)], {
-        stopReason: "toolUse",
-      }),
+      fauxAssistantMessage(
+        [
+          fauxToolCall(
+            name,
+            name === "github_comment" ? { basis: "t1", ...args } : args,
+          ),
+        ],
+        {
+          stopReason: "toolUse",
+        },
+      ),
       async (request) => {
         const result = request.messages.findLast(
           (message) => message.role === "toolResult",
@@ -181,6 +189,22 @@ function auth(url: URL, init?: RequestInit) {
     return Response.json(repo);
   }
 }
+
+it("requires owner authorization for router comments and treats posting as a write", async () => {
+  const { call, fetch, extension } = setup(() => {
+    throw new Error("must not fetch");
+  });
+  expect(extension.readOnlyTools).not.toContain("github_comment");
+  await expect(
+    call("github_comment", {
+      repository: 34,
+      pullRequest: 23,
+      body: "Reply",
+      basis: "t999",
+    }),
+  ).rejects.toThrow();
+  expect(fetch).not.toHaveBeenCalled();
+});
 
 it("registers all diagnostics as read-only native tools with bounded input schemas", () => {
   const { extension } = setup(() => Response.json({}));
@@ -269,7 +293,7 @@ it("reads PR head branch/SHA and paginated checks, annotations, statuses, runs a
   expect(new URL(String(runsCall?.[0])).searchParams.get("head_sha")).toBe(sha);
 });
 
-it.each(GITHUB_READ_TOOLS)(
+it.each([...GITHUB_READ_TOOLS, "github_comment"])(
   "denies unassigned and mismatched installations before network access: %s",
   async (name) => {
     for (const assigned of [0, 99]) {
@@ -284,6 +308,7 @@ it.each(GITHUB_READ_TOOLS)(
           repository: 34,
           sha,
           pullRequest: 23,
+          body: "Reply",
           checkRun: 7,
           run: 9,
           job: 11,
