@@ -11,7 +11,7 @@ import {
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import type { Context } from "@earendil-works/chord";
 import { z } from "zod";
-import { readBinding } from "../../core/application/index.ts";
+import { readBinding, type Kaeno } from "../../core/application/index.ts";
 import type {
   AgentExtension,
   InstalledExtension,
@@ -75,8 +75,13 @@ const checkoutSchema = z.object({
   fetched: commitSchema.optional(),
   pending: intentSchema.optional(),
 });
+const commentIntentSchema = z.object({
+  key: z.string().uuid(),
+  body: z.string(),
+});
 const stateSchema = z.object({
   checkouts: z.record(z.string(), checkoutSchema),
+  pendingComments: z.record(z.string(), commentIntentSchema).optional(),
 });
 const Workspace = defineDoc<JsonObject>({
   kind: "kaeno.github-workspace",
@@ -120,6 +125,7 @@ export function githubExtension(
     .parse(options.installationId);
   const client = new GitHubClient(options);
   const transport = options.transport ?? new HostGit();
+  let followThread: Kaeno["followThread"] | undefined;
   async function tokenFor(
     api: ToolExecutionApi,
     context: Context,
@@ -316,10 +322,70 @@ export function githubExtension(
       });
     },
   });
+  const comment = defineTool({
+    name: "github_comment",
+    description:
+      "Post a reply or update on a GitHub pull request. Use this to respond on the PR after addressing review feedback. Does not submit a review or merge the PR.",
+    parameters: Type.Object({
+      repository: Type.Integer({ minimum: 1 }),
+      pullRequest: Type.Integer({ minimum: 1 }),
+      body: Type.String({ minLength: 1, maxLength: 60_000 }),
+    }),
+    replay: "safe",
+    executionMode: "sequential",
+    execute: async (args, api, context) => {
+      const token = await tokenFor(api, context, args.repository);
+      const repository = await client.repository(
+        token,
+        args.repository,
+        context.abortSignal,
+      );
+      const target = `${args.repository}:${args.pullRequest}`;
+      const state = stateSchema.parse(
+        (await api.snapshot(Workspace, api.conversationId, context)) ?? {
+          checkouts: {},
+        },
+      );
+      const saved = await api.memo("github-comment", context);
+      const intent = commentIntentSchema.parse(
+        saved ??
+          (await api.memo(
+            "github-comment",
+            state.pendingComments?.[target] ?? {
+              key: randomUUID(),
+              body: args.body,
+            },
+            context,
+          )),
+      );
+      await api.commit(async (tx) => {
+        const doc = await tx.doc(Workspace, api.conversationId);
+        const current = stateSchema.parse(doc);
+        doc.pendingComments = { ...current.pendingComments, [target]: intent };
+      }, context);
+      const result = await client.comment(
+        token,
+        repository,
+        args.pullRequest,
+        intent.body,
+        `<!-- kaeno-comment:${intent.key} -->`,
+        context.abortSignal,
+      );
+      await api.commit(async (tx) => {
+        const doc = await tx.doc(Workspace, api.conversationId);
+        const current = stateSchema.parse(doc);
+        const pending = current.pendingComments ?? {};
+        delete pending[target];
+        doc.pendingComments = pending;
+      }, context);
+      return text(result);
+    },
+  });
+
   const publish = defineTool({
     name: GITHUB_TOOLS[2],
     description:
-      "Snapshot local tracked and non-ignored files from a GitHub checkout, publish a work branch, and create or reuse its draft PR. Does not merge, force-push, or run tests. Run checks before publishing.",
+      "Snapshot local tracked and non-ignored files from a GitHub checkout, publish a work branch, and create or reuse its ready-for-review PR. Automatically follow its thread when publishing from a ticket. Does not merge, force-push, or run tests. Run checks before publishing.",
     parameters: Type.Object({
       repository: Type.Integer({ minimum: 1 }),
       title: Type.String({ minLength: 1, maxLength: 200 }),
@@ -328,6 +394,10 @@ export function githubExtension(
     replay: "safe",
     executionMode: "sequential",
     execute: async (args, api, context) => {
+      const subscribe = followThread;
+      if (!subscribe) {
+        throw new Error("GitHub: integration has not started");
+      }
       const env = api.env;
       if (!env) {
         throw new Error(
@@ -398,8 +468,8 @@ export function githubExtension(
         operation.sha,
         context,
       );
-      // Do not update a branch whose PR an owner has closed or marked ready for review.
-      await client.findDraftPull(
+      // Do not update a branch whose PR an owner has closed.
+      await client.findWorkPull(
         token,
         repository,
         branch,
@@ -415,7 +485,7 @@ export function githubExtension(
         token,
         context.abortSignal,
       );
-      const pull = await client.draftPull(
+      const pull = await client.workPull(
         token,
         repository,
         branch,
@@ -424,7 +494,8 @@ export function githubExtension(
         operation.body,
         context.abortSignal,
       );
-      await api.commit(async (tx) => {
+      const thread = `github:${repository.full_name}#${pull.number}`;
+      const following = await api.commit(async (tx) => {
         const doc = await tx.doc(Workspace, api.conversationId);
         const current = stateSchema.parse(doc);
         const { pending: _pending, fetched: _fetched, ...completed } = saved;
@@ -433,6 +504,7 @@ export function githubExtension(
           published: operation.sha,
         };
         doc.checkouts = current.checkouts;
+        return subscribe(tx, api.conversationId, thread);
       }, context);
       return text({
         repository: repository.full_name,
@@ -440,8 +512,10 @@ export function githubExtension(
         sha: operation.sha,
         pullRequest: pull.html_url,
         number: pull.number,
-        thread: `github:${repository.full_name}#${pull.number}`,
-        note: "Published the saved snapshot. Edits made after a failed publish require another publish call. Follow thread to hear about reviews, comments, CI results and pushes on this pull request.",
+        thread,
+        following,
+        draft: false,
+        note: "Published the saved snapshot, ready for review. Edits made after a failed publish require another publish call. Ticket workers automatically follow this PR; use github_comment to reply on GitHub.",
       });
     },
   });
@@ -468,6 +542,7 @@ export function githubExtension(
           checkout,
           publish,
           fetchWork,
+          comment,
           ...githubReadTools(client, tokenFor),
         ],
         sections: [
@@ -488,6 +563,12 @@ export function githubExtension(
           ),
         ],
       }),
+      start: async (core) => {
+        followThread = core.followThread;
+        return async () => {
+          followThread = undefined;
+        };
+      },
       readOnlyTools: [GITHUB_TOOLS[0], ...GITHUB_READ_TOOLS],
       validateBinding: (binding) => {
         if (readGitHubInstallation(binding) !== installationId) {

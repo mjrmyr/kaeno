@@ -54,6 +54,12 @@ export interface Kaeno {
   router: Engine;
   /** Absent when Kaeno runs without WORK: the router can only answer, not accept tickets. */
   work: Work | undefined;
+  /** Join a thread to this conversation's ticket in the caller's transaction. False outside a ticket. */
+  followThread(
+    tx: Tx,
+    conversation: ConversationId,
+    thread: string,
+  ): Promise<boolean>;
   close(): Promise<void>;
 }
 
@@ -424,6 +430,8 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
     harness,
     router: engine,
     work,
+    followThread: (tx, conversation, thread) =>
+      engine.followConversation(tx, conversation, thread),
     close() {
       closing ??= (async () => {
         stopping.abort();

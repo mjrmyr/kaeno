@@ -43,6 +43,14 @@ it("advertises only selected tools and distinguishes missing assignment from mis
   expect(discovery).not.toContain("Use github_checkout");
   expect(discovery).not.toContain("Use github_publish");
   expect(discovery).not.toContain("Use github_fetch");
+  expect(discovery).not.toContain("Use github_comment");
+  const publishing = githubPrompt(["github_publish"], true);
+  expect(publishing).toContain("ready-for-review");
+  expect(publishing).toContain("automatically follows");
+  expect(publishing).not.toContain("Use github_comment");
+  const commenting = githubPrompt(["github_comment"], true);
+  expect(commenting).toContain("Use github_comment");
+  expect(commenting).toContain("do not post on GitHub");
   const fetching = githubPrompt(["github_fetch"], true);
   expect(fetching).toContain("refs/remotes/kaeno/work");
   expect(fetching).toContain("merge or rebase");

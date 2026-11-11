@@ -793,6 +793,20 @@ export class Engine {
       await this.unsubscribe(tx, ticketId, key);
     }
   }
+  /** Subscribe the publishing conversation's ticket, if it belongs to one. */
+  async followConversation(
+    tx: Tx,
+    conversation: ConversationId,
+    thread: string,
+  ): Promise<boolean> {
+    const { ticket } = await tx.doc(TicketRef, conversation);
+    if (!ticket) {
+      return false;
+    }
+    await this.follow(tx, ticket, thread);
+    return true;
+  }
+
   async follow(tx: Tx, ticketId: string, thread: string): Promise<void> {
     const ticket = await tx.doc(TicketDoc, ticketId, null);
     const record = await tx.doc(ThreadDoc, thread, thread);

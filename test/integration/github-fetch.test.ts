@@ -23,7 +23,8 @@ import {
   HostGit,
   type RepositoryTransport,
 } from "../../src/extensions/github/index.ts";
-import { ask } from "../mocks/router.ts";
+import { ask, startTicket, until } from "../mocks/router.ts";
+import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 
 const execute = promisify(execFile);
 const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
@@ -51,7 +52,7 @@ async function git(path: string, ...args: string[]) {
   return result.stdout.trim();
 }
 
-async function fixture() {
+async function fixture(options: { work?: boolean } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-github-fetch-"));
   const remote = join(directory, "remote.git");
   const owner = join(directory, "owner");
@@ -77,6 +78,8 @@ async function fixture() {
     ),
   };
   let pull: JsonObject | undefined;
+  const comments: JsonObject[] = [];
+  let loseCommentResponse = false;
   const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
     const url = new URL(String(input));
     if (url.pathname.endsWith("/access_tokens")) {
@@ -89,17 +92,44 @@ async function fixture() {
     if (url.pathname === "/repos/owner/private/pulls") {
       if (init?.method === "POST") {
         const args = JSON.parse(String(init.body));
+        expect(args.draft).toBe(false);
         pull = {
           number: 12,
+          node_id: "PR_node",
           html_url: "https://github.com/owner/private/pull/12",
           state: "open",
-          draft: true,
+          draft: false,
           head: { ref: args.head, repo: { id: 34 } },
           base: { ref: args.base },
         };
         return Response.json(pull);
       }
       return Response.json(pull ? [pull] : []);
+    }
+    if (url.pathname === "/repos/owner/private/pulls/12") {
+      return Response.json({
+        ...pull,
+        title: "Changes",
+        merged: false,
+        head: { ref: "work", sha: "a".repeat(40), repo: repository },
+        base: { ref: "main", sha: "b".repeat(40), repo: repository },
+      });
+    }
+    if (url.pathname === "/repos/owner/private/issues/12/comments") {
+      if (init?.method === "POST") {
+        const comment = {
+          id: comments.length + 1,
+          html_url: `https://github.com/owner/private/pull/12#issuecomment-${comments.length + 1}`,
+          ...JSON.parse(String(init.body)),
+        };
+        comments.push(comment);
+        if (loseCommentResponse) {
+          loseCommentResponse = false;
+          throw new Error("lost comment response");
+        }
+        return Response.json(comment);
+      }
+      return Response.json(comments);
     }
     throw new Error(`Unexpected GitHub request: ${url.pathname}`);
   });
@@ -124,6 +154,26 @@ async function fixture() {
         bindings: [githubBinding(12)],
       },
       extensions: [{ ...extension.runtime, environment: () => env }],
+      ...(options.work
+        ? {
+            work: {
+              agents: [
+                {
+                  id: "coder",
+                  description: "Codes",
+                  setup: {
+                    model: { provider: "faux", modelId: "faux-1" },
+                    instructions: "WORKER",
+                    tools: [...GITHUB_TOOLS],
+                    bindings: [githubBinding(12)],
+                  },
+                },
+              ],
+              tools: [...GITHUB_TOOLS],
+              maxConcurrent: 1,
+            },
+          }
+        : {}),
     });
   }
   let core = await open();
@@ -164,7 +214,9 @@ async function fixture() {
     expect(result.text).not.toContain("host-only-token");
     return JSON.parse(content[0].text);
   }
-  const checkout = await call("github_checkout");
+  const checkout = options.work
+    ? { path: directory }
+    : await call("github_checkout");
   const path = String(checkout.path);
   async function publish() {
     return call("github_publish", {
@@ -200,6 +252,15 @@ async function fixture() {
     publish,
     initialPublish,
     ownerPush,
+    faux,
+    comments,
+    fetch,
+    get core() {
+      return core;
+    },
+    loseCommentResponse() {
+      loseCommentResponse = true;
+    },
     async restart() {
       await core.close();
       core = await open();
@@ -430,6 +491,159 @@ it("rejects fetching before publication and rejects deleted or rewritten work br
     await expect(fx.call("github_fetch")).rejects.toThrow(
       "Git operation failed",
     );
+  } finally {
+    await fx.close();
+  }
+});
+
+it("automatically follows a published PR, survives restart, and wakes its worker to comment without follow_thread", async () => {
+  const fx = await fixture({ work: true });
+  let step = 0;
+  let published: JsonObject | undefined;
+  fx.faux.setResponses(
+    Array.from({ length: 40 }, () => async (request) => {
+      if (!getCurrentSystemPrompt(request.messages).includes("WORKER")) {
+        return fauxAssistantMessage("Noted");
+      }
+      const last = request.messages.findLast(
+        (message) => message.role === "toolResult",
+      );
+      function call(name: string, args: JsonObject) {
+        return fauxAssistantMessage([fauxToolCall(name, args)], {
+          stopReason: "toolUse",
+        });
+      }
+      if (step++ === 0) {
+        return call("github_checkout", { repository: 34 });
+      }
+      if (step === 2) {
+        if (
+          last?.role !== "toolResult" ||
+          last.isError ||
+          last.content[0]?.type !== "text"
+        ) {
+          throw new Error(`checkout failed: ${JSON.stringify(last)}`);
+        }
+        const checkout = JSON.parse(last.content[0].text);
+        await writeFile(join(checkout.path, "worker.txt"), "worker change\n");
+        return call("github_publish", {
+          repository: 34,
+          title: "Changes",
+          body: "Tested",
+        });
+      }
+      if (step === 3) {
+        if (
+          last?.role !== "toolResult" ||
+          last.isError ||
+          last.content[0]?.type !== "text"
+        ) {
+          throw new Error(`publish failed: ${JSON.stringify(last)}`);
+        }
+        published = JSON.parse(last.content[0].text);
+        return fauxAssistantMessage("Published");
+      }
+      if (step === 4) {
+        return call("github_comment", {
+          repository: 34,
+          pullRequest: 12,
+          body: "Checked residual references; no further code changes needed.",
+        });
+      }
+      return fauxAssistantMessage("Replied on GitHub");
+    }),
+  );
+  try {
+    const ticket = await startTicket(fx.core, {
+      agent: "coder",
+      content: "Publish changes",
+    });
+    await until(
+      async () =>
+        (await fx.core.router.ticket(ticket, context)).status === "idle",
+      "worker to publish",
+    );
+    expect(published).toMatchObject({
+      following: true,
+      draft: false,
+      thread: "github:owner/private#12",
+    });
+    expect((await fx.core.router.ticket(ticket, context)).followed).toEqual([
+      "github:owner/private#12",
+    ]);
+    await fx.restart();
+    const result = await fx.core.harness.commit(
+      (tx) =>
+        fx.core.router.receive(tx, {
+          key: "github:comment-1",
+          source: "github",
+          threads: ["github:owner/private#12"],
+          actor: "owner",
+          authority: "system",
+          content: "Any residual references?",
+        }),
+      context,
+    );
+    expect(result.path).toBe("tickets");
+    await until(() => fx.comments.length === 1, "worker to post a PR reply");
+    await until(
+      async () =>
+        (await fx.core.router.ticket(ticket, context)).status === "idle",
+      "worker to settle",
+    );
+    const saved = await fx.core.router.ticket(ticket, context);
+    expect(saved.assignments).toHaveLength(2);
+    expect(saved.systemWakes).toBe(1);
+    expect(fx.comments[0].body).toContain("Checked residual references");
+    const duplicate = await fx.core.harness.commit(
+      (tx) =>
+        fx.core.router.receive(tx, {
+          key: "github:comment-1",
+          source: "github",
+          threads: ["github:owner/private#12"],
+          actor: "owner",
+          authority: "system",
+          content: "Any residual references?",
+        }),
+      context,
+    );
+    expect(duplicate.duplicate).toBe(true);
+    expect(fx.comments).toHaveLength(1);
+  } finally {
+    await fx.close();
+  }
+});
+
+it("reconciles a posted PR comment after response loss, restart and a fresh tool call", async () => {
+  const fx = await fixture();
+  try {
+    const published = await fx.initialPublish();
+    expect(published.following).toBe(false); // A standalone assistant has no ticket.
+    fx.loseCommentResponse();
+    await expect(
+      fx.call("github_comment", {
+        repository: 34,
+        pullRequest: 12,
+        body: "Review addressed",
+      }),
+    ).rejects.toThrow("request failed");
+    expect(fx.comments).toHaveLength(1);
+    await fx.restart();
+    const comment = await fx.call("github_comment", {
+      repository: 34,
+      pullRequest: 12,
+      body: "New text after failed attempt",
+    });
+    expect(comment.id).toBe(1);
+    expect(fx.comments).toHaveLength(1);
+    expect(fx.comments[0].body).toContain("Review addressed");
+    await fx.call("github_comment", {
+      repository: 34,
+      pullRequest: 12,
+      body: "Another intentional reply",
+    });
+    expect(fx.comments).toHaveLength(2);
+    expect(fx.comments[1].body).toContain("Another intentional reply");
   } finally {
     await fx.close();
   }
