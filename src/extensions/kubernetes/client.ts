@@ -1,6 +1,5 @@
-import { request as httpsRequest } from "node:https";
-import { request as httpRequest } from "node:http";
 import { z } from "zod";
+import { apiRequest, type ApiOptions } from "./api.ts";
 
 const containerStatus = z.object({
   name: z.string(),
@@ -60,13 +59,8 @@ export class ApiError extends Error {
   }
 }
 
-/** Token is read for every request so projected service-account rotation is respected. */
-interface ClientOptions {
-  api: string;
+interface ClientOptions extends ApiOptions {
   namespace: string;
-  readToken(): Promise<string>;
-  ca?: string;
-  fetch?: typeof globalThis.fetch;
 }
 export class KubernetesClient {
   private readonly options: ClientOptions;
@@ -80,69 +74,16 @@ export class KubernetesClient {
     body?: unknown,
     signal?: AbortSignal,
   ): Promise<unknown> {
-    const token = (await this.options.readToken()).trim();
     // Relative paths are namespace-local core resources; absolute paths are cluster-scoped.
-    const url = path.startsWith("/")
-      ? `${this.options.api}${path}`
-      : `${this.options.api}/api/v1/namespaces/${this.options.namespace}/${path}`;
-    const headers = {
-      authorization: `Bearer ${token}`,
-      "content-type": "application/json",
-      accept: "application/json",
-    };
-    const requestSignal = signal
-      ? AbortSignal.any([signal, AbortSignal.timeout(30_000)])
-      : AbortSignal.timeout(30_000);
-    const textBody = body === undefined ? undefined : JSON.stringify(body);
-    let status: number;
-    let text: string;
-    if (this.options.fetch) {
-      const response = await this.options.fetch(url, {
-        method,
-        headers,
-        body: textBody,
-        signal: requestSignal,
-      });
-      status = response.status;
-      text = await response.text();
-    } else {
-      // Native HTTPS supports a cluster's private CA without disabling certificate verification.
-      const result = await new Promise<{ status: number; text: string }>(
-        (resolve, reject) => {
-          const transport =
-            new URL(url).protocol === "https:" ? httpsRequest : httpRequest;
-          const request = transport(
-            url,
-            { method, headers, ca: this.options.ca, signal: requestSignal },
-            (response) => {
-              const chunks: Buffer[] = [];
-              let bytes = 0;
-              response.on("data", (chunk: Buffer) => {
-                bytes += chunk.length;
-                if (bytes > 4 * 1024 * 1024) {
-                  response.destroy(
-                    new Error("Kubernetes response exceeds 4 MiB"),
-                  );
-                } else {
-                  chunks.push(chunk);
-                }
-              });
-              response.on("error", reject);
-              response.on("end", () =>
-                resolve({
-                  status: response.statusCode ?? 500,
-                  text: Buffer.concat(chunks).toString("utf8"),
-                }),
-              );
-            },
-          );
-          request.on("error", reject);
-          request.end(textBody);
-        },
-      );
-      status = result.status;
-      text = result.text;
-    }
+    const { status, text } = await apiRequest(
+      this.options,
+      method,
+      path.startsWith("/")
+        ? path
+        : `/api/v1/namespaces/${this.options.namespace}/${path}`,
+      body,
+      signal,
+    );
     if (status === 404 && (method === "GET" || method === "DELETE")) {
       return undefined;
     }

@@ -27,7 +27,7 @@ export KAENO_DATA_DIR="$PWD/.kaeno/data"
 npm start
 ```
 
-Kaeno (the router) has the routing tools by default: `route`, `reply`, `recall`, `list_tickets`, `message_ticket` and `stop_ticket`, plus owner memory, routine proposals and skills. It has no execution tools: GitHub, Zotero, MCP, browser and coding tools belong to workers, and an assistant profile that lists one fails startup. With no workers configured, it answers but cannot accept tickets. Explicit `tools` lists remain authoritative.
+Kaeno (the router) has the routing tools by default: `route`, `reply`, `recall`, `list_tickets`, `message_ticket` and `stop_ticket`, plus owner memory, routine proposals and skills. Read-only cluster observer tools are defaults for Kaeno too. It has no execution tools: GitHub, Zotero, MCP, browser and coding tools belong to workers, and an assistant profile that lists one fails startup. With no workers configured, it answers but cannot accept tickets. Explicit `tools` lists remain authoritative.
 
 Edit `kaeno.config.example.json` to choose repositories, a Kaeno profile and worker profiles. The example pins a Myriad profile commit; update the pin intentionally when selecting a newer revision. Copy the configuration locally and use a persistent source cache. Each repository declaration explicitly selects a definition-reader `provider`: `github` for public repositories, or `github-app-<installationId>` for the host-only App reader configured by `KAENO_GITHUB_CONFIG`. Both are provided by the installed GitHub integration; public definitions require no App key or GitHub agent tools. Older shorthand/provider-less declarations need conversion and one source refresh before offline use; see [definition readers](docs/extensions.md#definition-readers).
 
@@ -100,7 +100,7 @@ sig=$(printf %s "$body" | node -e 'const { readFileSync } = require("node:fs"); 
 curl -X POST localhost:8081/hooks/homelab -H "X-Kaeno-Signature-256: sha256=$sig" -d "$body"
 ```
 
-A `github` source takes GitHub's own webhook deliveries for pull requests, reviews, comments, issues and CI runs; see [Events from GitHub](docs/github.md#events-from-github).
+A `github` source takes GitHub's own webhook deliveries for pull requests, reviews, comments, issues and CI runs; see [Events from GitHub](docs/github.md#events-from-github). An `alertmanager` source takes Prometheus Alertmanager's notifications; see [Alerts from Alertmanager](docs/cluster-observer.md#alerts-from-alertmanager).
 
 `trust` decides who counts as one of your systems: `"all"` for a source only you send to, or `{ "actors": [...] }` for a source that also relays other people's events. Your systems' events reach and wake the tickets following their thread (`homelab:backups`), labelled as data: they grant nothing and answer no question. Anyone else's never reach a worker. `id` deduplicates redeliveries; `"closes": true` ends every ticket's subscription to the thread after delivering the event. See [who can reach a worker](docs/routing.md#who-can-reach-a-worker).
 
@@ -192,6 +192,10 @@ The optional Zotero extension gives Kaeno and every worker read-only access to o
 ```
 
 `id` is the numeric userID shown at <https://www.zotero.org/settings/keys>, or a group ID with `"type": "group"`. `apiKeyFile` resolves next to the config and holds a private key with library read access. The key stays on the host and is read once at startup.
+
+## Kubernetes cluster
+
+The optional [cluster observer](docs/cluster-observer.md) gives Kaeno and every worker read-only views of the owner's Kubernetes cluster: overview, objects, events, resource usage and, in allowed namespaces, redacted logs. Secrets, ConfigMaps, environment values, command arguments and annotations never reach a model. Set `KAENO_CLUSTER_CONFIG` to an owner-controlled file and apply its RBAC manifest.
 
 ## Owner-configured MCP tools
 

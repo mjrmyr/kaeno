@@ -30,7 +30,10 @@ import { Routines, RoutineStore } from "../extensions/routines/index.ts";
 import { loadZoteroConfiguration } from "../extensions/zotero/index.ts";
 import { browserExtension } from "../extensions/browser/index.ts";
 import { dockerExecutionProvider } from "../extensions/docker/index.ts";
-import { kubernetesExecutionProvider } from "../extensions/kubernetes/index.ts";
+import {
+  kubernetesExecutionProvider,
+  loadClusterObserverConfiguration,
+} from "../extensions/kubernetes/index.ts";
 import { microsandboxExecutionProvider } from "../extensions/microsandbox/index.ts";
 
 const token = process.env.KAENO_TOKEN ?? "";
@@ -70,6 +73,15 @@ const zoteroTools = process.env.KAENO_ZOTERO_CONFIG
       },
     ]
   : [];
+const clusterTools = process.env.KAENO_CLUSTER_CONFIG
+  ? [
+      {
+        runtime: await loadClusterObserverConfiguration(
+          process.env.KAENO_CLUSTER_CONFIG,
+        ),
+      },
+    ]
+  : [];
 const configuration = await loadEnvironment({
   extensions: [
     ...githubExtensions,
@@ -77,12 +89,23 @@ const configuration = await loadEnvironment({
     memoryTools,
     routineTools,
     ...zoteroTools,
+    ...clusterTools,
     ...(mcp?.extensions ?? []),
   ],
   policy: (base) => ({
     assistant: {
-      available: [...base.assistant.available, memoryTools, routineTools],
-      defaults: [...base.assistant.defaults, memoryTools, routineTools],
+      available: [
+        ...base.assistant.available,
+        memoryTools,
+        routineTools,
+        ...clusterTools,
+      ],
+      defaults: [
+        ...base.assistant.defaults,
+        memoryTools,
+        routineTools,
+        ...clusterTools,
+      ],
     },
     worker: {
       available: [
@@ -90,6 +113,7 @@ const configuration = await loadEnvironment({
         ...githubExtensions,
         browser.extension,
         ...zoteroTools,
+        ...clusterTools,
         ...(mcp?.policy.worker.available ?? []),
       ],
       defaults: [
@@ -97,6 +121,7 @@ const configuration = await loadEnvironment({
         ...githubExtensions,
         browser.live,
         ...zoteroTools,
+        ...clusterTools,
         ...(mcp?.policy.worker.defaults ?? []),
       ],
     },

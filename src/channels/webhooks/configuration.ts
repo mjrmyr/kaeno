@@ -1,8 +1,13 @@
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { z } from "zod";
+import { ALERTMANAGER, alertmanagerAdapter } from "./alertmanager.ts";
 import { githubAdapter } from "./github.ts";
-import { genericAdapter, type WebhookSource } from "./webhooks.ts";
+import {
+  genericAdapter,
+  type WebhookAdapter,
+  type WebhookSource,
+} from "./webhooks.ts";
 
 const RESERVED = ["telegram", "pi", "http"];
 
@@ -43,6 +48,13 @@ const configSchema = z
               ...sourceFields,
             })
             .strict(),
+          z
+            .object({
+              kind: z.literal(ALERTMANAGER),
+              name: z.literal(ALERTMANAGER),
+              ...sourceFields,
+            })
+            .strict(),
         ]),
       )
       .min(1)
@@ -53,6 +65,20 @@ const configSchema = z
       ),
   })
   .strict();
+
+function adapterOf(
+  source: z.output<typeof configSchema>["sources"][number],
+  secret: string,
+): WebhookAdapter {
+  switch (source.kind) {
+    case "github":
+      return githubAdapter(secret, source.self);
+    case ALERTMANAGER:
+      return alertmanagerAdapter(secret);
+    case "generic":
+      return genericAdapter(secret);
+  }
+}
 
 /** Owner configuration and host-only secrets; never included in agent setup or prompts. */
 export async function loadWebhooks(
@@ -78,10 +104,7 @@ export async function loadWebhooks(
     }
     sources.push({
       name: source.name,
-      adapter:
-        source.kind === "github"
-          ? githubAdapter(secret, source.self)
-          : genericAdapter(secret),
+      adapter: adapterOf(source, secret),
       trust: source.trust,
     });
   }

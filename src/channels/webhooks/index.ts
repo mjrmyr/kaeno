@@ -12,3 +12,4 @@ export type {
 } from "./webhooks.ts";
 export { GITHUB_ACTIONS, githubAdapter } from "./github.ts";
 export { loadWebhooks } from "./configuration.ts";
+export { ALERTMANAGER, alertmanagerAdapter } from "./alertmanager.ts";

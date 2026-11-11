@@ -1,0 +1,72 @@
+# Read-only cluster observation for the Kaeno host, owned/applied by the operator, not Kaeno.
+# Binds to the host's existing service account; change names/namespace to match your deployment.
+# Deliberately absent: secrets, configmaps, serviceaccounts/token, pods/exec, pods/attach,
+# pods/portforward, nodes/proxy, services/proxy, watch and every write verb.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kaeno-observer
+rules:
+  - apiGroups: [""]
+    resources:
+      [
+        nodes,
+        namespaces,
+        pods,
+        services,
+        events,
+        persistentvolumeclaims,
+        persistentvolumes,
+      ]
+    verbs: [get, list]
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets, daemonsets, replicasets]
+    verbs: [get, list]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses]
+    verbs: [get, list]
+  - apiGroups: [metrics.k8s.io]
+    resources: [nodes, pods]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kaeno-observer
+subjects:
+  - kind: ServiceAccount
+    name: kaeno-kubernetes-host
+    namespace: kaeno
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kaeno-observer
+---
+# Logs: one Role + RoleBinding per namespace listed in logs.namespaces, so the cluster
+# enforces the same allowlist as Kaeno. Repeat for each namespace (here: apps).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kaeno-observer-logs
+  namespace: apps
+rules:
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kaeno-observer-logs
+  namespace: apps
+subjects:
+  - kind: ServiceAccount
+    name: kaeno-kubernetes-host
+    namespace: kaeno
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kaeno-observer-logs

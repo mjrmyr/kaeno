@@ -101,10 +101,9 @@ function requiredQuantity(text: string, what: string): bigint {
   return value;
 }
 
-function quantity(text: string): bigint | undefined {
-  const match = /^(\d+)(?:\.(\d+))?(m|Ki|Mi|Gi|Ti|Pi|Ei|k|M|G|T|P|E)?$/.exec(
-    text,
-  );
+export function quantity(text: string): bigint | undefined {
+  const match =
+    /^(\d+)(?:\.(\d+))?(n|u|m|Ki|Mi|Gi|Ti|Pi|Ei|k|M|G|T|P|E)?$/.exec(text);
   if (!match) {
     return undefined;
   }
@@ -113,7 +112,11 @@ function quantity(text: string): bigint | undefined {
   let denominator = 10n ** BigInt(fraction.length);
   const binary = ["Ki", "Mi", "Gi", "Ti", "Pi", "Ei"];
   const decimal = ["k", "M", "G", "T", "P", "E"];
-  if (suffix === "m") {
+  if (suffix === "n") {
+    denominator *= 1_000_000_000n;
+  } else if (suffix === "u") {
+    denominator *= 1_000_000n;
+  } else if (suffix === "m") {
     denominator *= 1000n;
   } else if (binary.includes(suffix)) {
     numerator *= 1024n ** BigInt(binary.indexOf(suffix) + 1);
