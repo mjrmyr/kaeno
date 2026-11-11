@@ -273,6 +273,24 @@ async function fixture(options: { work?: boolean } = {}) {
   };
 }
 
+it("publishes snapshots with the kaeno bot author and committer identity", async () => {
+  const fx = await fixture();
+  try {
+    const published = await fx.initialPublish();
+    expect(
+      await git(
+        fx.remote,
+        "show",
+        "-s",
+        "--format=%an <%ae>%n%cn <%ce>",
+        String(published.sha),
+      ),
+    ).toBe("kaeno <bot@kaeno.io>\nkaeno <bot@kaeno.io>");
+  } finally {
+    await fx.close();
+  }
+});
+
 it("fetches without touching local edits, survives restart, and publishes on the incorporated owner's commit", async () => {
   const fx = await fixture();
   try {
