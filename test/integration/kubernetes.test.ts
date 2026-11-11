@@ -18,6 +18,7 @@ import {
   defineTool,
   Harness,
   MemoryStorage,
+  type ConversationId,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createServer } from "node:http";
@@ -47,20 +48,36 @@ const resources = {
   requests: { cpu: "100m", memory: "128Mi" },
   limits: { cpu: "1", memory: "1Gi" },
 };
-const manifestSchema = z
+const metadataSchema = z.object({
+  name: z.string(),
+  labels: z.record(z.string(), z.string()),
+  annotations: z.record(z.string(), z.string()),
+});
+const podSpecSchema = z
   .object({
-    metadata: z.object({
-      name: z.string(),
-      labels: z.record(z.string(), z.string()),
-      annotations: z.record(z.string(), z.string()),
-    }),
+    runtimeClassName: z.string().optional(),
+    containers: z.array(z.object({ image: z.string() }).passthrough()),
+  })
+  .passthrough();
+const podSchema = z
+  .object({ metadata: metadataSchema, spec: podSpecSchema })
+  .passthrough();
+const sandboxSchema = z
+  .object({
+    metadata: metadataSchema,
     spec: z
       .object({
-        containers: z.array(z.object({ image: z.string() }).passthrough()),
+        operatingMode: z.enum(["Running", "Suspended"]),
+        podTemplate: z.object({
+          metadata: z.object({ labels: z.record(z.string(), z.string()) }),
+          spec: podSpecSchema,
+        }),
       })
       .passthrough(),
   })
   .passthrough();
+type PodManifest = z.infer<typeof podSchema>;
+type SandboxManifest = z.infer<typeof sandboxSchema>;
 const Hold = defineTask<null, { phase: "hold" }, null>({
   name: "kubernetes-test.hold",
   version: 1,
@@ -91,19 +108,106 @@ afterEach(async () => {
   }
 });
 
+function sandboxName(work: WorkInstance): string {
+  return `owner-conv-${work.conversationId}`;
+}
+
 function cluster() {
-  const pods = new Map<string, z.infer<typeof manifestSchema>>();
+  const sandboxes = new Map<string, SandboxManifest>();
+  const pods = new Map<string, PodManifest>();
+  const claims = new Set<string>();
+  const controlled = new Set<string>();
   let quota: Record<string, string> = { pods: "1" };
   let waitingReason: string | undefined;
   let status = "Running";
   let ready = true;
   let postStatus = 201;
   let deleting = false;
+  let blocked: string | undefined;
   let rejectDelete: string | undefined;
   let statusReason: string | undefined;
   let token = "cluster-secret";
   const runtimeClasses = new Map<string, Record<string, string>>();
   const requests: { method: string; path: string; body: string }[] = [];
+  function control() {
+    for (const [name, sandbox] of sandboxes) {
+      if (sandbox.spec.operatingMode === "Suspended") {
+        if (!deleting) {
+          pods.delete(name);
+        }
+      } else if (!pods.has(name) && !blocked) {
+        claims.add(`state-${name}`);
+        controlled.add(name);
+        pods.set(name, {
+          metadata: {
+            name,
+            labels: { ...sandbox.spec.podTemplate.metadata.labels },
+            annotations: {},
+          },
+          spec: structuredClone(sandbox.spec.podTemplate.spec),
+        });
+      }
+    }
+    if (!deleting) {
+      for (const name of controlled) {
+        if (!sandboxes.has(name)) {
+          pods.delete(name);
+          claims.delete(`state-${name}`);
+          controlled.delete(name);
+        }
+      }
+    }
+  }
+  function wirePod(pod: PodManifest) {
+    return {
+      ...pod,
+      status: {
+        phase: status,
+        reason: statusReason,
+        conditions: ready ? [{ type: "Ready", status: "True" }] : [],
+        containerStatuses: waitingReason
+          ? [{ name: "envd", state: { waiting: { reason: waitingReason } } }]
+          : [],
+      },
+    };
+  }
+  function wireSandbox(sandbox: SandboxManifest) {
+    const name = sandbox.metadata.name;
+    const running = sandbox.spec.operatingMode === "Running";
+    const pod = pods.get(name);
+    let readiness: Record<string, string> = {
+      type: "Ready",
+      status: "False",
+      reason: "DependenciesNotReady",
+    };
+    if (!running) {
+      readiness = { ...readiness, reason: "SandboxSuspended" };
+    } else if (blocked) {
+      readiness = { ...readiness, reason: "ReconcilerError", message: blocked };
+    } else if (pod && ready && status === "Running") {
+      readiness = {
+        type: "Ready",
+        status: "True",
+        reason: "DependenciesReady",
+      };
+    }
+    return {
+      ...sandbox,
+      status: {
+        ...(running ? { serviceFQDN: `${name}.test.svc.cluster.local` } : {}),
+        conditions: [
+          readiness,
+          { type: "Suspended", status: !running && !pod ? "True" : "False" },
+        ],
+      },
+    };
+  }
+  function ownerFilter(url: URL) {
+    const selector = url.searchParams.get("labelSelector") ?? "";
+    const owner = /kaeno.io\/owner=([^,]+)/.exec(selector)?.[1];
+    return (labels: Record<string, string>) =>
+      !owner || labels["kaeno.io/owner"] === owner;
+  }
   const api = vi.fn<typeof fetch>(async (input, init) => {
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
@@ -113,6 +217,7 @@ function cluster() {
     expect(new Headers(init?.headers).get("authorization")).toBe(
       `Bearer ${token}`,
     );
+    control();
     const runtimeClass =
       /^\/apis\/node\.k8s\.io\/v1\/runtimeclasses\/(.+)$/.exec(path)?.[1];
     if (runtimeClass !== undefined) {
@@ -124,58 +229,77 @@ function cluster() {
     if (path.includes("resourcequotas")) {
       return Response.json({ spec: { scopes: ["Terminating"], hard: quota } });
     }
-    if (method === "POST") {
-      if (postStatus !== 201) {
-        return new Response(`exceeded quota ${token} ${body}`, {
-          status: postStatus,
+    const sandboxPath =
+      /^\/apis\/agents\.x-k8s\.io\/v1beta1\/namespaces\/test\/sandboxes(?:\/([^/]+))?$/.exec(
+        path,
+      );
+    if (sandboxPath) {
+      const name = sandboxPath[1];
+      if (method === "POST") {
+        if (postStatus !== 201) {
+          return new Response(`exceeded quota ${token} ${body}`, {
+            status: postStatus,
+          });
+        }
+        const sandbox = sandboxSchema.parse(JSON.parse(body));
+        if (sandboxes.has(sandbox.metadata.name)) {
+          return new Response(null, { status: 409 });
+        }
+        sandboxes.set(sandbox.metadata.name, sandbox);
+        control();
+        return Response.json(sandbox, { status: 201 });
+      }
+      if (name === undefined) {
+        const owned = ownerFilter(url);
+        return Response.json({
+          items: [...sandboxes.values()]
+            .filter((sandbox) => owned(sandbox.metadata.labels))
+            .map(wireSandbox),
         });
       }
-      const pod = manifestSchema.parse(JSON.parse(body));
-      if (pods.has(pod.metadata.name)) {
-        return new Response(null, { status: 409 });
+      const sandbox = sandboxes.get(name);
+      if (method === "DELETE") {
+        if (name === rejectDelete) {
+          return new Response(null, { status: 403 });
+        }
+        sandboxes.delete(name);
+        control();
+        return new Response(null, { status: 200 });
       }
-      pods.set(pod.metadata.name, pod);
-      return Response.json(pod, { status: 201 });
+      if (!sandbox) {
+        return new Response(null, { status: 404 });
+      }
+      if (method === "PATCH") {
+        expect(new Headers(init?.headers).get("content-type")).toBe(
+          "application/merge-patch+json",
+        );
+        sandbox.spec.operatingMode = z
+          .object({
+            spec: z.object({ operatingMode: z.enum(["Running", "Suspended"]) }),
+          })
+          .parse(JSON.parse(body)).spec.operatingMode;
+        control();
+      }
+      return Response.json(wireSandbox(sandbox));
     }
     const name = path.split("/").at(-1) ?? "";
-    if (method === "DELETE") {
-      if (name === rejectDelete) {
-        return new Response(null, { status: 403 });
-      }
-      if (!deleting) {
-        pods.delete(name);
-      }
-      return new Response(null, { status: 200 });
-    }
-    function wire(pod: z.infer<typeof manifestSchema>) {
-      return {
-        ...pod,
-        status: {
-          phase: status,
-          reason: statusReason,
-          conditions: ready ? [{ type: "Ready", status: "True" }] : [],
-          containerStatuses: waitingReason
-            ? [{ name: "envd", state: { waiting: { reason: waitingReason } } }]
-            : [],
-        },
-      };
-    }
     if (name === "pods") {
-      const selector = url.searchParams.get("labelSelector") ?? "";
-      const owner = /kaeno.io\/owner=([^,]+)/.exec(selector)?.[1];
+      const owned = ownerFilter(url);
       return Response.json({
         items: [...pods.values()]
-          .filter(
-            (pod) => !owner || pod.metadata.labels["kaeno.io/owner"] === owner,
-          )
-          .map(wire),
+          .filter((pod) => owned(pod.metadata.labels))
+          .map(wirePod),
       });
     }
     const pod = pods.get(name);
-    return pod ? Response.json(wire(pod)) : new Response(null, { status: 404 });
+    return pod
+      ? Response.json(wirePod(pod))
+      : new Response(null, { status: 404 });
   });
   return {
+    sandboxes,
     pods,
+    claims,
     api,
     requests,
     quota: (value: typeof quota) => {
@@ -199,6 +323,14 @@ function cluster() {
     },
     deleting: (value: boolean) => {
       deleting = value;
+    },
+    blocked: (message?: string) => {
+      blocked = message;
+    },
+    lose: () => {
+      sandboxes.clear();
+      pods.clear();
+      claims.clear();
     },
     runtimeClass: (name: string, podFixed: Record<string, string>) => {
       runtimeClasses.set(name, podFixed);
@@ -233,26 +365,49 @@ async function fixture(overrides: Partial<KubernetesExtensionOptions> = {}) {
     context,
   );
   cleanups.push(() => harness.close(context));
-  async function work(): Promise<WorkInstance> {
-    const conversation = await harness.createConversation(
-      { ownership: { kind: "ownerless" } },
-      context,
-    );
+  async function work(conversationId?: ConversationId): Promise<WorkInstance> {
+    const conversation =
+      conversationId ??
+      (
+        await harness.createConversation(
+          { ownership: { kind: "ownerless" } },
+          context,
+        )
+      ).id;
     const workId = await harness.commit(
       (tx) =>
         tx.createTask(Hold, null, {
           ownership: { kind: "conversation" },
-          conversationId: conversation.id,
+          conversationId: conversation,
           background: true,
         }),
       context,
     );
-    return { workId, conversationId: conversation.id };
+    return { workId, conversationId: conversation };
   }
   return { ...extension, server, harness, work, options };
 }
 
-it("creates isolated pods, reuses identity, rotates credentials, and releases idempotently", async () => {
+function count(
+  rig: { server: { requests: { method: string }[] } },
+  method: string,
+): number {
+  return rig.server.requests.filter((request) => request.method === method)
+    .length;
+}
+
+function sandboxOf(
+  rig: { server: { sandboxes: Map<string, SandboxManifest> } },
+  work: WorkInstance,
+): SandboxManifest {
+  const sandbox = rig.server.sandboxes.get(sandboxName(work));
+  if (!sandbox) {
+    throw new Error(`Missing sandbox ${sandboxName(work)}`);
+  }
+  return sandbox;
+}
+
+it("declares an isolated Sandbox with a workspace volume, reuses identity, rotates credentials, and releases idempotently", async () => {
   const rig = await fixture();
   const work = await rig.work();
   await rig.environment.ensure(work, rig.harness, context);
@@ -260,10 +415,27 @@ it("creates isolated pods, reuses identity, rotates credentials, and releases id
     (request) => request.method === "POST",
   );
   if (!creation) {
-    throw new Error("Missing pod creation");
+    throw new Error("Missing sandbox creation");
   }
+  expect(creation.path).toBe(
+    "/apis/agents.x-k8s.io/v1beta1/namespaces/test/sandboxes",
+  );
   const manifest = JSON.parse(creation.body);
-  expect(manifest.spec).toMatchObject({
+  expect(manifest).toMatchObject({
+    kind: "Sandbox",
+    metadata: { name: sandboxName(work) },
+    spec: {
+      operatingMode: "Running",
+      service: true,
+      volumeClaimTemplates: [
+        {
+          metadata: { name: "state" },
+          spec: { resources: { requests: { storage: "5Gi" } } },
+        },
+      ],
+    },
+  });
+  expect(manifest.spec.podTemplate.spec).toMatchObject({
     automountServiceAccountToken: false,
     enableServiceLinks: false,
     activeDeadlineSeconds: 14400,
@@ -280,26 +452,129 @@ it("creates isolated pods, reuses identity, rotates credentials, and releases id
           allowPrivilegeEscalation: false,
           capabilities: { drop: ["ALL"] },
         },
+        volumeMounts: [
+          { name: "state", mountPath: "/workspace", subPath: "workspace" },
+          { name: "state", mountPath: "/home/agent", subPath: "home" },
+          { name: "tmp", mountPath: "/tmp" },
+        ],
       },
     ],
   });
   expect(JSON.stringify(manifest)).not.toContain("cluster-secret");
   expect(
-    manifest.spec.containers[0].env.map(
+    manifest.spec.podTemplate.spec.containers[0].env.map(
       (entry: { name: string }) => entry.name,
     ),
   ).toEqual(["KAENO_ENV_TOKEN", "HOME", "TMPDIR"]);
   rig.server.rotate();
   await rig.environment.ensure(work, rig.harness, context);
-  expect(
-    rig.server.requests.filter((request) => request.method === "POST"),
-  ).toHaveLength(1);
+  expect(count(rig, "POST")).toBe(1);
   await rig.environment.release(work, rig.harness);
   await rig.environment.release(work, rig.harness);
+  expect(rig.server.sandboxes.size).toBe(0);
   expect(rig.server.pods.size).toBe(0);
+  expect(rig.server.claims.size).toBe(0);
+  expect(count(rig, "DELETE")).toBe(1);
+});
+
+it("suspends a conversation's sandbox, frees its slot, and resumes the same volume for the next WORK", async () => {
+  const rig = await fixture();
+  const first = await rig.work();
+  const name = sandboxName(first);
+  await rig.environment.ensure(first, rig.harness, context);
+  const token = JSON.stringify(rig.server.pods.get(name)?.spec);
+  await rig.environment.suspend?.(first, rig.harness);
+  expect(sandboxOf(rig, first).spec.operatingMode).toBe("Suspended");
+  expect(rig.server.pods.size).toBe(0);
+  expect(rig.server.claims.has(`state-${name}`)).toBe(true);
+
+  const other = await rig.work();
+  await rig.environment.ensure(other, rig.harness, context);
+  await rig.environment.release(other, rig.harness);
+
+  const second = await rig.work(first.conversationId);
+  await rig.environment.ensure(second, rig.harness, context);
+  expect(sandboxOf(rig, second).spec.operatingMode).toBe("Running");
+  expect(JSON.stringify(rig.server.pods.get(name)?.spec)).toBe(token);
+  expect(rig.server.claims.has(`state-${name}`)).toBe(true);
+  expect(count(rig, "POST")).toBe(2);
   expect(
-    rig.server.requests.filter((request) => request.method === "DELETE"),
-  ).toHaveLength(1);
+    rig.server.requests
+      .filter((request) => request.method === "PATCH")
+      .map((request) => JSON.parse(request.body).spec.operatingMode),
+  ).toEqual(["Suspended", "Running"]);
+  expect(
+    await rig.environment.check?.(second, rig.harness, context),
+  ).toBeUndefined();
+});
+
+it("ignores a suspend from a WORK that no longer holds the conversation's sandbox", async () => {
+  const rig = await fixture();
+  const first = await rig.work();
+  const second = await rig.work(first.conversationId);
+  await rig.environment.ensure(first, rig.harness, context);
+  await rig.environment.ensure(second, rig.harness, context);
+  await rig.environment.suspend?.(first, rig.harness);
+  expect(count(rig, "PATCH")).toBe(0);
+  expect(rig.server.pods.size).toBe(1);
+  await rig.environment.suspend?.(second, rig.harness);
+  expect(sandboxOf(rig, second).spec.operatingMode).toBe("Suspended");
+  await rig.environment.suspend?.(second, rig.harness);
+  expect(count(rig, "PATCH")).toBe(1);
+});
+
+it("keeps capacity reserved until a suspended pod has stopped", async () => {
+  const rig = await fixture();
+  const work = await rig.work();
+  await rig.environment.ensure(work, rig.harness, context);
+  rig.server.deleting(true);
+  vi.useFakeTimers();
+  await Promise.all([
+    expect(rig.environment.suspend?.(work, rig.harness)).rejects.toThrow(
+      "capacity remains reserved",
+    ),
+    vi.advanceTimersByTimeAsync(10_000),
+  ]);
+  rig.server.deleting(false);
+  await rig.environment.suspend?.(work, rig.harness);
+  await rig.environment.ensure(await rig.work(), rig.harness, context);
+});
+
+it("suspends retained conversations whose WORK ended and deletes them once no longer retained", async () => {
+  const rig = await fixture();
+  const work = await rig.work();
+  await rig.environment.ensure(work, rig.harness, context);
+  await rig.environment.reconcile([], rig.harness, [work.conversationId]);
+  expect(sandboxOf(rig, work).spec.operatingMode).toBe("Running");
+
+  rig.harness.resume();
+  await rig.harness.waitForTask(work.workId, context);
+  await rig.environment.reconcile([], rig.harness, [work.conversationId]);
+  await rig.environment.reconcile([], rig.harness, [work.conversationId]);
+  expect(sandboxOf(rig, work).spec.operatingMode).toBe("Suspended");
+  expect(rig.server.pods.size).toBe(0);
+  expect(rig.server.claims.size).toBe(1);
+  expect(count(rig, "PATCH")).toBe(1);
+
+  await rig.environment.reconcile([], rig.harness, []);
+  expect(rig.server.sandboxes.size).toBe(0);
+  expect(rig.server.claims.size).toBe(0);
+});
+
+it("fails a wake whose suspended sandbox was deleted instead of recreating an empty workspace", async () => {
+  const rig = await fixture();
+  const first = await rig.work();
+  await rig.environment.ensure(first, rig.harness, context);
+  await rig.environment.suspend?.(first, rig.harness);
+  rig.server.lose();
+  await expect(
+    rig.environment.ensure(
+      await rig.work(first.conversationId),
+      rig.harness,
+      context,
+    ),
+  ).rejects.toThrow("cannot be restored");
+  expect(count(rig, "POST")).toBe(1);
 });
 
 it("queues FIFO against live quota and notices quota increases without restart", async () => {
@@ -312,12 +587,12 @@ it("queues FIFO against live quota and notices quota increases without restart",
   const waiting = rig.environment.ensure(second, rig.harness, context);
   const last = rig.environment.ensure(third, rig.harness, context);
   await vi.advanceTimersByTimeAsync(250);
-  expect(rig.server.pods.size).toBe(1);
+  expect(rig.server.sandboxes.size).toBe(1);
   rig.server.quota({ pods: "2" });
   await vi.advanceTimersByTimeAsync(250);
   await waiting;
-  expect(rig.server.pods.has(`owner-work-${second.workId}`)).toBe(true);
-  expect(rig.server.pods.has(`owner-work-${third.workId}`)).toBe(false);
+  expect(rig.server.pods.has(sandboxName(second))).toBe(true);
+  expect(rig.server.pods.has(sandboxName(third))).toBe(false);
   await rig.environment.release(first, rig.harness);
   await vi.advanceTimersByTimeAsync(250);
   await last;
@@ -357,6 +632,7 @@ it("counts foreign physical pods but only sweeps its own orphans", async () => {
   await rig.harness.waitForTask(first.workId, context);
   await rig.environment.reconcile([], rig.harness, []);
   expect([...rig.server.pods.keys()]).toEqual(["foreign"]);
+  expect(rig.server.sandboxes.size).toBe(0);
 });
 
 it.each(["Running", "Succeeded", "Failed"])(
@@ -371,19 +647,16 @@ it.each(["Running", "Succeeded", "Failed"])(
     // even if envd has exited. Also recheck tasks missing from an earlier scan.
     await rig.environment.reconcile([work], rig.harness, []);
     await rig.environment.reconcile([], rig.harness, []);
-    expect(rig.server.pods.has(`owner-work-${work.workId}`)).toBe(true);
-    expect(
-      rig.server.requests.filter((request) => request.method === "DELETE"),
-    ).toHaveLength(0);
+    expect(rig.server.sandboxes.has(sandboxName(work))).toBe(true);
+    expect(count(rig, "DELETE")).toBe(0);
 
     rig.harness.resume();
     await rig.harness.waitForTask(work.workId, context);
     await rig.environment.reconcile([], rig.harness, []);
     await rig.environment.reconcile([], rig.harness, []);
+    expect(rig.server.sandboxes.size).toBe(0);
     expect(rig.server.pods.size).toBe(0);
-    expect(
-      rig.server.requests.filter((request) => request.method === "DELETE"),
-    ).toHaveLength(1);
+    expect(count(rig, "DELETE")).toBe(1);
   },
 );
 
@@ -406,9 +679,7 @@ it.each(["Succeeded", "Failed"])(
     await expect(
       rig.environment.ensure(work, rig.harness, context),
     ).rejects.toThrow(/failed:/);
-    expect(
-      rig.server.requests.filter((request) => request.method === "POST"),
-    ).toHaveLength(1);
+    expect(count(rig, "POST")).toBe(1);
   },
 );
 
@@ -416,16 +687,14 @@ it("fails rather than recreating a lost admitted workspace on supervision reentr
   const rig = await fixture();
   const work = await rig.work();
   await rig.environment.ensure(work, rig.harness, context);
-  rig.server.pods.clear();
+  rig.server.lose();
   expect(await rig.environment.check?.(work, rig.harness, context)).toContain(
     "cannot be restored",
   );
   await expect(
     rig.environment.ensure(work, rig.harness, context),
   ).rejects.toThrow("cannot be restored");
-  expect(
-    rig.server.requests.filter((request) => request.method === "POST"),
-  ).toHaveLength(1);
+  expect(count(rig, "POST")).toBe(1);
   await rig.environment.release(work, rig.harness);
 });
 
@@ -437,14 +706,12 @@ it("does not misclassify API or identity errors as confirmed sandbox loss", asyn
   await expect(
     rig.environment.check?.(work, rig.harness, context),
   ).rejects.toThrow("API unavailable");
-  const pod = [...rig.server.pods.values()][0];
-  pod.metadata.annotations["kaeno.io/token-sha256"] = "different";
+  sandboxOf(rig, work).metadata.annotations["kaeno.io/token-sha256"] =
+    "different";
   await expect(
     rig.environment.check?.(work, rig.harness, context),
   ).rejects.toThrow("identity mismatch");
-  expect(
-    rig.server.requests.filter((request) => request.method === "DELETE"),
-  ).toHaveLength(0);
+  expect(count(rig, "DELETE")).toBe(0);
 });
 
 it.each(["api", "identity"])(
@@ -456,15 +723,12 @@ it.each(["api", "identity"])(
     const second = await rig.work();
     await rig.environment.ensure(first, rig.harness, context);
     await rig.environment.ensure(second, rig.harness, context);
-    const firstName = `owner-work-${first.workId}`;
+    const firstName = sandboxName(first);
     if (mode === "api") {
       rig.server.rejectDelete(firstName);
     } else {
-      const pod = rig.server.pods.get(firstName);
-      if (!pod) {
-        throw new Error("Missing first sandbox");
-      }
-      pod.metadata.annotations["kaeno.io/token-sha256"] = "different";
+      sandboxOf(rig, first).metadata.annotations["kaeno.io/token-sha256"] =
+        "different";
     }
     rig.harness.resume();
     await rig.harness.waitForTask(first.workId, context);
@@ -472,12 +736,12 @@ it.each(["api", "identity"])(
     await expect(
       rig.environment.reconcile([], rig.harness, []),
     ).rejects.toThrow("Kubernetes sandbox reconciliation failed");
-    expect([...rig.server.pods.keys()]).toEqual([firstName]);
+    expect([...rig.server.sandboxes.keys()]).toEqual([firstName]);
     if (mode === "api") {
       rig.server.rejectDelete();
       await rig.environment.reconcile([], rig.harness, []);
       await rig.environment.reconcile([], rig.harness, []);
-      expect(rig.server.pods.size).toBe(0);
+      expect(rig.server.sandboxes.size).toBe(0);
     } else {
       // An orphan sweep must not bypass the failed reservation identity check.
       expect(
@@ -494,16 +758,16 @@ it("continues orphan cleanup after one deletion fails, then retries", async () =
   const rig = await fixture();
   const work = await rig.work();
   await rig.environment.ensure(work, rig.harness, context);
-  const original = [...rig.server.pods.values()][0];
+  const original = sandboxOf(rig, work);
   for (const name of ["orphan-one", "orphan-two"]) {
-    rig.server.pods.set(name, {
+    rig.server.sandboxes.set(name, {
       ...original,
       metadata: {
         ...original.metadata,
         name,
         annotations: {
           ...original.metadata.annotations,
-          "kaeno.io/work": "999999",
+          "kaeno.io/conversation": "999999",
         },
       },
     });
@@ -512,12 +776,12 @@ it("continues orphan cleanup after one deletion fails, then retries", async () =
   await expect(
     rig.environment.reconcile([work], rig.harness, []),
   ).rejects.toThrow("Kubernetes sandbox reconciliation failed");
-  expect(rig.server.pods.has("orphan-one")).toBe(true);
-  expect(rig.server.pods.has("orphan-two")).toBe(false);
-  expect(rig.server.pods.has(`owner-work-${work.workId}`)).toBe(true);
+  expect(rig.server.sandboxes.has("orphan-one")).toBe(true);
+  expect(rig.server.sandboxes.has("orphan-two")).toBe(false);
+  expect(rig.server.sandboxes.has(sandboxName(work))).toBe(true);
   rig.server.rejectDelete();
   await rig.environment.reconcile([work], rig.harness, []);
-  expect([...rig.server.pods.keys()]).toEqual([`owner-work-${work.workId}`]);
+  expect([...rig.server.sandboxes.keys()]).toEqual([sandboxName(work)]);
 });
 
 it.each([400, 404, 500])(
@@ -530,9 +794,7 @@ it.each([400, 404, 500])(
     await expect(result).rejects.toThrow(`HTTP ${status}`);
     await expect(result).rejects.not.toThrow("cluster-secret");
     expect(rig.server.requests.at(-1)?.method).toBe("POST");
-    expect(
-      rig.server.requests.filter((request) => request.method === "POST"),
-    ).toHaveLength(1);
+    expect(count(rig, "POST")).toBe(1);
     await rig.environment.release(work, rig.harness);
   },
 );
@@ -551,8 +813,8 @@ it.each([false, true])(
         return response;
       }
       if (mismatched) {
-        for (const pod of rig.server.pods.values()) {
-          pod.metadata.annotations["kaeno.io/token-sha256"] =
+        for (const sandbox of rig.server.sandboxes.values()) {
+          sandbox.metadata.annotations["kaeno.io/token-sha256"] =
             "different-owner-token";
         }
       }
@@ -565,55 +827,27 @@ it.each([false, true])(
     } else {
       await result;
     }
-    expect(rig.server.pods.size).toBe(1);
+    expect(rig.server.sandboxes.size).toBe(1);
   },
 );
 
-it("recovers from transient quota rejection without losing its held reservation", async () => {
-  const rig = await fixture();
-  const original = rig.server.api.getMockImplementation();
-  if (!original) {
-    throw new Error("Missing API transport");
-  }
-  let attempts = 0;
-  rig.server.api.mockImplementation(async (input, init) => {
-    if (init?.method === "POST") {
-      attempts++;
-      rig.server.postStatus(attempts <= 2 ? 403 : 201);
-    }
-    return original(input, init);
-  });
-  const work = await rig.work();
-  vi.useFakeTimers();
-  await Promise.all([
-    rig.environment.ensure(work, rig.harness, context),
-    vi.advanceTimersByTimeAsync(2000),
-  ]);
-  expect(attempts).toBe(3);
-  expect(rig.server.pods.size).toBe(1);
-  await rig.environment.ensure(work, rig.harness, context);
-  expect(attempts).toBe(3);
-});
-
-it("bounds quota rejection at five POSTs, then frees its reservation", async () => {
-  const rig = await fixture();
-  rig.server.postStatus(403);
+it("surfaces a sandbox the controller cannot start, such as one rejected by quota", async () => {
+  const rig = await fixture({ readyTimeoutMs: 2000 });
+  rig.server.blocked('pods "owner-conv-1" is forbidden: exceeded quota');
   const work = await rig.work();
   vi.useFakeTimers();
   await Promise.all([
     expect(rig.environment.ensure(work, rig.harness, context)).rejects.toThrow(
-      "after 5 attempts",
+      /not ready before timeout \(ReconcilerError: .*exceeded quota\)/,
     ),
-    vi.advanceTimersByTimeAsync(4000),
+    vi.advanceTimersByTimeAsync(2000),
   ]);
-  expect(
-    rig.server.requests.filter((request) => request.method === "POST"),
-  ).toHaveLength(5);
-  rig.server.postStatus(201);
-  await rig.environment.ensure(await rig.work(), rig.harness, context);
+  rig.server.blocked();
+  await rig.environment.ensure(work, rig.harness, context);
+  expect(count(rig, "POST")).toBe(1);
 });
 
-it("does not free a reservation while its pod is still terminating", async () => {
+it("does not free a reservation while its sandbox is still terminating", async () => {
   const rig = await fixture();
   const first = await rig.work();
   await rig.environment.ensure(first, rig.harness, context);
@@ -681,21 +915,22 @@ it("bounds readiness waits and supports cancellation", async () => {
   ]);
 });
 
-it("refuses adoption and deletion when a deterministic pod has a different identity", async () => {
+it("refuses adoption and deletion when a deterministic sandbox has a different identity", async () => {
   const rig = await fixture();
   const work = await rig.work();
   await rig.environment.ensure(work, rig.harness, context);
-  const pod = [...rig.server.pods.values()][0];
-  pod.metadata.annotations["kaeno.io/token-sha256"] = "wrong";
+  sandboxOf(rig, work).metadata.annotations["kaeno.io/token-sha256"] = "wrong";
   await expect(
     rig.environment.ensure(work, rig.harness, context),
   ).rejects.toThrow("identity mismatch");
   await expect(rig.environment.release(work, rig.harness)).rejects.toThrow(
     "identity mismatch",
   );
-  expect(
-    rig.server.requests.filter((request) => request.method === "DELETE"),
-  ).toHaveLength(0);
+  await expect(rig.environment.suspend?.(work, rig.harness)).rejects.toThrow(
+    "identity mismatch",
+  );
+  expect(count(rig, "DELETE")).toBe(0);
+  expect(count(rig, "PATCH")).toBe(0);
 });
 
 it("runs pods under a configured RuntimeClass and charges its overhead to quota", async () => {
@@ -711,9 +946,9 @@ it("runs pods under a configured RuntimeClass and charges its overhead to quota"
   const creation = rig.server.requests.find(
     (request) => request.method === "POST",
   );
-  expect(JSON.parse(creation?.body ?? "{}").spec.runtimeClassName).toBe(
-    "kata-qemu",
-  );
+  expect(
+    JSON.parse(creation?.body ?? "{}").spec.podTemplate.spec.runtimeClassName,
+  ).toBe("kata-qemu");
   expect(
     rig.server.requests.some(
       (request) =>
@@ -733,7 +968,7 @@ it.each<{ configured?: string; actual?: string }>([
   { actual: "kata-qemu" },
   { configured: "kata-qemu" },
 ])(
-  "refuses to adopt a pod with RuntimeClass $actual when $configured is configured",
+  "refuses to adopt a sandbox with RuntimeClass $actual when $configured is configured",
   async ({ configured, actual }) => {
     const rig = await fixture(
       configured ? { runtimeClassName: configured } : {},
@@ -743,8 +978,8 @@ it.each<{ configured?: string; actual?: string }>([
     }
     const work = await rig.work();
     await rig.environment.ensure(work, rig.harness, context);
-    const pod = [...rig.server.pods.values()][0];
-    pod.spec = { ...pod.spec, runtimeClassName: actual };
+    const template = sandboxOf(rig, work).spec.podTemplate;
+    template.spec = { ...template.spec, runtimeClassName: actual };
     await expect(
       rig.environment.ensure(work, rig.harness, context),
     ).rejects.toThrow("identity mismatch");
@@ -759,8 +994,8 @@ it("keeps identities without a RuntimeClass and rejects adding one to saved work
       namespace: "test",
       owner: "owner",
       resources,
+      workspace: { size: "5Gi" },
       quota: "kaeno-sandbox",
-      service: "kaeno-sandbox",
       serviceAccount: "kaeno-sandbox",
     })}`,
   );
@@ -790,9 +1025,9 @@ it("adopts a changed target once no sandbox reservations remain", async () => {
   await kata.environment.reconcile([], rig.harness, []);
   const second = await rig.work();
   await kata.environment.ensure(second, rig.harness, context);
-  expect(
-    rig.server.pods.get(`owner-work-${second.workId}`)?.spec.runtimeClassName,
-  ).toBe("kata-qemu");
+  expect(sandboxOf(rig, second).spec.podTemplate.spec.runtimeClassName).toBe(
+    "kata-qemu",
+  );
   // The adopted target is now the saved one: the previous configuration is refused.
   await expect(
     rig.environment.reconcile([second], rig.harness, []),
@@ -852,7 +1087,7 @@ it.each<{ hard: Record<string, string>; error: string }>([
   await expect(rig.environment.capacity?.(context)).rejects.toThrow(error);
 });
 
-it("reopens SQLite, adopts saved pod/token/image, and rejects retargeting saved work", async () => {
+it("reopens SQLite, adopts saved sandbox/token/image, and rejects retargeting saved work", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-kubernetes-"));
   cleanups.push(() => rm(directory, { recursive: true, force: true }));
   const rig = await fixture();
@@ -891,7 +1126,7 @@ it("reopens SQLite, adopts saved pod/token/image, and rejects retargeting saved 
   rig.server.api.mockImplementation(async (input, init) => {
     const response = await original(input, init);
     if (init?.method === "POST") {
-      throw new Error("Lost response after pod creation");
+      throw new Error("Lost response after sandbox creation");
     }
     return response;
   });
@@ -907,10 +1142,8 @@ it("reopens SQLite, adopts saved pod/token/image, and rejects retargeting saved 
   });
   await replacement.environment.reconcile([work], reopened, []);
   await replacement.environment.ensure(work, reopened, context);
-  expect(
-    rig.server.requests.filter((request) => request.method === "POST"),
-  ).toHaveLength(1);
-  expect([...rig.server.pods.values()][0].spec.containers[0].image).toBe(
+  expect(count(rig, "POST")).toBe(1);
+  expect(sandboxOf(rig, work).spec.podTemplate.spec.containers[0].image).toBe(
     "test-image",
   );
   const retargeted = kubernetesExtension({
@@ -920,16 +1153,14 @@ it("reopens SQLite, adopts saved pod/token/image, and rejects retargeting saved 
   await expect(
     retargeted.environment.reconcile([work], reopened, []),
   ).rejects.toThrow("differs");
-  rig.server.pods.clear();
+  rig.server.lose();
   expect(
     await replacement.environment.check?.(work, reopened, context),
   ).toContain("cannot be restored");
   await expect(
     replacement.environment.ensure(work, reopened, context),
   ).rejects.toThrow("cannot be restored");
-  expect(
-    rig.server.requests.filter((request) => request.method === "POST"),
-  ).toHaveLength(1);
+  expect(count(rig, "POST")).toBe(1);
   await replacement.environment.release(work, reopened);
 });
 
@@ -962,6 +1193,7 @@ it("loads explicit configuration with relative token paths and uses the real HTT
       owner: "owner",
       image: "image",
       resources,
+      workspace: { size: "10Gi", storageClassName: "local-path" },
       tokenFile: "token",
       caFile: null,
     }),
@@ -981,6 +1213,9 @@ it("loads explicit configuration with relative token paths and uses the real HTT
   expect(loaded.extensions.map((extension) => extension.durable.name)).toEqual([
     "kaeno-kubernetes",
   ]);
+  expect(loaded.environment.identity).toContain(
+    '"workspace":{"size":"10Gi","storageClassName":"local-path"}',
+  );
   const rig = await fixture();
   await loaded.environment.reconcile([], rig.harness, []);
 });
@@ -1022,7 +1257,7 @@ it("reports startup cleanup errors without blocking recovery and retries on the 
   expect(onReport).toHaveBeenCalledTimes(1);
 });
 
-it("runs WORK through a pod execution environment and rejects child admission when quota is full", async () => {
+it("runs WORK through a sandbox execution environment, suspends it for the ticket, and rejects child admission when quota is full", async () => {
   const root = await mkdtemp(join(tmpdir(), "kaeno-kubernetes-worker-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const rig = await fixture();
@@ -1035,17 +1270,21 @@ it("runs WORK through a pod execution environment and rejects child admission wh
         const manifest = z
           .object({
             spec: z.object({
-              containers: z.array(
-                z.object({
-                  env: z.array(
-                    z.object({ name: z.string(), value: z.string() }),
+              podTemplate: z.object({
+                spec: z.object({
+                  containers: z.array(
+                    z.object({
+                      env: z.array(
+                        z.object({ name: z.string(), value: z.string() }),
+                      ),
+                    }),
                   ),
                 }),
-              ),
+              }),
             }),
           })
           .parse(JSON.parse(String(init.body)));
-        const token = manifest.spec.containers[0].env.find(
+        const token = manifest.spec.podTemplate.spec.containers[0].env.find(
           (entry) => entry.name === "KAENO_ENV_TOKEN",
         )?.value;
         if (!token) {
@@ -1074,7 +1313,7 @@ it("runs WORK through a pod execution environment and rejects child admission wh
     },
     createEnvironment: ({ url, token, id, cwd }) => {
       expect(url).toMatch(
-        /^http:\/\/owner-work-\d+\.kaeno-sandbox\.test\.svc\.cluster\.local:7070$/,
+        /^http:\/\/owner-conv-\d+\.test\.svc\.cluster\.local:7070$/,
       );
       expect(cwd).toBe("/workspace");
       return new RemoteExecutionEnv(localUrl, token, id, root, fetch);
@@ -1180,10 +1419,13 @@ it("runs WORK through a pod execution environment and rejects child admission wh
       expect(proof).toContain("pod workspace");
       expect(refusal).toContain("No free work slot: 1 of 1");
       expect(rig.server.pods.size).toBe(0);
+      expect(
+        [...rig.server.sandboxes.values()].map(
+          (sandbox) => sandbox.spec.operatingMode,
+        ),
+      ).toEqual(["Suspended"]);
     },
     { timeout: 5000 },
   );
-  expect(
-    rig.server.requests.filter((request) => request.method === "POST"),
-  ).toHaveLength(1);
+  expect(count(rig, "POST")).toBe(1);
 });

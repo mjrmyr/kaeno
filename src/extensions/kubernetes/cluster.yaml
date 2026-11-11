@@ -1,4 +1,6 @@
 # Example namespace-local prerequisites, owned/applied by the operator, not Kaeno.
+# Requires the agent-sandbox controller (Sandbox CRD, agents.x-k8s.io/v1beta1):
+#   kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.2/sandbox.yaml
 # Change namespace and host labels to match your deployment before applying.
 apiVersion: v1
 kind: ServiceAccount
@@ -12,9 +14,12 @@ metadata:
   name: kaeno-kubernetes-host
   namespace: kaeno
 rules:
+  - apiGroups: [agents.x-k8s.io]
+    resources: [sandboxes]
+    verbs: [get, list, create, patch, delete]
   - apiGroups: [""]
     resources: [pods]
-    verbs: [get, list, create, delete]
+    verbs: [get, list]
   - apiGroups: [""]
     resources: [resourcequotas]
     verbs: [get]
@@ -41,20 +46,6 @@ metadata:
 automountServiceAccountToken: false
 ---
 apiVersion: v1
-kind: Service
-metadata:
-  name: kaeno-sandbox
-  namespace: kaeno
-spec:
-  clusterIP: None
-  selector:
-    app.kubernetes.io/name: kaeno-sandbox
-  ports:
-    - name: envd
-      port: 7070
-      targetPort: envd
----
-apiVersion: v1
 kind: ResourceQuota
 metadata:
   name: kaeno-sandbox
@@ -67,6 +58,17 @@ spec:
     requests.memory: 4Gi
     limits.cpu: "8"
     limits.memory: 8Gi
+---
+# Workspace volumes outlive their pods while a conversation is suspended.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: kaeno-sandbox-storage
+  namespace: kaeno
+spec:
+  hard:
+    persistentvolumeclaims: "32"
+    requests.storage: 160Gi
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -108,6 +110,60 @@ spec:
               - 192.168.0.0/16
               - 127.0.0.0/8
               - 169.254.0.0/16
+---
+# The host itself, declared as a single stable Sandbox the controller keeps running.
+# Create the kaeno-config ConfigMap (kaeno.json, kubernetes.json, ...) separately.
+apiVersion: agents.x-k8s.io/v1beta1
+kind: Sandbox
+metadata:
+  name: kaeno
+  namespace: kaeno
+spec:
+  operatingMode: Running
+  service: true
+  failedPodPolicy: Recreate
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 5Gi
+  podTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kaeno
+    spec:
+      serviceAccountName: kaeno-kubernetes-host
+      # runtimeClassName: kata-qemu
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: kaeno
+          image: ghcr.io/YOUR-OWNER/kaeno:YOUR-TAG
+          env:
+            - name: KAENO_CONFIG
+              value: /config/kaeno.json
+            - name: KAENO_DATA_DIR
+              value: /data
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: kaeno-config
 ---
 # Only needed when kubernetes.json sets runtimeClassName (e.g. Kata Containers).
 # Kaeno reads the RuntimeClass overhead to size quota; list each configured name.

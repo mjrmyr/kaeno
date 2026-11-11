@@ -50,13 +50,42 @@ const podSchema = z.object({
     }),
 });
 export type Pod = z.infer<typeof podSchema>;
+const conditionSchema = z.object({
+  type: z.string(),
+  status: z.string(),
+  reason: z.string().optional(),
+  message: z.string().optional(),
+});
+const sandboxSchema = z.object({
+  metadata: z.object({
+    name: z.string(),
+    labels: z.record(z.string(), z.string()).default({}),
+    annotations: z.record(z.string(), z.string()).default({}),
+    deletionTimestamp: z.string().nullable().optional(),
+  }),
+  spec: z.object({
+    operatingMode: z.enum(["Running", "Suspended"]).default("Running"),
+    podTemplate: z.object({
+      spec: z.object({
+        runtimeClassName: z.string().optional(),
+        containers: z.array(z.object({ image: z.string() })),
+      }),
+    }),
+  }),
+  status: z
+    .object({
+      conditions: z.array(conditionSchema).default([]),
+      serviceFQDN: z.string().optional(),
+    })
+    .default({ conditions: [] }),
+});
+export type Sandbox = z.infer<typeof sandboxSchema>;
+export type OperatingMode = Sandbox["spec"]["operatingMode"];
 export class ApiError extends Error {
   readonly status: number;
-  readonly quotaExceeded: boolean;
-  constructor(status: number, quotaExceeded: boolean, message: string) {
+  constructor(status: number, message: string) {
     super(message);
     this.status = status;
-    this.quotaExceeded = quotaExceeded;
   }
 }
 
@@ -81,13 +110,16 @@ export class KubernetesClient {
     signal?: AbortSignal,
   ): Promise<unknown> {
     const token = (await this.options.readToken()).trim();
-    // Relative paths are namespace-local core resources; absolute paths are cluster-scoped.
+    // Relative paths are namespace-local core resources; absolute paths name their API group.
     const url = path.startsWith("/")
       ? `${this.options.api}${path}`
       : `${this.options.api}/api/v1/namespaces/${this.options.namespace}/${path}`;
     const headers = {
       authorization: `Bearer ${token}`,
-      "content-type": "application/json",
+      "content-type":
+        method === "PATCH"
+          ? "application/merge-patch+json"
+          : "application/json",
       accept: "application/json",
     };
     const requestSignal = signal
@@ -153,7 +185,6 @@ export class KubernetesClient {
       // API diagnostics may echo submitted env vars. Never include the response body/token.
       throw new ApiError(
         status,
-        status === 403 && text.includes("exceeded quota"),
         `Kubernetes ${method} ${path.split("?")[0]} failed (HTTP ${status})`,
       );
     }
@@ -163,12 +194,6 @@ export class KubernetesClient {
   async pod(name: string, signal?: AbortSignal): Promise<Pod | undefined> {
     const value = await this.call("GET", `pods/${name}`, undefined, signal);
     return value === undefined ? undefined : podSchema.parse(value);
-  }
-  async create(manifest: object, signal?: AbortSignal): Promise<void> {
-    await this.call("POST", "pods", manifest, signal);
-  }
-  async remove(name: string): Promise<void> {
-    await this.call("DELETE", `pods/${name}?gracePeriodSeconds=5`);
   }
   async pods(selector: string, signal?: AbortSignal): Promise<Pod[]> {
     const value = await this.call(
@@ -180,6 +205,53 @@ export class KubernetesClient {
     return z
       .object({ items: z.array(podSchema).default([]) })
       .parse(value ?? {}).items;
+  }
+  private get sandboxPath(): string {
+    return `/apis/agents.x-k8s.io/v1beta1/namespaces/${this.options.namespace}/sandboxes`;
+  }
+  async sandbox(
+    name: string,
+    signal?: AbortSignal,
+  ): Promise<Sandbox | undefined> {
+    const value = await this.call(
+      "GET",
+      `${this.sandboxPath}/${name}`,
+      undefined,
+      signal,
+    );
+    return value === undefined ? undefined : sandboxSchema.parse(value);
+  }
+  async sandboxes(selector: string, signal?: AbortSignal): Promise<Sandbox[]> {
+    const value = await this.call(
+      "GET",
+      `${this.sandboxPath}?labelSelector=${encodeURIComponent(selector)}`,
+      undefined,
+      signal,
+    );
+    return z
+      .object({ items: z.array(sandboxSchema).default([]) })
+      .parse(value ?? {}).items;
+  }
+  async createSandbox(manifest: object, signal?: AbortSignal): Promise<void> {
+    await this.call("POST", this.sandboxPath, manifest, signal);
+  }
+  async operate(
+    name: string,
+    operatingMode: OperatingMode,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.call(
+      "PATCH",
+      `${this.sandboxPath}/${name}`,
+      { spec: { operatingMode } },
+      signal,
+    );
+  }
+  async removeSandbox(name: string): Promise<void> {
+    await this.call(
+      "DELETE",
+      `${this.sandboxPath}/${name}?propagationPolicy=Background`,
+    );
   }
   async quota(
     name: string,
@@ -241,6 +313,13 @@ export class KubernetesClient {
       .parse(value);
     return overhead?.podFixed ?? {};
   }
+}
+
+export function condition(
+  sandbox: Sandbox,
+  type: string,
+): Sandbox["status"]["conditions"][number] | undefined {
+  return sandbox.status.conditions.find((entry) => entry.type === type);
 }
 
 export function failure(pod: Pod): string | undefined {
