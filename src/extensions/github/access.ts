@@ -59,7 +59,7 @@ export function githubPrompt(
   }
   if (selected.includes("github_checkout")) {
     lines.push(
-      "Use github_checkout to prepare a repository in your sandbox. It returns the checkout path and base commit. Edit and test there with your coding tools.",
+      "Use github_checkout to prepare a repository in your sandbox. It returns the checkout path and base commit. Edit and test there with your coding tools. Use Conventional Commits for manual git commits: <type>[optional scope]: <description>, for example feat: add search, fix(github): handle retries, or chore: update docs.",
     );
   }
   if (selected.includes("github_fetch")) {
@@ -69,7 +69,7 @@ export function githubPrompt(
   }
   if (selected.includes("github_publish")) {
     lines.push(
-      "Use github_publish to snapshot local changes, publish a work branch, and create or reuse a ready-for-review PR. Publishing from a ticket automatically follows the returned thread: trusted reviews, comments, CI results and pushes wake the idle worker. Commit locally only if useful; publishing includes uncommitted, non-ignored changes.",
+      "Use github_publish to snapshot local changes, publish a work branch, and create or reuse a ready-for-review PR. Publishing from a ticket automatically follows the returned thread: trusted reviews, comments, CI results and pushes wake the idle worker. Use a Conventional Commit title (<type>[optional scope]: <description>, for example feat: add search, fix(github): handle retries, or chore: update docs): title is both the PR title and the snapshot commit message. Commit locally only if useful; publishing includes uncommitted, non-ignored changes. Use Conventional Commits for any manual git commits too.",
     );
   }
   if (selected.includes("github_comment")) {

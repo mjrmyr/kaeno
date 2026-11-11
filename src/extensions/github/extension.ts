@@ -385,10 +385,15 @@ export function githubExtension(
   const publish = defineTool({
     name: GITHUB_TOOLS[2],
     description:
-      "Snapshot local tracked and non-ignored files from a GitHub checkout, publish a work branch, and create or reuse its ready-for-review PR. Automatically follow its thread when publishing from a ticket. Does not merge, force-push, or run tests. Run checks before publishing.",
+      "Snapshot local tracked and non-ignored files from a GitHub checkout, publish a work branch, and create or reuse its ready-for-review PR. Automatically follow its thread when publishing from a ticket. Does not merge, force-push, or run tests. Run checks before publishing. Use a Conventional Commit title; it is also the snapshot commit message.",
     parameters: Type.Object({
       repository: Type.Integer({ minimum: 1 }),
-      title: Type.String({ minLength: 1, maxLength: 200 }),
+      title: Type.String({
+        minLength: 1,
+        maxLength: 200,
+        description:
+          "PR title and snapshot commit message. Use Conventional Commits: <type>[optional scope]: <description>, for example feat: add search, fix(github): handle retries, or chore: update docs.",
+      }),
       body: Type.String({ maxLength: 60_000 }),
     }),
     replay: "safe",

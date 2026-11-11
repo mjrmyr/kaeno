@@ -202,6 +202,9 @@ it("gives the assistant, root worker, and nested worker GitHub discovery by defa
         expect(prompts.get(role)).toContain(
           "GitHub installation access is assigned",
         );
+        expect(prompts.get(role)).toContain("Conventional Commit title");
+        expect(prompts.get(role)).toContain("snapshot commit message");
+        expect(prompts.get(role)).toContain("manual git commits");
         expect(prompts.get(role)).not.toContain("secret-token");
       }
     } finally {

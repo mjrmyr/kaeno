@@ -69,6 +69,8 @@ The assistant receives the capability too. Set an explicit `tools` list containi
 - `github_comment { repository, pullRequest, body }` posts a top-level PR comment, for example a reply describing how review feedback was addressed. It does not submit a review or an inline review reply. Router calls require owner basis like other write tools; worker calls use the existing frozen tool selection and installation assignment. Ordinary final answers still report through Kaeno, not GitHub.
 - `github_fetch { repository }` fetches the existing work branch into `refs/remotes/kaeno/work`, returning its SHA and checkout path. It does not change HEAD, the index or working files, and does not fetch the PR's base branch. The worker integrates changes using ordinary Git commands; publishing requires the fetched commit to be an ancestor of HEAD. GitHub credentials remain on the host.
 
+Use Conventional Commits for `github_publish.title` and any manual `git commit` messages: `<type>[optional scope]: <description>`, for example `feat: add search`, `fix(github): handle retries`, or `chore: update docs`. The publish title becomes both the PR title and the snapshot commit message; local commits are optional and their history is not published. This is agent guidance, not additional tool input validation.
+
 ### Incorporating pushes to a work branch
 
 After another account pushes to the worker's PR branch:
@@ -85,7 +87,7 @@ cd <checkout-path>
 git status
 # If there are local changes to preserve:
 git add .
-git -c user.name=kaeno -c user.email=bot@kaeno.io commit -m "Preserve local work"
+git -c user.name=kaeno -c user.email=bot@kaeno.io commit -m "chore: preserve local work"
 git -c user.name=kaeno -c user.email=bot@kaeno.io merge --no-edit refs/remotes/kaeno/work
 # Resolve conflicts and complete the merge if necessary, then run project checks.
 ```

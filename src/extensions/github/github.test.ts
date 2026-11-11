@@ -60,3 +60,20 @@ it("advertises only selected tools and distinguishes missing assignment from mis
     "GitHub controls accessible repositories and permissions",
   );
 });
+
+it("guides conventional publish titles and manual commits even for checkout-only workers", () => {
+  const publishing = githubPrompt(["github_publish"], true);
+  expect(publishing).toContain("Conventional Commit title");
+  expect(publishing).toContain("<type>[optional scope]: <description>");
+  expect(publishing).toContain(
+    "title is both the PR title and the snapshot commit message",
+  );
+  expect(publishing).toContain("manual git commits");
+  const checkout = githubPrompt(["github_checkout"], true);
+  expect(checkout).toContain("Use Conventional Commits for manual git commits");
+  for (const prompt of [publishing, checkout]) {
+    expect(prompt).toContain("feat: add search");
+    expect(prompt).toContain("fix(github): handle retries");
+    expect(prompt).toContain("chore: update docs");
+  }
+});
