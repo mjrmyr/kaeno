@@ -341,6 +341,7 @@ it("creates isolated pods, reuses identity, rotates credentials, and releases id
     containers: [
       {
         resources,
+        workingDir: "/workspace",
         securityContext: {
           readOnlyRootFilesystem: true,
           allowPrivilegeEscalation: false,
@@ -355,6 +356,27 @@ it("creates isolated pods, reuses identity, rotates credentials, and releases id
       (entry: { name: string }) => entry.name,
     ),
   ).toEqual(["KAENO_ENV_TOKEN", "HOME", "TMPDIR"]);
+  expect(manifest.spec.containers[0].env).toContainEqual({
+    name: "HOME",
+    value: "/workspace",
+  });
+  expect(manifest.spec.containers[0].env).toContainEqual({
+    name: "TMPDIR",
+    value: "/tmp",
+  });
+  expect(manifest.spec.containers[0].volumeMounts).toEqual([
+    { name: "workspace", mountPath: "/workspace" },
+    { name: "tmp", mountPath: "/tmp" },
+  ]);
+  expect(manifest.spec.volumes).toEqual([
+    {
+      name: "workspace",
+      persistentVolumeClaim: {
+        claimName: `owner-workspace-${work.conversationId}`,
+      },
+    },
+    { name: "tmp", emptyDir: { sizeLimit: "2Gi" } },
+  ]);
   rig.server.rotate();
   await rig.environment.ensure(work, rig.harness, context);
   expect(
@@ -1369,6 +1391,7 @@ it("preserves real workspace files across ticket Assignments and SQLite restart 
             spec: z.object({
               containers: z.array(
                 z.object({
+                  workingDir: z.literal("/workspace"),
                   env: z.array(
                     z.object({ name: z.string(), value: z.string() }),
                   ),
@@ -1404,10 +1427,25 @@ it("preserves real workspace files across ticket Assignments and SQLite restart 
         }
         const mounted = join(root, "claims", claim);
         workspacePath = mounted;
+        const podName = JSON.parse(String(init.body)).metadata.name;
+        const scratch = join(root, "pods", podName, "tmp");
+        expect(manifest.spec.containers[0].env).toContainEqual({
+          name: "HOME",
+          value: "/workspace",
+        });
+        expect(manifest.spec.containers[0].env).toContainEqual({
+          name: "TMPDIR",
+          value: "/tmp",
+        });
         await mkdir(mounted, { recursive: true });
+        await mkdir(scratch, { recursive: true });
         const server = new EnvironmentServer(
           token,
-          () => new NodeExecutionEnv({ cwd: mounted }),
+          () =>
+            new NodeExecutionEnv({
+              cwd: mounted,
+              shellEnv: { HOME: mounted, TMPDIR: scratch },
+            }),
           mounted,
         ).server;
         executionServers.set(
@@ -1437,6 +1475,9 @@ it("preserves real workspace files across ticket Assignments and SQLite restart 
           await new Promise<void>((resolve, reject) =>
             server.close((error) => (error ? reject(error) : resolve())),
           );
+        }
+        if (url.pathname.includes("/pods/")) {
+          await rm(join(root, "pods", name), { recursive: true, force: true });
         }
         if (
           url.pathname.includes("persistentvolumeclaims") &&
@@ -1471,6 +1512,28 @@ it("preserves real workspace files across ticket Assignments and SQLite restart 
       const restored = getOrThrow(
         await api.env.exists("proof.txt", toolContext),
       );
+      const home = getOrThrow(
+        await api.env.exec(
+          [
+            "sh",
+            "-c",
+            [
+              'test "$HOME" -ef "$PWD"',
+              'test ! -e "$TMPDIR/proof.tmp"',
+              restored
+                ? 'test "$(git config --global --get kaeno.workspace)" = "persistent home"'
+                : 'git config --global kaeno.workspace "persistent home"',
+              'printf scratch > "$TMPDIR/proof.tmp"',
+            ].join(" && "),
+          ],
+          undefined,
+          toolContext,
+        ),
+      );
+      expect(home.exitCode).toBe(0);
+      expect(
+        getOrThrow(await api.env.readTextFile(".gitconfig", toolContext)),
+      ).toContain("persistent home");
       if (!restored) {
         getOrThrow(
           await api.env.writeFile("proof.txt", "pod workspace", toolContext),

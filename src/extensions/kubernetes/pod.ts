@@ -97,7 +97,7 @@ export function sandboxPod(
           workingDir: "/workspace",
           env: [
             { name: "KAENO_ENV_TOKEN", value: reservation.token },
-            { name: "HOME", value: "/home/agent" },
+            { name: "HOME", value: "/workspace" },
             { name: "TMPDIR", value: "/tmp" },
           ],
           ports: [{ name: "envd", containerPort: 7070 }],
@@ -113,7 +113,6 @@ export function sandboxPod(
           resources: options.resources,
           volumeMounts: [
             { name: "workspace", mountPath: "/workspace" },
-            { name: "home", mountPath: "/home/agent" },
             { name: "tmp", mountPath: "/tmp" },
           ],
         },
@@ -123,7 +122,6 @@ export function sandboxPod(
           name: "workspace",
           persistentVolumeClaim: { claimName: reservation.claim },
         },
-        { name: "home", emptyDir: { sizeLimit: "1Gi" } },
         { name: "tmp", emptyDir: { sizeLimit: "2Gi" } },
       ],
     },
