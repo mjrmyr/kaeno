@@ -30,7 +30,10 @@ import { Routines, RoutineStore } from "../extensions/routines/index.ts";
 import { loadZoteroConfiguration } from "../extensions/zotero/index.ts";
 import { browserExtension } from "../extensions/browser/index.ts";
 import { dockerExecutionProvider } from "../extensions/docker/index.ts";
-import { kubernetesExecutionProvider } from "../extensions/kubernetes/index.ts";
+import {
+  kubernetesExecutionProvider,
+  loadKubernetesObservationConfiguration,
+} from "../extensions/kubernetes/index.ts";
 import { microsandboxExecutionProvider } from "../extensions/microsandbox/index.ts";
 
 const token = process.env.KAENO_TOKEN ?? "";
@@ -70,6 +73,15 @@ const zoteroTools = process.env.KAENO_ZOTERO_CONFIG
       },
     ]
   : [];
+const observationTools = process.env.KAENO_KUBERNETES_OBSERVATION_CONFIG
+  ? [
+      {
+        runtime: await loadKubernetesObservationConfiguration(
+          process.env.KAENO_KUBERNETES_OBSERVATION_CONFIG,
+        ),
+      },
+    ]
+  : [];
 const configuration = await loadEnvironment({
   extensions: [
     ...githubExtensions,
@@ -77,6 +89,7 @@ const configuration = await loadEnvironment({
     memoryTools,
     routineTools,
     ...zoteroTools,
+    ...observationTools,
     ...(mcp?.extensions ?? []),
   ],
   policy: (base) => ({
@@ -90,6 +103,7 @@ const configuration = await loadEnvironment({
         ...githubExtensions,
         browser.extension,
         ...zoteroTools,
+        ...observationTools,
         ...(mcp?.policy.worker.available ?? []),
       ],
       defaults: [

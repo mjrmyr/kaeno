@@ -1,6 +1,8 @@
-# Kubernetes worker extension
+# Kubernetes extension
 
-The optional Kubernetes extension is an alternative to Docker containers and microsandbox microVMs for worker execution. It is not a `kubectl` tool and grants agents no Kubernetes API access. It composes through `KaenoExtension` and `WorkEnvironment`; all Kubernetes implementation details live in `src/extensions/kubernetes/`.
+The Kubernetes extension also provides independent [privacy-filtered read-only observation](kubernetes-observation.md), available with any execution backend. The rest of this page describes worker execution.
+
+The optional Kubernetes execution capability is an alternative to Docker containers and microsandbox microVMs for worker execution. It is not a `kubectl` tool and grants agents no Kubernetes API access. It composes through `KaenoExtension` and `WorkEnvironment`; all Kubernetes implementation details live in `src/extensions/kubernetes/`.
 
 ## Configure
 
