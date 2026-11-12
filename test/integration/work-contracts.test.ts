@@ -1,3 +1,4 @@
+import type { JsonObject } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { getCurrentSystemPrompt, Type } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -76,7 +77,12 @@ function required<T>(value: T | undefined): T {
   return value;
 }
 function launch(agent: string, brief: string) {
-  return call("start_work", { agent, title: agent, brief });
+  return call("start_work", {
+    assignment: { kind: "task" },
+    agent,
+    title: agent,
+    brief,
+  });
 }
 async function ticket(core: Kaeno, agent: string, brief: string, key: string) {
   const id = await startTicket(core, {
@@ -88,7 +94,7 @@ async function ticket(core: Kaeno, agent: string, brief: string, key: string) {
   await assignment(core, id);
   return `test:ticket:${key}`;
 }
-function call(name: string, args: Record<string, string | number>) {
+function call(name: string, args: JsonObject) {
   return fauxAssistantMessage([fauxToolCall(name, args)], {
     stopReason: "toolUse",
   });
@@ -426,6 +432,7 @@ it("waits for a live child, then cancels the subtree and releases both", async (
       ),
     );
     const child = required(records.find((record) => record.id !== parent.id));
+    expect(child.input).toMatchObject({ brief: "LEAF BRIEF" });
     expect(parent.state.status).not.toBe("terminal");
     expect(released).toEqual([]);
     const stopped = await core.harness.commit(
@@ -543,3 +550,140 @@ it("holds an owner's message until the brief is admitted, then accepts a reply a
     await core.close();
   }
 });
+
+it.each(["local", "architectural"])(
+  "rejects incomplete %s implementation dispatch before admission and delivers the behavior contract to the child",
+  async (designKind) => {
+    const contract = {
+      kind: "implementation",
+      expectedBehavior:
+        "Worker B on ticket k1 continues the PR published by finished worker A; ticket k2 gets its own identity.",
+      observedMismatch:
+        "Inspection found publication lookup keyed by disposable worker ID; continuation loses the existing PR.",
+      stateOwner:
+        "Ticket owns publication identity; worker owns its local checkout.",
+      checks: [
+        {
+          scenario:
+            "A publishes and finishes; B continues k1; C publishes from k2",
+          assertion: "B updates A's PR; C cannot inherit it",
+          run: "Add lifecycle regression in github-workers.test.ts; npx vitest run --project integration test/integration/github-workers.test.ts",
+        },
+      ],
+      design: {
+        kind: "architectural",
+        ownershipRepair: "Key publication identity by ticket and repository",
+        workaround:
+          "Add github_resume to find publication state of finished workers",
+        decision:
+          "Repair ownership; no finished-worker lookup or resume tool is needed",
+      },
+    };
+    const invalid = [
+      undefined,
+      { kind: "implementation" },
+      { ...contract, observedMismatch: "   " },
+      { ...contract, checks: [] },
+      { ...contract, checks: [{ ...contract.checks[0], assertion: " " }] },
+      {
+        ...contract,
+        design: { kind: "architectural", decision: "Add resume" },
+      },
+    ];
+    let attempts = 0;
+    let childInput = "";
+    let core: Kaeno;
+    const models = scripted(async (request) => {
+      const prompt = getCurrentSystemPrompt(request.messages);
+      if (prompt.includes("AGENT:implementer")) {
+        childInput = JSON.stringify(request.messages);
+        return fauxAssistantMessage("CONTRACT VERIFIED");
+      }
+      expect(prompt).toContain("assignment.kind=implementation");
+      const last = request.messages.findLast(
+        (message) => message.role !== "system",
+      );
+      if (attempts > 0 && attempts <= invalid.length) {
+        // The real SDK validator must reject before WorkIndex/task/slot admission.
+        expect(last).toMatchObject({ role: "toolResult", isError: true });
+        expect(await works(core)).toHaveLength(1);
+      }
+      if (attempts <= invalid.length) {
+        const assignment =
+          attempts < invalid.length
+            ? invalid[attempts]
+            : {
+                ...contract,
+                design:
+                  designKind === "local" ? { kind: "local" } : contract.design,
+              };
+        attempts++;
+        return call("start_work", {
+          agent: "implementer",
+          title: "Repair continuation",
+          brief:
+            "Proposed fix: add github_resume. Reassess that proposal against the contract.",
+          ...(assignment === undefined ? {} : { assignment }),
+        });
+      }
+      return fauxAssistantMessage("PARENT DONE");
+    });
+    core = await openKaeno({
+      storage: new MemoryStorage(),
+      models,
+      assistant,
+      work: {
+        agents: [agent("parent", ["start_work"]), agent("implementer", [])],
+        tools: ["start_work"],
+        maxDepth: 2,
+        maxConcurrent: 2,
+      },
+    });
+    try {
+      await ticket(
+        core,
+        "parent",
+        "Inspect and delegate the change",
+        "contract",
+      );
+      await ticketWhen(core, "k1", (value) => value.status === "idle");
+      expect(attempts).toBe(invalid.length + 1);
+      const records = await works(core);
+      expect(records).toHaveLength(2);
+      const child = required(
+        records.find(
+          (record) =>
+            z.object({ agent: z.string() }).parse(record.input).agent ===
+            "implementer",
+        ),
+      );
+      const brief = z.object({ brief: z.string() }).parse(child.input).brief;
+      expect(brief).toContain(contract.expectedBehavior);
+      expect(brief).toContain(contract.observedMismatch);
+      expect(brief).toContain(contract.stateOwner);
+      expect(brief).toContain(contract.checks[0].assertion);
+      expect(brief).toContain(contract.checks[0].run);
+      if (designKind === "architectural") {
+        expect(brief).toContain(contract.design.ownershipRepair);
+        expect(brief).toContain(contract.design.workaround);
+        expect(brief).toContain(contract.design.decision);
+      } else {
+        expect(brief).not.toContain("## Ownership repair vs workaround");
+      }
+      expect(brief.indexOf("# Implementation contract")).toBeLessThan(
+        brief.indexOf("Proposed fix:"),
+      );
+      // It is not just metadata: the actual child model sees the persisted artifact.
+      expect(childInput).toContain(contract.stateOwner);
+      expect(childInput).toContain(
+        "proposed approach below is not an acceptance criterion",
+      );
+      expect(child.state).toMatchObject({
+        status: "terminal",
+        outcome: { status: "completed" },
+      });
+    } finally {
+      await core.close();
+    }
+  },
+);

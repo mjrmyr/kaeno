@@ -1,3 +1,4 @@
+import type { JsonObject } from "@earendil-works/pi-durable";
 import {
   BACKGROUND_CONTEXT as context,
   withAbortSignal,
@@ -1575,7 +1576,7 @@ it("preserves real workspace files across ticket Assignments and SQLite restart 
       const last = request.messages.findLast(
         (message) => message.role !== "system",
       );
-      function call(name: string, input: Record<string, string>) {
+      function call(name: string, input: JsonObject) {
         return fauxAssistantMessage([fauxToolCall(name, input)], {
           stopReason: "toolUse",
         });
@@ -1586,6 +1587,7 @@ it("preserves real workspace files across ticket Assignments and SQLite restart 
       if (last?.role === "toolResult" && last.toolName === "probe") {
         proof = JSON.stringify(last.content);
         return call("start_work", {
+          assignment: { kind: "task" },
           agent: "coder",
           title: "Child",
           brief: "This must not wait forever for the parent's slot.",

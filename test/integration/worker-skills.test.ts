@@ -1,3 +1,4 @@
+import type { JsonObject } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -69,7 +70,7 @@ it.each([false, true])(
       const lists = new Map<string, string>();
       const prompts = new Map<string, string>();
       let readResult = "";
-      function call(name: string, args: Record<string, string>) {
+      function call(name: string, args: JsonObject) {
         return fauxAssistantMessage([fauxToolCall(name, args)], {
           stopReason: "toolUse",
         });
@@ -93,6 +94,7 @@ it.each([false, true])(
               lists.set(role, JSON.stringify(last));
               return role === "parent"
                 ? call("start_work", {
+                    assignment: { kind: "task" },
                     agent: "leaf",
                     title: "Leaf",
                     brief: "Discover and read the guide if assigned.",

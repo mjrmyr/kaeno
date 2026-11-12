@@ -159,6 +159,7 @@ it("gives the assistant, root worker, and nested worker GitHub discovery by defa
             results.set(role, JSON.stringify(last));
             if (role === "coder") {
               return call("start_work", {
+                assignment: { kind: "task" },
                 agent: "reviewer",
                 title: "Review",
                 brief: "Discover your own available repository access.",

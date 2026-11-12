@@ -13,6 +13,7 @@ import {
 import { z } from "zod";
 import { parseTaskId, requireConversation } from "../durable/index.ts";
 import { inspectWork, listWork, liveWork, requireChild } from "./directory.ts";
+import { assignmentBrief, assignmentSchema } from "./assignment.ts";
 import {
   WorkIndex,
   WorkScope,
@@ -230,14 +231,15 @@ export function createWorkCommands(
   const start = defineTool({
     name: START_WORK,
     description:
-      "Start a child WORK agent. Returns immediately; its messages and final report arrive later as messages. Pick an agent listed in your instructions and give a complete, self-contained brief.",
+      "Start a child WORK agent. Returns immediately; its messages and final report arrive later as messages. Pick an agent listed in your instructions and give a complete, self-contained brief. Classify assignment as task (research/review/other work) or implementation (requires a behavior-first contract before dispatch).",
     parameters: Type.Object({
       agent: Type.String({ description: "Agent ID from your instructions" }),
       title: Type.String({ minLength: 1, maxLength: 160 }),
       brief: Type.String({ minLength: 1, maxLength: 64000 }),
+      assignment: assignmentSchema,
     }),
     replay: "safe",
-    execute: async ({ agent, title, brief }, api, context) => {
+    execute: async ({ agent, title, brief, assignment }, api, context) => {
       const caller = await requireWorkCaller(api, context);
       // The tool call is the idempotency key: a replayed call finds its work.
       const id = await launchWork(
@@ -249,7 +251,7 @@ export function createWorkCommands(
           key: String(api.taskId),
           agent,
           title,
-          brief,
+          brief: assignmentBrief(brief, assignment),
           conversation: { kind: "owned" },
           reserve: 0,
         },

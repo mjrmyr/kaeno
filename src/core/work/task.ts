@@ -41,6 +41,7 @@ import {
   type WorkPlan,
 } from "./plan.ts";
 import { MESSAGE_PARENT, REPORT, START_WORK } from "./tools.ts";
+import { IMPLEMENTATION_DISPATCH } from "./assignment.ts";
 /** Newest model response; compactions and other bookkeeping entries do not count. */
 async function latestResponse(
   tx: Tx,
@@ -83,7 +84,7 @@ export function createWorkTask(
     if (!agent) {
       throw new Error(`Missing saved agent "${agentId}"`);
     }
-    let instructions = `${agent.setup.instructions}\n\n${preamble(ticket, agent.setup.tools ?? [])}`;
+    let instructions = `${agent.setup.instructions}\n\n${preamble(ticket, agent.setup.tools ?? [])}\n\n${IMPLEMENTATION_DISPATCH}`;
     if (orchestrate && agent.setup.tools?.includes(START_WORK)) {
       instructions += `\n\nYou may hand independent parts to child WORK with start_work; each sees only its brief. Child progress updates need no reply. Child questions and reports arrive later as messages: answer questions with message_work. While children run, end your turn; their messages wake you. Do not give your final report while children are still running.\n\nAgents you can start (use the ID):\n${describeAgents(Object.values(plan.agents))}`;
     }

@@ -120,6 +120,7 @@ async function fixture(
             : fauxAssistantMessage(
                 [
                   fauxToolCall("start_work", {
+                    assignment: { kind: "task" },
                     agent: "child",
                     title: "Child",
                     brief: "Ask a question",

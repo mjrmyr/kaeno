@@ -20,6 +20,10 @@ The façade creates the task, then passes that task definition to command constr
 
 Text projection in directory is not a completion decision: inspection can show older useful text, whereas supervision must consider the newest assistant response, including errors. Completion interpretation stays beside supervision in task.
 
+## Implementation delegation
+
+`start_work` requires an `assignment`: `{kind: "task"}` for ordinary work, or a behavior-first implementation contract. `assignment.ts` owns the schema and rendering into the durable brief; commands still owns admission, task still owns delivery. See [implementation dispatch](implementation-dispatch.md) for examples, the enforced boundary and its limits. Router/root ticket input remains verbatim.
+
 ## State and ordering
 
 - **Task checkpoints:** written by task only; no parallel in-memory state machine.

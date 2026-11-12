@@ -66,6 +66,7 @@ it("runs all-to-all delegation through core-only agents, keeps frozen children, 
         return fauxAssistantMessage(
           [
             fauxToolCall("start_work", {
+              assignment: { kind: "task" },
               agent: "leaf",
               title: "Leaf",
               brief: "Answer",

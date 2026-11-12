@@ -380,6 +380,7 @@ it("routes child progress to its WORK parent without stopping the child", async 
       if (system.includes("PARENT PROFILE")) {
         if (last?.role === "user" && content.includes("Coordinate")) {
           return call("start_work", {
+            assignment: { kind: "task" },
             agent: "child",
             title: "Child",
             brief: "Work",
