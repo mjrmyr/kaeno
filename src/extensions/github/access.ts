@@ -59,7 +59,7 @@ export function githubPrompt(
   }
   if (selected.includes("github_checkout")) {
     lines.push(
-      "Use github_checkout to prepare a repository in your sandbox. It returns the checkout path and base commit. Edit and test there with your coding tools.",
+      "Use github_checkout to prepare a repository in your sandbox. It returns the checkout path and base commit. Edit and test there with your coding tools. Within a ticket it continues the single open publication; use pullRequest to select among parallel PRs or newPublication: true for a separate PR. Each worker keeps its own files and accepted head.",
     );
   }
   if (selected.includes("github_fetch")) {

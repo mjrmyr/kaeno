@@ -16,7 +16,7 @@ export type {
 } from "./plan.ts";
 export { Work } from "./work.ts";
 export { NoWorkSlot } from "./commands.ts";
-export { WorkIndex, WorkScope } from "./model.ts";
+export { readParent, WorkIndex, WorkScope } from "./model.ts";
 export type {
   WorkParent,
   WorkRuntime,

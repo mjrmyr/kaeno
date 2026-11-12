@@ -2,13 +2,16 @@ import { randomUUID } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
 import {
   defineDoc,
+  defineDocFamily,
   defineExtension,
   defineTool,
   section,
   type ToolExecutionApi,
   type JsonObject,
+  type Cursor,
 } from "@earendil-works/pi-durable";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
 import { z } from "zod";
 import { readBinding, type Kaeno } from "../../core/application/index.ts";
@@ -92,6 +95,25 @@ const Workspace = defineDoc<JsonObject>({
   initial: () => ({ checkouts: {} }),
 });
 
+// Shared publication identity belongs to the ticket, never to a worker filesystem.
+const publicationSchema = z.object({
+  repository: z.number().int().positive(),
+  branch: branchSchema,
+  base: branchSchema,
+  head: commitSchema.nullable(),
+  pullRequest: z.number().int().positive().optional(),
+});
+const publicationsSchema = z.object({
+  publications: z.record(z.string(), publicationSchema),
+});
+const Publications = defineDocFamily<JsonObject, null>({
+  kind: "kaeno.github-publications",
+  version: 1,
+  scope: "session",
+  family: true,
+  initial: () => ({ publications: {} }),
+});
+
 export interface GitHubExtensionOptions {
   appId: string;
   privateKey: string;
@@ -126,6 +148,47 @@ export function githubExtension(
   const client = new GitHubClient(options);
   const transport = options.transport ?? new HostGit();
   let followThread: Kaeno["followThread"] | undefined;
+  let ticketOf: Kaeno["ticketOf"] | undefined;
+  async function owner(api: ToolExecutionApi, context: Context) {
+    return api.commit(
+      async (tx) => ticketOf?.(tx, api.conversationId),
+      context,
+    );
+  }
+  async function publications(
+    api: ToolExecutionApi,
+    ticket: string,
+    context: Context,
+  ) {
+    return publicationsSchema.parse(
+      (await api.snapshot(Publications, ticket, context)) ?? {
+        publications: {},
+      },
+    ).publications;
+  }
+  // Import legacy local records without copying their filesystem or accepted head to another worker.
+  async function register(
+    api: ToolExecutionApi,
+    ticket: string | undefined,
+    repository: number,
+    saved: z.infer<typeof checkoutSchema>,
+    context: Context,
+  ) {
+    if (!ticket) {
+      return;
+    }
+    await api.commit(async (tx) => {
+      const doc = await tx.doc(Publications, ticket, null);
+      const current = publicationsSchema.parse(doc);
+      current.publications[saved.branch] ??= {
+        repository,
+        branch: saved.branch,
+        base: saved.base,
+        head: saved.published,
+      };
+      doc.publications = current.publications;
+    }, context);
+  }
   async function tokenFor(
     api: ToolExecutionApi,
     context: Context,
@@ -155,10 +218,12 @@ export function githubExtension(
   const checkout = defineTool({
     name: GITHUB_TOOLS[1],
     description:
-      "Prepare one authorized repository branch in your sandbox. Returns its absolute path and base SHA. Repeated calls preserve local changes; only one checkout per repository per work is supported.",
+      "Prepare one authorized repository branch in your sandbox. Ticket workers continue its single open publication; select pullRequest if ambiguous or newPublication for a separate PR. Returns its path, branch and base SHA. Repeated calls preserve local changes; only one checkout per repository per work is supported.",
     parameters: Type.Object({
       repository: Type.Integer({ minimum: 1 }),
       branch: Type.Optional(Type.String({ maxLength: 200 })),
+      pullRequest: Type.Optional(Type.Integer({ minimum: 1 })),
+      newPublication: Type.Optional(Type.Boolean()),
     }),
     replay: "safe",
     executionMode: "sequential",
@@ -181,6 +246,67 @@ export function githubExtension(
         },
       );
       let saved = state.checkouts[String(args.repository)];
+      const ticket = await owner(api, context);
+      if (args.newPublication && args.pullRequest) {
+        throw new Error("GitHub: select a PR or a new publication, not both");
+      }
+      let selected: z.infer<typeof publicationSchema> | undefined;
+      if (!saved && ticket && !args.newPublication) {
+        const candidates = Object.values(
+          await publications(api, ticket, context),
+        ).filter((value) => value.repository === args.repository);
+        const active = [];
+        for (const candidate of candidates) {
+          const pull = await client.lookupWorkPull(
+            token,
+            repository,
+            candidate.branch,
+            context.abortSignal,
+          );
+          if (pull?.state === "open" || (!pull && candidate.head === null)) {
+            active.push({ candidate, pull });
+          }
+        }
+        const matching = args.pullRequest
+          ? active.filter((value) => value.pull?.number === args.pullRequest)
+          : active;
+        if (matching.length > 1) {
+          throw new Error(
+            "GitHub: multiple ticket publications; select pullRequest or newPublication",
+          );
+        }
+        selected = matching[0]?.candidate;
+        if (args.pullRequest && !selected) {
+          throw new Error(
+            "GitHub: PR is not an open publication of this ticket",
+          );
+        }
+      } else if (!saved && args.pullRequest) {
+        throw new Error(
+          "GitHub: selecting a publication requires an owning ticket",
+        );
+      }
+      if (saved && (args.newPublication || args.pullRequest)) {
+        if (args.newPublication) {
+          throw new Error(
+            "GitHub: this work already has a checkout; start new work for a new publication",
+          );
+        }
+        const pull = await client.lookupWorkPull(
+          token,
+          repository,
+          saved.branch,
+          context.abortSignal,
+        );
+        if (pull?.number !== args.pullRequest) {
+          throw new Error(
+            "GitHub: checkout belongs to a different publication; start new work",
+          );
+        }
+      }
+      if (saved) {
+        await register(api, ticket, args.repository, saved, context);
+      }
       if (saved && args.branch !== undefined && saved.base !== args.branch) {
         throw new Error(
           "GitHub: this work already checked out a different branch; start new work",
@@ -196,16 +322,21 @@ export function githubExtension(
           repository: repository.full_name,
           path: saved.path,
           base: saved.base,
+          branch: saved.branch,
           sha: saved.sha,
         });
       }
       const base =
         saved?.base ??
+        selected?.base ??
         branchSchema.parse(args.branch ?? repository.default_branch);
+      if (selected && args.branch && args.branch !== selected.base) {
+        throw new Error("GitHub: selected publication has a different base");
+      }
       const remote = `https://github.com/${repository.full_name}.git`;
       const source = await transport.checkout(
         remote,
-        saved?.sha ?? `refs/heads/${base}`,
+        saved?.sha ?? selected?.head ?? `refs/heads/${base}`,
         token,
         context.abortSignal,
       );
@@ -224,10 +355,11 @@ export function githubExtension(
         saved = {
           path,
           base,
-          branch: `kaeno/${randomUUID()}/${args.repository}`,
+          branch:
+            selected?.branch ?? `kaeno/${randomUUID()}/${args.repository}`,
           sha,
           ready: false,
-          published: null,
+          published: selected?.head ?? null,
         };
         const candidate = saved;
         await api.commit(async (tx) => {
@@ -237,6 +369,7 @@ export function githubExtension(
           doc.checkouts = current.checkouts;
         }, context);
       }
+      await register(api, ticket, args.repository, saved, context);
       await installCheckout(env, saved.path, source.bundle, context);
       const ready = { ...saved, ready: true };
       await api.commit(async (tx) => {
@@ -249,6 +382,7 @@ export function githubExtension(
         repository: repository.full_name,
         path: ready.path,
         base: ready.base,
+        branch: ready.branch,
         sha: ready.sha,
       });
     },
@@ -279,9 +413,14 @@ export function githubExtension(
         },
       );
       const saved = state.checkouts[String(args.repository)];
-      if (!saved?.ready || (!saved.published && !saved.pending)) {
+      const ticket = await owner(api, context);
+      const known = ticket
+        ? (await publications(api, ticket, context))[saved?.branch ?? ""]
+        : undefined;
+      if (!saved?.ready || (!saved.published && !saved.pending && !known)) {
         throw new Error("GitHub: publish a work branch before fetching it");
       }
+      await register(api, ticket, args.repository, saved, context);
       const intent = await api.memo("github-fetch", context);
       const source = await transport.checkout(
         `https://github.com/${repository.full_name}.git`,
@@ -419,6 +558,31 @@ export function githubExtension(
       if (!saved?.ready) {
         throw new Error("GitHub: check out this repository before publishing");
       }
+      const ticket = await owner(api, context);
+      await register(api, ticket, args.repository, saved, context);
+      const shared = ticket
+        ? (await publications(api, ticket, context))[saved.branch]
+        : undefined;
+      const accepted = saved.fetched ?? saved.published;
+      if (
+        shared &&
+        shared.head !== accepted &&
+        shared.head !== saved.pending?.sha
+      ) {
+        if (saved.fetched && shared.head) {
+          await requireIntegratedHead(
+            env,
+            saved.path,
+            shared.head,
+            context,
+            saved.fetched,
+          );
+        } else {
+          throw new Error(
+            "GitHub: ticket publication advanced in another worker; github_fetch and integrate before publishing",
+          );
+        }
+      }
       let intent = await api.memo("github-publish", context);
       if (!intent) {
         let candidate = saved.pending;
@@ -504,6 +668,29 @@ export function githubExtension(
           published: operation.sha,
         };
         doc.checkouts = current.checkouts;
+        if (ticket) {
+          const sharedDoc = await tx.doc(Publications, ticket, null);
+          const sharedState = publicationsSchema.parse(sharedDoc);
+          const existing = sharedState.publications[branch];
+          if (
+            existing &&
+            existing.head !== operation.expected &&
+            existing.head !== shared?.head &&
+            existing.head !== operation.sha
+          ) {
+            throw new Error(
+              "GitHub: publication advanced during publish; fetch before retrying",
+            );
+          }
+          sharedState.publications[branch] = {
+            repository: args.repository,
+            branch,
+            base: saved.base,
+            head: operation.sha,
+            pullRequest: pull.number,
+          };
+          sharedDoc.publications = sharedState.publications;
+        }
         return subscribe(tx, api.conversationId, thread);
       }, context);
       return text({
@@ -565,8 +752,53 @@ export function githubExtension(
       }),
       start: async (core) => {
         followThread = core.followThread;
+        ticketOf = core.ticketOf;
+        // One internal, idempotent conversion of saved records at startup. This
+        // discovers legacy PRs even when their publisher environment is gone.
+        let cursor: Cursor | undefined;
+        do {
+          const page = await core.harness.commit(
+            (tx) => tx.scanConversations({}, 100, cursor),
+            BACKGROUND_CONTEXT,
+          );
+          for (const conversation of page.items) {
+            const legacy = await core.harness.snapshot(
+              Workspace,
+              conversation.id,
+              BACKGROUND_CONTEXT,
+            );
+            if (!legacy) {
+              continue;
+            }
+            const local = stateSchema.parse(legacy);
+            await core.harness.commit(async (tx) => {
+              const ticket = await core.ticketOf(tx, conversation.id);
+              if (!ticket) {
+                return;
+              }
+              const doc = await tx.doc(Publications, ticket, null);
+              const current = publicationsSchema.parse(doc);
+              for (const [repository, saved] of Object.entries(
+                local.checkouts,
+              )) {
+                if (!saved.published && !saved.pending) {
+                  continue;
+                }
+                current.publications[saved.branch] ??= {
+                  repository: Number(repository),
+                  branch: saved.branch,
+                  base: saved.base,
+                  head: saved.published,
+                };
+              }
+              doc.publications = current.publications;
+            }, BACKGROUND_CONTEXT);
+          }
+          cursor = page.next;
+        } while (cursor);
         return async () => {
           followThread = undefined;
+          ticketOf = undefined;
         };
       },
       readOnlyTools: [GITHUB_TOOLS[0], ...GITHUB_READ_TOOLS],
