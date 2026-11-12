@@ -173,7 +173,7 @@ export const LIMITS = {
   assignments: 50,
   pending: 32,
   systemWakes: 5,
-  idleTicketEndMs: 14 * 24 * 60 * 60_000,
+  idleTicketEndMs: 7 * 24 * 60 * 60_000,
   text: 4000,
   textMax: 8000,
   list: 20,

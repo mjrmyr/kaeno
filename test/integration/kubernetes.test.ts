@@ -1369,8 +1369,12 @@ it("reports startup cleanup errors without blocking recovery and retries on the 
   cleanups.push(() => core.close());
   expect(onReport).toHaveBeenCalledWith(error);
   expect(reconcile).toHaveBeenCalledTimes(1);
-  await vi.advanceTimersByTimeAsync(5 * 60_000);
+  await vi.advanceTimersByTimeAsync(150_000 - 1);
+  expect(reconcile).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1);
   expect(reconcile).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(150_000);
+  expect(reconcile).toHaveBeenCalledTimes(3);
   expect(onReport).toHaveBeenCalledTimes(1);
 });
 

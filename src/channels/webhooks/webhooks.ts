@@ -15,7 +15,7 @@ export interface WebhookEvent {
   threads: string[];
   actor: string;
   text: string;
-  /** The threads are finished, for example a merged pull request: tickets stop following them. */
+  /** The threads are finished, for example a merged pull request: their tickets end. */
   closes: boolean;
 }
 /**
@@ -132,7 +132,7 @@ export class WebhookServer {
         const threads = event.threads.map(
           (thread) => `${source.name}:${thread}`,
         );
-        const received = await core.harness.commit(async (tx) => {
+        const { received, works } = await core.harness.commit(async (tx) => {
           const result = await core.router.receive(tx, {
             key: `${source.name}:${id}`,
             source: source.name,
@@ -141,13 +141,15 @@ export class WebhookServer {
             authority: authorityOf(source.trust, actor),
             content: text,
           });
+          const works = [];
           if (closes && !result.duplicate) {
             for (const thread of threads) {
-              await core.router.closeThread(tx, thread);
+              works.push(...(await core.router.closeThread(tx, thread)));
             }
           }
-          return result;
+          return { received: result, works };
         }, BACKGROUND_CONTEXT);
+        await core.router.abortWorks(works, BACKGROUND_CONTEXT);
         return json(202, {
           trigger: received.id,
           duplicate: received.duplicate,

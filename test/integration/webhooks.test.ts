@@ -15,7 +15,7 @@ import { once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { openKaeno } from "../../src/core/application/index.ts";
 import {
   genericAdapter,
@@ -45,7 +45,7 @@ function lastInput(request: ModelContext) {
   return request.messages.findLast((message) => message.role !== "system");
 }
 
-async function fixture() {
+async function fixture(pauseWorker?: () => Promise<void>) {
   const faux = fauxProvider();
   const models = createModels();
   models.setProvider(faux.provider);
@@ -56,6 +56,7 @@ async function fixture() {
       const text = JSON.stringify(last?.content);
       if (getCurrentSystemPrompt(request.messages).includes("WORKER")) {
         workerRequests.push(request);
+        await pauseWorker?.();
         if (last?.role === "toolResult") {
           return answer("Nothing needed.");
         }
@@ -328,7 +329,7 @@ it("keeps every source inside its own threads", async () => {
   });
 });
 
-it("delivers a closing event, then stops following the thread", async () => {
+it("ends a thread's tickets on a closing event without reopening them on redelivery", async () => {
   await withFixture(async (fx) => {
     await fx.followingTicket("homelab:backups");
 
@@ -337,19 +338,96 @@ it("delivers a closing event, then stops following the thread", async () => {
     expect(
       (await fx.core.router.trigger(closing.body.trigger, context)).disposition,
     ).toMatchObject({ kind: "passed", tickets: ["k1"] });
-    await fx.idleAfter(2);
-    expect((await fx.ticket())?.followed).toEqual([]);
+    expect((await fx.ticket())?.status).toBe("ended");
+    expect(await fx.core.router.listTickets(context)).toEqual([]);
     expect(
       (await fx.core.router.thread("homelab:backups", context))?.subscribers,
     ).toEqual([]);
+    const assignments = (await fx.ticket())?.assignments.length;
+    const again = await fx.post("homelab", event("e1", { closes: true }));
+    expect(again.body.duplicate).toBe(true);
 
     const later = await fx.post("homelab", event("e2"));
     expect(
       (await fx.core.router.trigger(later.body.trigger, context)).disposition
         ?.kind,
     ).not.toBe("passed");
-    expect((await fx.ticket())?.assignments).toHaveLength(2);
+    expect((await fx.ticket())?.status).toBe("ended");
+    expect((await fx.ticket())?.assignments.length).toBe(assignments);
   });
+});
+
+it("expires idle tickets after seven days", async () => {
+  await withFixture(async (fx) => {
+    await fx.followingTicket("homelab:backups");
+    const ticket = await fx.ticket();
+    if (!ticket) {
+      throw new Error("Missing ticket");
+    }
+    const updatedAt = ticket.updatedAt;
+    const day = 24 * 60 * 60_000;
+    const now = vi.spyOn(Date, "now");
+    try {
+      now.mockReturnValue(updatedAt + 7 * day - 1);
+      fx.core.router.schedulePump();
+      await fx.core.router.idle();
+      expect((await fx.ticket())?.status).toBe("idle");
+
+      now.mockReturnValue(updatedAt + 7 * day + 1);
+      fx.core.router.schedulePump();
+      await fx.core.router.idle();
+      expect(await fx.ticket()).toMatchObject({
+        status: "ended",
+        ended: { by: "host", reason: "no activity for 7 days" },
+      });
+      expect(await fx.core.router.openConversations(context)).toEqual([]);
+    } finally {
+      now.mockRestore();
+    }
+  });
+});
+
+it("aborts an active Assignment when its pull request closes", async () => {
+  let paused = false;
+  let resume!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    resume = resolve;
+  });
+  const fx = await fixture(async () => {
+    if (paused) {
+      await gate;
+    }
+  });
+  try {
+    await fx.followingTicket(PULL);
+    paused = true;
+    const seen = fx.workerRequests.length;
+    await fx.postGitHub("pull_request", pull("synchronize", "mjrmyr"), "d1");
+    await until(() => fx.workerRequests.length > seen, "active Assignment");
+    const assignment = (await fx.ticket())?.assignments.at(-1);
+    if (!assignment) {
+      throw new Error("Missing active Assignment");
+    }
+    expect(assignment.endedAt).toBeUndefined();
+    const abort = vi.spyOn(fx.core.router, "abortWorks");
+
+    const closing = fx.postGitHub(
+      "pull_request",
+      pull("closed", "mjrmyr"),
+      "d2",
+    );
+    await until(
+      async () => (await fx.ticket())?.status === "ended",
+      "ended ticket",
+    );
+    resume();
+    expect((await closing).status).toBe(202);
+    expect(abort).toHaveBeenCalledWith([assignment.workId], context);
+    expect(await fx.core.router.openConversations(context)).toEqual([]);
+  } finally {
+    resume();
+    await fx.close();
+  }
 });
 
 it("records a redelivered event once", async () => {
@@ -466,31 +544,38 @@ it("reports a finished CI run to every pull request it ran for", async () => {
   });
 });
 
-it("stops following a pull request once it is merged", async () => {
-  await withFixture(async (fx) => {
-    await fx.followingTicket(PULL);
+it.each([false, true])(
+  "ends tickets when a pull request closes (merged: %s)",
+  async (merged) => {
+    await withFixture(async (fx) => {
+      await fx.followingTicket(PULL);
 
-    const merged = await fx.postGitHub(
-      "pull_request",
-      pull("closed", "mjrmyr", {
-        pull_request: {
-          ...pull("closed", "mjrmyr").pull_request,
-          merged: true,
-        },
-      }),
-      "d1",
-    );
+      const closing = await fx.postGitHub(
+        "pull_request",
+        pull("closed", "mjrmyr", {
+          pull_request: {
+            ...pull("closed", "mjrmyr").pull_request,
+            merged,
+          },
+        }),
+        "d1",
+      );
 
-    expect(
-      (await fx.core.router.trigger(merged.body.trigger, context)).disposition,
-    ).toMatchObject({ kind: "passed", tickets: ["k1"] });
-    await fx.idleAfter(2);
-    expect(JSON.stringify(fx.workerRequests.at(-1)?.messages)).toContain(
-      "mjrmyr merged pull request mjrmyr/kaeno#12",
-    );
-    expect((await fx.ticket())?.followed).toEqual([]);
-  });
-});
+      expect(
+        (await fx.core.router.trigger(closing.body.trigger, context))
+          .disposition,
+      ).toMatchObject({ kind: "passed", tickets: ["k1"] });
+      expect(await fx.ticket()).toMatchObject({
+        status: "ended",
+        ended: { by: "host", reason: `thread ${PULL} closed` },
+      });
+      expect(await fx.core.router.openConversations(context)).toEqual([]);
+      expect((await fx.core.router.thread(PULL, context))?.subscribers).toEqual(
+        [],
+      );
+    });
+  },
+);
 
 it("refuses GitHub deliveries without GitHub's signature and ignores events Kaeno does not act on", async () => {
   await withFixture(async (fx) => {
