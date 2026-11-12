@@ -519,7 +519,7 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
           .catch((error: unknown) => {
             options.onReport?.(error);
           });
-      }, 5 * 60_000);
+      }, 150_000);
       stopping.signal.addEventListener("abort", () => clearInterval(timer), {
         once: true,
       });

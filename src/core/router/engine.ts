@@ -823,12 +823,21 @@ export class Engine {
     const record = await tx.doc(ThreadDoc, thread, thread);
     record.subscribers = record.subscribers.filter((id) => id !== ticketId);
   }
-  /** A source finished a thread, for example a merged pull request: no ticket follows it any more. */
-  async closeThread(tx: Tx, key: string): Promise<void> {
+  /** End tickets following a finished thread. The caller aborts returned works after committing. */
+  async closeThread(tx: Tx, key: string): Promise<TaskId[]> {
     const thread = await tx.doc(ThreadDoc, key, key);
+    const works: TaskId[] = [];
     for (const ticketId of [...thread.subscribers]) {
-      await this.unsubscribe(tx, ticketId, key);
+      works.push(
+        ...(await this.stopTicket(
+          tx,
+          ticketId,
+          "host",
+          `thread ${key} closed`,
+        )),
+      );
     }
+    return works;
   }
   /** Subscribe the publishing conversation's ticket, if it belongs to one. */
   async followConversation(
