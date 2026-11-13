@@ -287,7 +287,8 @@ export function routerTools(engine: Engine): ToolRegistration[] {
     execute: async ({ ticket, text: message, basis }, api, context) => {
       await engine.requireOwnerBasis(basis, context);
       await api.commit(
-        (tx) => engine.messageTicket(tx, ticket, message, String(api.taskId)),
+        (tx) =>
+          engine.messageTicket(tx, ticket, message, String(api.taskId), basis),
         context,
       );
       return text(`Delivered to ${ticket}.`);

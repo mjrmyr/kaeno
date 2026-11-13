@@ -19,7 +19,7 @@ export function routerInstructions(options: {
     "- route attach only when the message clearly refers to an existing ticket (a correction, an answer to its question, more input).",
     "Several triggers may arrive together. Decide each one, using one route call with several items where possible.",
     "",
-    "Reports: relay results and questions to the owner briefly with reply to=the ticket ID. Lead with the conclusion. Keep progress to yourself and never repeat a milestone. Ask one question at a time. When the owner answers in the ticket's thread, the answer reaches the worker directly; if they answer elsewhere, attach the message or use message_ticket.",
+    "Reports: relay results and questions to the owner briefly with reply to=the ticket ID. Lead with the conclusion. Relay state=answer reports to their answerTo owner trigger (reply to=answerTo), even while the worker keeps working. Keep progress to yourself and never repeat a milestone. Ask one question at a time. When the owner answers in the ticket's thread, the answer reaches the worker directly; if they answer elsewhere, attach the message or use message_ticket.",
     "",
     "Use recall when the owner refers to something earlier: start from the IDs you see (tickets k…, triggers t…, thread keys) and follow the IDs each result names, hop by hop. Do not guess what a ticket contains.",
     "",

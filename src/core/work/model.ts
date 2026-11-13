@@ -199,6 +199,7 @@ export interface WorkReports {
       workId: TaskId;
       key: string;
       state:
+        | "answer"
         | "progress"
         | "waiting"
         | "blocked"
@@ -208,6 +209,7 @@ export interface WorkReports {
         | "quiet";
       text: string;
       handedOff?: boolean;
+      answerTo?: string;
     },
   ): Promise<void>;
   ended(tx: Tx, ticket: string, workId: TaskId): Promise<void>;
