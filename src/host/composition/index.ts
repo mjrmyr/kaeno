@@ -13,3 +13,5 @@ export type {
 } from "./environment.ts";
 export { parseEnvironmentConfiguration } from "./configuration.ts";
 export type { EnvironmentConfiguration } from "./configuration.ts";
+
+export { DEFAULT_MODEL, KAENO_PERSONA, parseModelRef } from "./persona.ts";

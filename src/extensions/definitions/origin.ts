@@ -1,6 +1,6 @@
 import { defineExtension } from "@earendil-works/pi-durable";
 import { z } from "zod";
-import type { Binding, KaenoExtension } from "../../core/application/index.ts";
+import type { KaenoExtension } from "../../core/application/index.ts";
 
 const contentHash = z.string().regex(/^[a-f0-9]{64}$/);
 export const definitionOriginSchema = z.discriminatedUnion("kind", [
@@ -27,13 +27,6 @@ const valueSchema = z.object({
   agent: z.string().min(1),
   origin: definitionOriginSchema,
 });
-
-export function agentOriginBinding(
-  agent: string,
-  origin: DefinitionOrigin,
-): Binding {
-  return { owner: OWNER, version: 1, value: { agent, origin } };
-}
 
 /** Audit data only: saved work never consults a live source or current commit. */
 export function definitionOriginsExtension(): KaenoExtension {

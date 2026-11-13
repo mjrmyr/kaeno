@@ -7,9 +7,9 @@
 > -> should explain the principles, and primitives used
 > how to get kaeno up and running?
 
-Kaeno is a small, self-hosted durable agent host. One long-lived **router** conversation receives every event from every channel and keeps the owner's work continuous; each task runs as a **ticket** in its own isolated worker conversation, and follow-ups in a ticket's thread go straight to its worker. Routing, tickets, deliveries and WORK orchestration use one pi-durable runtime; see [routing](docs/routing.md). Agents are a core concept: WORK stores the agent each work runs as and the plan frozen at root admission, and resolves agent names. Where agents and skills come from is not: Markdown and repository definitions, catalogs and skills are extensions, and the durable core never reads their files.
+Kaeno is a small, self-hosted durable agent host. One long-lived **router** conversation receives every event from every channel and keeps the owner's work continuous; each task runs as a **ticket** in its own isolated worker conversation, and follow-ups in a ticket's thread go straight to its worker. Routing, tickets, deliveries and WORK orchestration use one pi-durable runtime; see [routing](docs/routing.md). Kaeno has one repository-owned persona and delegates to generic pi-durable workers. Skills supply specialization; no external agent definitions or named worker personalities are required. WORK freezes its resolved setup at root admission, and the durable core never reads skill source files.
 
-The CLI loads one owner configuration using `KAENO_CONFIG` (default `.kaeno/config.json`). It names public GitHub repositories and explicitly selects Kaeno and the available workers. `workers` takes `source:name` IDs or `source:*`, which selects every agent of that source except the one Kaeno runs as (list it explicitly to make it a worker too); a wildcard fails rather than skip a source with invalid agent records. Every agent, Kaeno included, gets its skills from the `skills` field of its own profile. Repository fetching and the immutable cache are host-side. Local source definitions use the same catalog and loader; the only deployment difference is the persistent storage directory (ordinary disk locally, PVC on Kubernetes).
+The CLI loads one owner configuration using `KAENO_CONFIG` (default `.kaeno/config.json`). It names skill repositories and optional local skill directories. All configured skills are assigned to Kaeno and generic workers by default; `skills: ["source:name", "source:*"]` selects a subset, and `skills: []` selects none. Source acquisition and the immutable cache are host-side. Kaeno's identity and instructions live in [`src/host/composition/persona.ts`](src/host/composition/persona.ts), not Myriad. The model defaults to `openai/gpt-6.1-sol`; `defaultModel` overrides it, and `KAENO_DEFAULT_MODEL` takes precedence.
 
 By default, the router and every worker have `list_skills` and `read_skill`, even with no assigned skills. They discover assigned skill IDs and descriptions with `list_skills`, then load relevant instructions with `read_skill`. An empty list means none are available for automatic use.
 
@@ -27,13 +27,13 @@ export KAENO_DATA_DIR="$PWD/.kaeno/data"
 npm start
 ```
 
-Kaeno (the router) has the routing tools by default: `route`, `reply`, `recall`, `list_tickets`, `message_ticket` and `stop_ticket`, plus owner memory, routine proposals and skills. It has no execution tools: GitHub, Zotero, MCP, browser and coding tools belong to workers, and an assistant profile that lists one fails startup. With no workers configured, it answers but cannot accept tickets. Explicit `tools` lists remain authoritative.
+Kaeno (the router) has the routing tools by default: `route`, `reply`, `recall`, `list_tickets`, `message_ticket` and `stop_ticket`, plus owner memory, routine proposals and skills. It has no execution tools: GitHub, Zotero, MCP, browser and coding tools belong to workers, and role policy keeps execution tools out of its setup. A generic worker is always configured by the CLI, even with no skills or source definitions.
 
-Edit `kaeno.config.example.json` to choose repositories, a Kaeno profile and worker profiles. The example pins a Myriad profile commit; update the pin intentionally when selecting a newer revision. Copy the configuration locally and use a persistent source cache. Each repository declaration explicitly selects a definition-reader `provider`: `github` for public repositories, or `github-app-<installationId>` for the host-only App reader configured by `KAENO_GITHUB_CONFIG`. Both are provided by the installed GitHub integration; public definitions require no App key or GitHub agent tools. Older shorthand/provider-less declarations need conversion and one source refresh before offline use; see [definition readers](docs/extensions.md#definition-readers).
+Edit `kaeno.config.example.json` to choose skill repositories and a model. The example pins Myriad skills; update the pin intentionally. Copy the configuration locally and use a persistent source cache. Each repository declaration explicitly selects a skill reader `provider`: `github` for public repositories, or `github-app-<installationId>` for the host-only App reader configured by `KAENO_GITHUB_CONFIG`. Public skills require no App key or agent tools. See [definition readers](docs/extensions.md#definition-readers).
 
-The CLI uses Docker for worker environments by default. Select Docker, [microsandbox microVMs](docs/microsandbox.md), or the optional [Kubernetes extension](docs/kubernetes.md) through `execution.provider` and `execution.configFile` in `KAENO_CONFIG`; see [execution backend configuration and safe switching](docs/execution.md). An available worker can start any other available worker, subject to the configured `KAENO_WORK_MAX_DEPTH` and concurrent-work limit. WORK freezes the agent settings when the root work is admitted; later file changes affect only newly admitted work after restart.
+The CLI uses Docker for worker environments by default. Select Docker, [microsandbox microVMs](docs/microsandbox.md), or the optional [Kubernetes extension](docs/kubernetes.md) through `execution.provider` and `execution.configFile` in `KAENO_CONFIG`; see [execution backend configuration and safe switching](docs/execution.md). A generic worker can delegate independent tasks to another generic worker, subject to the configured `KAENO_WORK_MAX_DEPTH` and concurrent-work limit. WORK freezes the resolved worker settings when the root work is admitted; later file changes affect only newly admitted work after restart.
 
-Agent frontmatter `name` and `description` are required. Optional fields include `model`, `skills`, and `tools`. The Markdown body is the system prompt. A worker uses its profile model, or the explicit owner `defaultModel` / `KAENO_DEFAULT_MODEL`; it does not inherit Kaeno's model. Omitted tools inherit host-approved defaults. `tools: []` means no tools. Omitted skills means no source-assigned skills. Unknown metadata is inert. A `source:*` skill selector expands deterministically and saves concrete skill snapshots.
+Skills keep their `SKILL.md` directory-package format and assets. A `source:*` skill selector expands deterministically and saves concrete skill snapshots. Worker setup is built from the shared model and host-owned tool defaults, not agent frontmatter.
 
 A skill has `name` and `description` frontmatter, an optional supported `disable-model-invocation` flag, a Markdown instruction body, and optional relative assets. Skills provide knowledge only; they do not grant tools or credentials. Skill discovery and reading use each conversation's saved bindings, not a live global catalog. `list_skills` excludes skills marked `disable-model-invocation`; explicitly requesting an assigned skill with `read_skill` remains supported. Binary assets are retained and returned as base64. Scripts and asset bytes are not implicitly mounted or executed in the sandbox. When an explicit tool list omits `read_skill`, visible assigned skill instructions are rendered inline instead of granting a hidden tool.
 
@@ -51,7 +51,7 @@ Kaeno keeps a durable memory of its owner in the router, kept across compaction.
 
 ## Routines
 
-A routine is work that runs on its own schedule: each run is a ticket for the routine's worker agent with its instructions, started without a router decision because you approved the routine. Its report reaches the router, which relays it to the routine's thread.
+A routine is work that runs on its own schedule: each run is a ticket for the generic worker with its instructions, started without a router decision because you approved the routine. Its report reaches the router, which relays it to the routine's thread.
 
 Ask Kaeno ("check my PRs every weekday at 8") and it **proposes** the routine as a change, for example `c17`. Nothing changes until you approve it: `/kaeno-approve c17` (or `/kaeno-reject c17`, `/kaeno-changes`) in Pi, or `POST /v1/routines/changes/c17/approve` / `reject`. Changing or deleting a routine works the same way. A proposal is applied exactly as proposed, and one made against an older version of a routine is refused. Kaeno can propose only by citing your own message, never from a work or routine report, and it cannot start runs.
 
@@ -60,7 +60,6 @@ You can also manage routines directly:
 ```sh
 curl -X POST localhost:8080/v1/routines -d '{
   "name": "PR check",
-  "agent": "swe",
   "instructions": "Check open PRs in mjrmyr/kaeno and report failing checks.",
   "schedule": { "at": "08:00", "timeZone": "Europe/Berlin", "days": [1, 2, 3, 4, 5] }
 }'
@@ -106,15 +105,15 @@ A `github` source takes GitHub's own webhook deliveries for pull requests, revie
 
 ## Embed and extend
 
-The embedding entry point is `openKaeno` in `src/core/application/index.ts`. Callers supply resolved native assistant settings and explicitly install pi-durable extensions. WORK takes `work.agents`: plain agent profiles (`id`, `description`, resolved `setup`). `openKaeno` checks every agent against the approved worker tools and installed binding owners and throws on a misfit, so an agent that cannot run fails startup instead of being listed as unavailable. `loadEnvironment` in `src/host/composition/index.ts` resolves the same configured sources for local, Docker, and Kubernetes hosts; source acquisition and catalogs do not enter durable core.
+The embedding entry point is `openKaeno` in `src/core/application/index.ts`. Callers supply resolved native assistant settings and explicitly install pi-durable extensions. WORK takes one `work.setup`: the resolved generic worker model, instructions, tools and bindings. `openKaeno` validates it against approved worker tools and installed binding owners. `loadEnvironment` in `src/host/composition/index.ts` provides the built-in persona and skills-only composition for local, Docker and Kubernetes hosts; source acquisition and skill catalogs do not enter durable core.
 
-Agent-facing extensions expose tools and skills through an [extension contribution boundary](docs/extensions.md), backed by a small native runtime projection. The application installs extensions and separately sets availability and defaults; exact profile lists override defaults. Private binding production and skill snapshots are handled by composition, not extension-specific host wiring.
+Agent-facing extensions expose tools and skills through an [extension contribution boundary](docs/extensions.md), backed by a small native runtime projection. The application installs extensions and separately sets availability and defaults; role defaults determine the resolved assignments. Private binding production and skill snapshots are handled by composition, not extension-specific host wiring.
 
-Native extensions are trusted process code, fixed before the harness opens. There is no hot loader or plugin marketplace. Agent/skill Markdown is data, not executable extension code. An agent may author a patch or a future native extension, but adopting that code into the running process remains an owner-controlled release decision.
+Native extensions are trusted process code, fixed before the harness opens. There is no hot loader or plugin marketplace. Skill Markdown is data, not executable extension code. An agent may author a patch or a future native extension, but adopting that code into the running process remains an owner-controlled release decision.
 
 ## Private repository work
 
-The optional [GitHub App extension](docs/github.md) gives all agents installation-wide repository discovery, credential-free sandbox checkout, and draft-PR publishing. Configure `KAENO_GITHUB_CONFIG` with an owner-controlled App/installation file; GitHub tools become defaults for Kaeno and workers, while explicit `tools` lists still override defaults; no GitHub credentials are needed when the extension is disabled. GitHub controls repository access and permissions, with no duplicated per-agent policies. Other platforms can supply independent extensions through the same tool/binding/prompt-section composition.
+The optional [GitHub App extension](docs/github.md) gives all agents installation-wide repository discovery, credential-free sandbox checkout, and draft-PR publishing. Configure `KAENO_GITHUB_CONFIG` with an owner-controlled App/installation file; GitHub tools become worker defaults through host role policy; no GitHub credentials are needed when the extension is disabled. GitHub controls repository access and permissions, with no duplicated per-agent policies. Other platforms can supply independent extensions through the same tool/binding/prompt-section composition.
 
 ## Data directory
 
@@ -129,7 +128,7 @@ Back up both together.
 
 Definitions used by admitted work are frozen. On restart, missing saved native definitions, incompatible work plans, or a changed execution environment identity fail closed rather than silently changing running work. Finish or cancel work with its original backend before switching. Older unfinished work without an environment identity must be drained with the previous release before upgrading. Take a consistent SQLite backup before opening a changed release; opening the harness writes recovery reconciliation state. External side effects are not transactional with SQLite and may be uncertain after a crash.
 
-This cut intentionally does not migrate the prior WORK/Telegram database, the per-chat conversations of releases before the router, or legacy JSON configuration. Define/select a catalog agent in `KAENO_CONFIG`; do not rely on `.kaeno/AGENT.md` as an assistant override. Start this release with a fresh data directory: both `durable.sqlite` and `kaeno.sqlite` (owner memory and routines) must be new.
+Migrating from agent-definition configuration: remove `agentRepositories`, `kaeno`, `workers` and `localDefinitions.agents`; keep skill sources and optionally add top-level `skills` and `defaultModel`. Old keys fail with migration guidance instead of being silently ignored. Refresh the source cache once after changing the recipe before using offline mode. No fresh database is required solely for this change: existing saved WORK plans, skill snapshots and historical definition-origin bindings remain readable. Existing routines use the generic worker on their next run. Releases predating the durable router may still require their separately documented database migration.
 
 See the [core entry point](src/core/application/index.ts), [WORK implementation](src/core/work/work.ts) and [extension composition tests](test/integration/extensions.test.ts).
 
@@ -141,51 +140,15 @@ npm run verify
 
 The official Playwright MCP integration exposes browser tools directly to worker models,
 with one isolated stdio session inside each WORK sandbox. Browser tools are included in WORK
-defaults; explicit agent tool lists remain authoritative, and host execution is forbidden.
+defaults through worker role policy; host execution is forbidden.
 No browser proxy service or opt-in environment variable is required. See
 [browser MCP prerequisites and lifecycle](docs/browser-mcp.md) for the existing WORK network
 boundary, its limitations, and sandboxed Chromium runtime requirements. No deployment security
 settings are relaxed automatically.
 
-## Flat agent records and rollout
-
-Agent sources contain immediate `agents/<name>.md` records, not
-`agents/<name>/AGENT.md` packages. The filename stem must exactly match the parsed
-frontmatter `name`; IDs stay `<source>:<name>`. Keep README material outside the
-agent root. Legacy packages are diagnosed but never loaded. Skills keep their
-existing `SKILL.md` directory-package discovery and assets.
-
-For agent repositories, omitted `path` defaults to `agents`; an explicit path
-(including `""` for the repository root) is the exact, nonrecursive root. Local
-agent directories are already exact roots. Injected agent sources now return
-`AgentDocument` records (`manifestPath`, `manifest`, `source`) from `snapshot()`.
-New agent origins use the actual file path and SHA-256 of exact file bytes; old
-saved origins remain valid audit records with their original directory/tree-hash
-meaning. Saved WORK definitions, children and skill bytes are not re-resolved.
-
-This is the strict-reader implementation of [PR36](https://github.com/mjrmyr/kaeno/pull/36).
-Roll out only as a coordinated release:
-
-1. Build a compatible runtime and validate Myriad's flattened agent commit.
-2. Before either incompatible `main` change can reach a live consumer, verify and
-   gate the actual deployment state. Homelab currently follows Myriad `main` in
-   both lists; do not rely on its README's suspension claim as a verified gate.
-3. In a separately authorized Homelab change, pin **both** `agentRepositories`
-   and `skillRepositories` to that same flattened Myriad commit, together with the
-   compatible real image digest in both host and sandbox image settings.
-4. Refresh successfully before using offline mode. Legacy completed cache loads
-   require refresh under the new flat discovery policy; old immutable trees and
-   completed records are retained, never silently reinterpreted or purged.
-5. Verify selected IDs, concrete skills, file origins, offline reload and saved
-   WORK recovery before deployment. Rollback restores the old runtime **and**
-   old Myriad pin/config together; no database migration is required.
-
-These changes do not merge, deploy or alter Homelab pins. CI image-build checks
-are not a production rollout.
-
 ## Zotero library
 
-The optional Zotero extension gives Kaeno and every worker read-only access to one Zotero library through the Zotero web API: `zotero_search_items`, `zotero_get_item`, `zotero_get_children` (notes, attachments, PDF annotations), `zotero_get_fulltext` and `zotero_list_collections`. They are defaults for both roles; explicit `tools` lists still override defaults. Set `KAENO_ZOTERO_CONFIG` to an owner-controlled file:
+The optional Zotero extension gives workers read-only access to one Zotero library through the Zotero web API: `zotero_search_items`, `zotero_get_item`, `zotero_get_children` (notes, attachments, PDF annotations), `zotero_get_fulltext` and `zotero_list_collections`. They are worker defaults; Kaeno remains a router without library execution tools. Set `KAENO_ZOTERO_CONFIG` to an owner-controlled file:
 
 ```json
 { "library": { "type": "user", "id": 1234567 }, "apiKeyFile": "zotero.key" }

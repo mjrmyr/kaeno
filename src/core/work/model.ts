@@ -11,9 +11,9 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import { z } from "zod";
-import type { SetupSurface } from "../conversation/index.ts";
+import type { ConversationSetup, SetupSurface } from "../conversation/index.ts";
 import { parseConversationId, type Stored } from "../durable/index.ts";
-import type { AgentProfile, WorkEnvironment } from "./plan.ts";
+import type { WorkEnvironment } from "./plan.ts";
 const workParentSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("ticket"),
@@ -178,8 +178,8 @@ export interface WorkDetails extends WorkView {
 }
 /** Core WORK settings supplied by application composition. */
 export interface WorkSettings {
-  /** Agents WORK may start, fit-checked once when Kaeno opens. */
-  agents: readonly AgentProfile[];
+  /** Generic worker setup, fit-checked once when Kaeno opens. */
+  setup: ConversationSetup;
   environment?: WorkEnvironment;
   /** Operational failures that do not prevent durable reporting or cleanup retries. */
   onReport?: (error: unknown) => void;

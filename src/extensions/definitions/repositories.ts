@@ -17,10 +17,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { lock } from "proper-lockfile";
 import { z } from "zod";
 import {
-  agentSource,
   directorySource,
   readManifestFile,
-  type AgentSource,
   type DefinitionPackage,
   type DefinitionSource,
 } from "./directory.ts";
@@ -40,30 +38,27 @@ export interface DefinitionReader extends RepositoryReader {
   readonly name: string;
 }
 export interface RepositoryDefinitionSource {
-  kind: "agents" | "skills";
+  kind: "skills";
   provider: string;
   repository: string;
   ref: string;
   path: string;
 }
 export interface DirectoryDefinitionSource {
-  kind: "agents" | "skills";
+  kind: "skills";
   alias: string;
   directory: string;
 }
 export interface DefinitionSources {
-  agents: AgentSource[];
   skills: DefinitionSource[];
 }
-// Completed-load record format. Version 2 reads agents as flat `agents/<name>.md` records;
-// version 1 records hold directory packages and are never reinterpreted.
+// Keep the completed-load format stable for existing skills-only offline caches.
 const RECORD_VERSION = 2;
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const pinSchema = z
   .object({
     key: hashSchema,
     hash: hashSchema,
-    absent: z.literal(true).optional(),
     commit: z
       .string()
       .regex(/^[a-f0-9]{40,64}$/)
@@ -414,12 +409,8 @@ export async function withDefinitionSources<Result>(
           JSON.parse(await readFile(record, "utf8")),
         );
       } catch {
-        const legacy = await lstat(join(records, `${recipeFor(1)}.json`)).then(
-          () => true,
-          () => false,
-        );
         throw new Error(
-          `Definitions: no verified complete offline input set for this source configuration${legacy ? "; refresh required for flat agent discovery" : ""}`,
+          "Definitions: no verified complete offline input set for this source configuration",
         );
       }
       if (
@@ -432,7 +423,7 @@ export async function withDefinitionSources<Result>(
       }
       for (const pin of parsed.pins) {
         const input = inputs.get(pin.key);
-        if (input && "repository" in input && (!pin.commit || pin.absent)) {
+        if (input && "repository" in input && !pin.commit) {
           throw new Error("Definitions: offline input has no commit");
         }
         if (
@@ -449,7 +440,6 @@ export async function withDefinitionSources<Result>(
         const destination = join(staging, key);
         await mkdir(destination);
         let commit: string | undefined;
-        let absent = false;
         if ("repository" in input) {
           const result = await input.reader.read(
             { repository: input.repository, ref: input.ref },
@@ -461,35 +451,13 @@ export async function withDefinitionSources<Result>(
             .regex(/^[a-f0-9]{40,64}$/)
             .parse(result.commit);
         } else {
-          try {
-            await lstat(input.directory);
-          } catch (error) {
-            if (
-              !(
-                error instanceof Error &&
-                "code" in error &&
-                error.code === "ENOENT"
-              ) ||
-              options.directories.some(
-                (item) =>
-                  item.directory === input.directory && item.kind !== "agents",
-              )
-            ) {
-              throw error;
-            }
-            absent = true;
-          }
-          if (!absent) {
-            const before = await definitionTreeHash(input.directory, signal);
-            await copyDirectory(input.directory, destination, signal);
-            if (
-              (await definitionTreeHash(input.directory, signal)) !== before ||
-              (await definitionTreeHash(destination, signal)) !== before
-            ) {
-              throw new Error(
-                "Definitions: local input changed during capture",
-              );
-            }
+          const before = await definitionTreeHash(input.directory, signal);
+          await copyDirectory(input.directory, destination, signal);
+          if (
+            (await definitionTreeHash(input.directory, signal)) !== before ||
+            (await definitionTreeHash(destination, signal)) !== before
+          ) {
+            throw new Error("Definitions: local input changed during capture");
           }
         }
         signal.throwIfAborted();
@@ -509,12 +477,11 @@ export async function withDefinitionSources<Result>(
         pins.push({
           key,
           hash,
-          ...(absent ? { absent: true } : {}),
           ...(commit ? { commit } : {}),
         });
       }
     }
-    const sources: DefinitionSources = { agents: [], skills: [] };
+    const sources: DefinitionSources = { skills: [] };
     for (const { source: item, key } of repositories) {
       const pin = pins.find((candidate) => candidate.key === key);
       if (!pin?.commit) {
@@ -532,12 +499,6 @@ export async function withDefinitionSources<Result>(
           path: relative(exportRoot, path).split(sep).join("/"),
           contentHash,
         };
-      }
-      if (item.kind === "agents") {
-        sources.agents.push(
-          agentSource(item.repository, join(exportRoot, item.path), origin),
-        );
-        continue;
       }
       sources.skills.push(
         sourceView({
@@ -557,20 +518,6 @@ export async function withDefinitionSources<Result>(
       if (!pin) {
         throw new Error("Definitions: directory input missing");
       }
-      if (pin.absent && item.kind === "agents") {
-        sources.agents.push({
-          alias: item.alias,
-          async snapshot() {
-            return {
-              documents: [],
-              diagnostics: [
-                { location: item.directory, message: "Agent root is missing" },
-              ],
-            };
-          },
-        });
-        continue;
-      }
       const exportRoot = join(trees, pin.hash);
       function origin(path: string, contentHash: string): DefinitionOrigin {
         return {
@@ -579,10 +526,6 @@ export async function withDefinitionSources<Result>(
           path: join(item.directory, relative(exportRoot, path)),
           contentHash,
         };
-      }
-      if (item.kind === "agents") {
-        sources.agents.push(agentSource(item.alias, exportRoot, origin));
-        continue;
       }
       sources.skills.push(
         sourceView({

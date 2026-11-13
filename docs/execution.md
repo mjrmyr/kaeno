@@ -15,7 +15,7 @@ Select the backend in the owner file named by `KAENO_CONFIG`. All backends use t
 }
 ```
 
-This is a fragment of the owner configuration, alongside `sourceDirectory`, `kaeno`, and `workers`. Docker settings live in the referenced `docker.json`:
+This is a fragment of the owner configuration, alongside `sourceDirectory`, skill sources and optional `defaultModel`. Docker settings live in the referenced `docker.json`:
 
 ```json
 {
@@ -122,4 +122,4 @@ node scripts/ticket-smoke.ts docker
 node scripts/ticket-smoke.ts microsandbox
 ```
 
-The WORK smoke script takes an optional backend-file path after the provider, defaulting to the corresponding example file. Use a dedicated configuration with no explicit namespace (or a unique test owner for Kubernetes); never point the smoke script at an active application's namespace/owner. It opens a fresh database, resolves temporary agent definitions and a real discovered Browser contribution through `loadEnvironment`, loads the real backend through host composition, delegates a worker command, checks the guest OS/user/cwd and worker-only Browser assignment, and cleans up its work. The microsandbox lifecycle script additionally checks guest Chromium, restart adoption, stop/start, envd crash recovery, workspace persistence and orphan reconciliation against real VMs. The ticket script runs one ticket across several Assignments in real sandboxes with scripted models, and kills the host with SIGKILL while its sandbox is stopped, in the middle of a command, and right after the ticket ends. It checks files, freed slots and cleanup after each restart.
+The WORK smoke script takes an optional backend-file path after the provider, defaulting to the corresponding example file. Use a dedicated configuration with no explicit namespace (or a unique test owner for Kubernetes); never point the smoke script at an active application's namespace/owner. It opens a fresh database, composes the built-in persona, generic worker and a real discovered Browser contribution through `loadEnvironment`, loads the real backend through host composition, delegates a worker command, checks the guest OS/user/cwd and worker-only Browser assignment, and cleans up its work. The microsandbox lifecycle script additionally checks guest Chromium, restart adoption, stop/start, envd crash recovery, workspace persistence and orphan reconciliation against real VMs. The ticket script runs one ticket across several Assignments in real sandboxes with scripted models, and kills the host with SIGKILL while its sandbox is stopped, in the middle of a command, and right after the ticket ends. It checks files, freed slots and cleanup after each restart.

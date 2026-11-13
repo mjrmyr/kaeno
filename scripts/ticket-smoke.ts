@@ -8,7 +8,7 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,22 +60,11 @@ async function vms(): Promise<{ name: string; running: boolean }[]> {
 
 async function driver(): Promise<number> {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-ticket-smoke-"));
-  await mkdir(join(directory, "agents"), { recursive: true });
-  await writeFile(
-    join(directory, "agents/router.md"),
-    "---\nname: router\ndescription: Router\nmodel: openai/faux-1\ntools: [route, reply]\n---\nRouter.",
-  );
-  await writeFile(
-    join(directory, "agents/worker.md"),
-    "---\nname: worker\ndescription: Worker\nmodel: openai/faux-1\n---\nWorker.",
-  );
   await writeFile(
     join(directory, "config.json"),
     JSON.stringify({
       sourceDirectory: join(directory, "sources"),
-      kaeno: "local:router",
-      workers: ["local:worker"],
-      localDefinitions: { agents: [{ alias: "local", directory: "./agents" }] },
+      defaultModel: "openai/faux-1",
       execution: {
         provider: backend,
         configFile: resolve(`${backend}.config.example.json`),
@@ -206,7 +195,6 @@ async function runPhase(name: string, directory: string): Promise<void> {
                   {
                     trigger,
                     kind: "accept",
-                    agent: "worker",
                     title: trigger,
                     ack: "On it.",
                   },

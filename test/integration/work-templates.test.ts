@@ -22,27 +22,13 @@ import {
 } from "../mocks/router.ts";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import {
-  parseAgent,
-  resolveAgents,
-} from "../../src/extensions/agents/index.ts";
-import {
   SandboxWorkEnvironment,
   type SandboxProvider,
 } from "../../src/extensions/execution/index.ts";
 
-it("offers and launches every configured worker even when none delegate to each other", async () => {
+it("launches independent generic workers without external agent definitions", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kaeno-templates-"));
-  const names = ["easy", "medium", "high"];
-  const agents = resolveAgents({
-    agents: names.map((name) =>
-      parseAgent(
-        `---\nname: ${name}\ndescription: ${name} independent worker\nmodel: openai/faux-1\n---\nComplete work as ${name}.`,
-        "local",
-        `${name}.md`,
-      ),
-    ),
-    defaults: { tools: [] },
-  });
+  const names = ["inspect", "verify", "summarize"];
   const faux = fauxProvider({ provider: "openai" });
   const models = createModels();
   models.setProvider(faux.provider);
@@ -80,7 +66,6 @@ it("offers and launches every configured worker even when none delegate to each 
                 {
                   trigger: trigger[1],
                   kind: "accept",
-                  agent: name,
                   title: `Run ${name}`,
                   ack: "STARTED",
                 },
@@ -114,7 +99,11 @@ it("offers and launches every configured worker even when none delegate to each 
     },
     extensions: [{ durable: CodingTools }],
     work: {
-      agents,
+      setup: {
+        model: { provider: "openai", modelId: "faux-1" },
+        instructions: "Complete the assigned task carefully.",
+        tools: [],
+      },
       tools: [],
       environment: new SandboxWorkEnvironment({
         sandbox,
@@ -127,11 +116,7 @@ it("offers and launches every configured worker even when none delegate to each 
   try {
     const router = await core.router.routerConversation(context);
     const binding = await core.harness.snapshot(AgentDoc, router, context);
-    for (const choice of names) {
-      expect(binding?.instructions).toContain(
-        `- local:${choice}: ${choice} independent worker`,
-      );
-    }
+    expect(binding?.instructions).not.toContain("local:");
     for (const name of names) {
       const thread = `test-${name}`;
       await receive(core, `launch:${name}`, { thread });
@@ -149,12 +134,8 @@ it("offers and launches every configured worker even when none delegate to each 
     }
     expect(provisioned).toHaveLength(3);
     expect(workerPrompts).toHaveLength(3);
-    for (const name of names) {
-      expect(
-        workerPrompts.some((prompt) =>
-          prompt.includes(`Complete work as ${name}.`),
-        ),
-      ).toBe(true);
+    for (const prompt of workerPrompts) {
+      expect(prompt).toContain("Complete the assigned task carefully.");
     }
   } finally {
     await core.close();

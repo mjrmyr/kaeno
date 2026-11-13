@@ -9,26 +9,19 @@ import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { z } from "zod";
 import {
   assertSetupFits,
-  qualifiedIdMatches,
   setupSchema,
   type ConversationSetup,
   type SetupSurface,
 } from "../conversation/index.ts";
 
-/**
- * An agent WORK can start: the ID the model picks it by, a description for choosing it, and the
- * resolved setup it runs with. Where it came from (Markdown, a repository, code) is not core's concern.
- */
+/** Internal saved worker profile, retained verbatim for recovery of historical plans. */
 export interface AgentProfile {
   readonly id: string;
   readonly description: string;
   readonly setup: ConversationSetup;
 }
 
-/**
- * Agents frozen when CHAT admits a root WORK. Every agent may delegate to every other one;
- * children always start from this saved plan, never from the agents configured now.
- */
+/** Frozen execution setups. Historical multi-agent plans remain valid and are never migrated. */
 export interface WorkPlan {
   readonly root: string;
   readonly agents: Readonly<Record<string, AgentProfile>>;
@@ -138,7 +131,7 @@ export function storedPlan(plan: WorkPlan): JsonValue {
   );
 }
 
-/** The frozen plan for a root: every configured agent, normalized exactly as a stored plan is read. */
+/** Normalize a frozen execution plan using the same codec as saved historical plans. */
 export function planFor(
   root: string,
   agents: readonly AgentProfile[],
@@ -161,27 +154,5 @@ export function assertPlanFits(plan: WorkPlan, surface: SetupSurface): void {
   }
 }
 
-/** Resolve a requested name to one agent ID: exact, or the unique `<source>:<name>` match. */
-export function resolveAgentId(
-  requested: string,
-  ids: readonly string[],
-): string {
-  const matches = qualifiedIdMatches(requested, ids);
-  if (matches.length === 1) {
-    return matches[0];
-  }
-  throw new Error(
-    matches.length > 1
-      ? `Ambiguous agent "${requested}": use one of ${matches.join(", ")}`
-      : `Unknown agent "${requested}". Available: ${ids.join(", ") || "none"}`,
-  );
-}
-
-/** Model-facing agent listing. */
-export function describeAgents(
-  agents: readonly { id: string; description: string }[],
-): string {
-  return agents
-    .map((agent) => `- ${agent.id}: ${agent.description}`)
-    .join("\n");
-}
+/** Stable identity for all newly admitted work. */
+export const WORKER_ID = "kaeno:worker";

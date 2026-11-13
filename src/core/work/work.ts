@@ -10,7 +10,6 @@ import {
 import type { Binding } from "../conversation/index.ts";
 import { createWorkCommands, NoWorkSlot } from "./commands.ts";
 import type { WorkReports, WorkRuntime, WorkSettings } from "./model.ts";
-import { describeAgents, resolveAgentId } from "./plan.ts";
 import {
   assertSavedWorkFits,
   reconcileEnvironment,
@@ -49,9 +48,6 @@ export class Work {
       tasks: [task],
     });
   }
-  describeAgents(): string {
-    return describeAgents(this.settings.agents);
-  }
   async assertSavedWorkFits(context: Context): Promise<void> {
     await assertSavedWorkFits(this.harness, this.settings, context);
   }
@@ -69,13 +65,6 @@ export class Work {
       context,
     );
   }
-  /** The configured agent a requested name refers to; throws when unknown or ambiguous. */
-  resolveAgent(requested: string): string {
-    return resolveAgentId(
-      requested,
-      this.settings.agents.map((agent) => agent.id),
-    );
-  }
   /**
    * Start one Assignment of a ticket on its conversation. The same `key` always finds the same work, so a
    * retried launch never starts twice. Throws `NoWorkSlot` when every slot is taken.
@@ -85,7 +74,6 @@ export class Work {
       owner: ConversationId;
       key: string;
       ticket: string;
-      agent: string;
       title: string;
       content: UserInput;
       conversation: ConversationId;

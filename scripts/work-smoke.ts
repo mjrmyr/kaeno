@@ -8,7 +8,7 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -29,23 +29,12 @@ import { microsandboxExecutionProvider } from "../src/extensions/microsandbox/in
 // Use a dedicated backend file; never reuse an active application's explicit namespace/owner.
 const directory = await mkdtemp(join(tmpdir(), "kaeno-work-smoke-"));
 const provider = process.argv[2] ?? "docker";
-await mkdir(join(directory, "agents"), { recursive: true });
-await writeFile(
-  join(directory, "agents/smoke.md"),
-  "---\nname: smoke\ndescription: Smoke assistant\nmodel: openai/faux-1\ntools: [route, reply]\n---\nBe helpful.",
-);
-await writeFile(
-  join(directory, "agents/worker.md"),
-  "---\nname: worker\ndescription: Sandbox worker\nmodel: openai/faux-1\n---\nComplete the task and verify it.",
-);
 const configFile = join(directory, "config.json");
 await writeFile(
   configFile,
   JSON.stringify({
     sourceDirectory: join(directory, "sources"),
-    kaeno: "local:smoke",
-    workers: ["local:worker"],
-    localDefinitions: { agents: [{ alias: "local", directory: "./agents" }] },
+    defaultModel: "openai/faux-1",
     execution: {
       provider,
       configFile: resolve(process.argv[3] ?? `${provider}.config.example.json`),
@@ -165,7 +154,6 @@ faux.setResponses(
               {
                 trigger: trigger[1],
                 kind: "accept",
-                agent: "worker",
                 title: `${provider} smoke test`,
                 ack: "Started the worker.",
               },

@@ -15,8 +15,8 @@ These are separate decisions:
 | Term      | Meaning                                                                              |
 | --------- | ------------------------------------------------------------------------------------ |
 | Installed | The integration's capabilities exist for their consumers; no agent access is implied |
-| Available | Application policy permits a role or agent to select a contribution                  |
-| Default   | Selected only when the corresponding agent profile field is omitted                  |
+| Available | Application policy permits a role to select a contribution                           |
+| Default   | Selected by host-owned role policy                                                   |
 | Assigned  | The exact resolved tools and skills saved with a conversation or WORK participant    |
 
 `loadEnvironment` is the high-level composition entry point. For example:
@@ -46,7 +46,7 @@ const configuration = await loadEnvironment({
 });
 ```
 
-Without policy additions, these extensions are installed but contribute nothing to agent assignments. The standard policy includes the routing tools and skill readers for the router, coding/WORK/ticket/skill readers for workers, and available file-source skills with no default skill assignments. Browser remains excluded from the assistant even if its profile requests a browser tool. Browser also checks the sandbox requirement during execution; policy does not replace that safety boundary.
+Without policy additions, these extensions are installed but contribute nothing to agent assignments. The standard policy includes the routing tools and skill readers for the router, coding/WORK/ticket/skill readers for workers, and configured file-source skills assigned by default to both roles. Browser remains excluded from the assistant. Browser also checks the sandbox requirement during execution; policy does not replace that safety boundary.
 
 `available` and `defaults` accept:
 
@@ -58,16 +58,9 @@ Named selectors can combine `tools` and `skills` in one object. Policy resolutio
 
 Whole-extension selectors deliberately include future additions or newly discovered tools. Use named availability selectors when additions require review. A selector must refer to the actual installed object, not another object with the same name. Unknown names, ambiguous skill aliases, duplicate owners/definitions and defaults outside availability fail composition. Wildcards resolve against the complete catalog before permission checking; forbidden members are errors, not silently filtered results.
 
-Profiles independently override default fields:
+There are no agent profiles or per-agent policy hooks. Host-owned `assistant` and `worker` policies resolve the exact role tools and bindings. Top-level owner configuration `skills: []` suppresses file-source skill defaults, or a list selects skill IDs/wildcards. Installed extension defaults remain controlled by role policy. Skills never select tools, grant access or expand availability.
 
-```yaml
-tools: []
-skills: [guides:review]
-```
-
-This assigns knowledge and **zero tools**, not even `read_skill`. The existing skills runtime presents model-invocable guidance inline when no reader is selected. `skills: []` likewise suppresses default skills. Skills never select tools, grant access or expand availability.
-
-An optional `forAgent(target, rolePolicy)` on the returned policy can narrow role availability or change defaults within it. `target` contains a qualified agent ID and role. It cannot broaden role permission. WORK's approved tool surface comes from worker-role availability, not defaults, selected profiles or per-agent narrowing; this preserves frozen saved participant plans.
+WORK's approved tool surface comes from worker-role availability, not defaults, preserving the validation ceiling for frozen saved work.
 
 ## Owner-configured MCP
 
@@ -104,14 +97,6 @@ Every repository declaration explicitly selects its reader:
 
 ```json
 {
-  "agentRepositories": [
-    {
-      "provider": "github",
-      "repository": "owner/profiles",
-      "ref": "main",
-      "path": "agents"
-    }
-  ],
   "skillRepositories": [
     {
       "provider": "github-app-123",
@@ -126,7 +111,7 @@ Every repository declaration explicitly selects its reader:
 
 Duplicate names (including unused readers) and unknown providers fail before acquisition, including offline loads. Selection is exact and case-sensitive; installation order and URL matching do not decide authority. Failures and cancellation never fall back to another reader. Public versus App access remains an explicit source choice even when an App is configured.
 
-Repository/ref export keys, complete-load recipes and new provenance include the provider. Reader names identify stable, nonsecret source/authorization namespaces; use a different name when that namespace changes. Credential rotation within one namespace need not invalidate snapshots. The same repository/ref deduplicates across agents and skills only within one provider. Agent and skill aliases remain repository names; duplicate aliases within either kind fail rather than silently changing existing IDs. Different providers may supply the same alias across kinds; conflicting refs for one provider/repository still fail.
+Repository/ref export keys, complete-load recipes and new provenance include the provider. Reader names identify stable, nonsecret source/authorization namespaces; use a different name when that namespace changes. Credential rotation within one namespace need not invalidate snapshots. Skill source aliases remain repository names; duplicate aliases fail rather than silently changing existing IDs. Provider identity is part of cache and provenance identity.
 
 **Migration:** replace old `"owner/repo:ref"` shorthand and provider-less objects with explicit `{ "provider", "repository", "ref" }` declarations. Replace `repositoryReader`/paired GitHub loader results with the installed extension object. Refresh once after changing repository declarations: pre-provider remote cache recipes cannot satisfy the new offline recipe. Local-only caches and saved conversation/WORK snapshots remain valid; historical repository provenance may omit a provider.
 
@@ -134,7 +119,7 @@ Repository/ref export keys, complete-load recipes and new provenance include the
 
 Core stores opaque owner/version/value bindings and validates them through installed owners. Saved skill documents, assets, hashes and provenance are immutable snapshots; recovery does not reload producer catalogs or source files. A skills-only producer can disappear while old knowledge remains readable through the installed catalog-free skills runtime. Native definitions or private binding owners required by saved work cannot disappear silently.
 
-New policies govern newly composed profiles. The router conversation is reconfigured when idle; frozen WORK retains its saved assignments; narrowing the worker-role ceiling can fail saved WORK recovery. This is not a new per-agent historical revocation system. Extension authorization, such as GitHub's installation access, is still checked by its operations.
+New policies govern newly composed conversation setups. The router conversation is reconfigured when idle; frozen WORK retains its saved assignments; narrowing the worker-role ceiling can fail saved WORK recovery. This is not a new per-agent historical revocation system. Extension authorization, such as GitHub's installation access, is still checked by its operations.
 
 Execution environments and delivery are separate runtime capabilities, not tool/skill bundles. Definition readers are startup capabilities of installed integrations, not agent tools. Explicit execution-provider installation and the Docker/`./docker.json` default are unchanged. See [execution](execution.md) and [GitHub](github.md).
 

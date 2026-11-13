@@ -43,11 +43,11 @@ Like the rest of the API, these routes are unauthenticated: keep the listener on
 Memory steers every future turn, so a write is a durable prompt injection if the wrong party can make it. Existing structure enforces the rules; nothing new is needed:
 
 - `memory_save` and `memory_forget` are mutating, so the router's tool policy (`routerToolPolicy`) admits them only with a **basis**: the ID of an owner message in the batch in front of the router (see [routing](routing.md#authority)). A work report, which is untrusted data, cannot save or forget an entry. If a report contains something worth keeping, Kaeno can save it on the owner's next message.
-- The host (`src/host/main.ts`) makes the memory extension available to and default for the **assistant** only. It is not in worker availability, so a worker profile that lists a memory tool fails startup. Workers also never see the index. They browse untrusted sites inside sandboxes, so the orchestrator copies only the facts a task needs into its brief.
+- The host (`src/host/main.ts`) makes the memory extension available to and default for the **assistant** only. It is not in worker availability, and worker setup is validated against that role boundary. Workers also never see the index. They browse untrusted sites inside sandboxes, so the orchestrator copies only the facts a task needs into its brief.
 
 The basis check runs when the tool is invoked. Because memory is outside pi-durable, it is not in the same transaction as the write.
 
-An assistant profile with an explicit `tools:` list must name the memory tools to get them, like any other tool.
+The host assistant-role policy selects memory tools; external agent profiles are not supported.
 
 ### Forgetting
 
@@ -73,17 +73,17 @@ On Docker, microsandbox and Kubernetes a ticket keeps its `/workspace` across As
 
 Three options:
 
-| Option                               | Gives                                       | Cost                                                                                                            |
-| ------------------------------------ | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| A. One owner volume in every sandbox | Simplest. Everything is shared.             | Shared blast radius: one injected task reads every other agent's state and logins. This is Grok Bot's weakness. |
-| **B. One volume per agent ID**       | Specialists keep their own files and logins | Concurrent works of the same agent must not share one writer                                                    |
-| C. A long-lived sandbox per agent    | Running processes and an open browser       | A second lifecycle beside WORK's ensure/release/reconcile, and the hardest to recover                           |
+| Option                               | Gives                                 | Cost                                                                                                            |
+| ------------------------------------ | ------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| A. One owner volume in every sandbox | Simplest. Everything is shared.       | Shared blast radius: one injected task reads every other agent's state and logins. This is Grok Bot's weakness. |
+| **B. One shared worker volume**      | Workers keep shared files and logins  | Concurrent works must not share one writer                                                                      |
+| C. A long-lived sandbox per agent    | Running processes and an open browser | A second lifecycle beside WORK's ensure/release/reconcile, and the hardest to recover                           |
 
 **Recommendation: B.** It matches the specialist model (an inbox agent owns its mail login, an SWE agent its checkouts) and keeps the isolation between roles that per-work sandboxes give today.
 
 Sketch:
 
-1. **Keying.** A persistent volume named from the environment namespace and the frozen agent ID, mounted at `/home/agent` next to the per-work `/workspace`. Opt-in per agent profile (`persistent: true`), because most workers should stay stateless.
+1. **Keying.** A host-owned persistent volume named from the environment namespace and a workspace identity, mounted at `/home/agent` next to the per-work `/workspace`. This is a future host-policy option, not an agent-profile setting; generic workers have no configurable persona.
 2. **Exclusivity.** At most one live WORK per persistent agent. Admission refuses or queues a second one while the first holds the volume. This matches Kubernetes `ReadWriteOnce` PVCs. The rule belongs to admission, not to a lock inside the sandbox.
 3. **Browser.** For persistent agents, the browser recipe swaps `--isolated` for a `--user-data-dir` under `/home/agent`, so a login survives. For 2FA or CAPTCHA steps the owner still needs a hand-off; that is a separate, usability-phase item.
 4. **Lifecycle.** `release` and `reconcile` never delete persistent volumes. Wiping one is an explicit owner action. The volume namespace becomes part of the environment identity, so a backend switch with persistent state fails closed like unfinished work does today.
