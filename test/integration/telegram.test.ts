@@ -148,7 +148,6 @@ async function routerDefault(request: ModelContext) {
   ].map(([, trigger, title]) => ({
     trigger,
     kind: "accept",
-    agent: "worker",
     title,
     ack: `On it: ${title}.`,
   }));
@@ -207,13 +206,7 @@ async function open(options: {
       }),
     ],
     work: {
-      agents: [
-        {
-          id: "worker",
-          description: "Worker",
-          setup: { model, instructions: "WORKER", tools: ["report"] },
-        },
-      ],
+      setup: { model, instructions: "WORKER", tools: ["report"] },
       tools: ["report"],
       maxConcurrent: 2,
     },

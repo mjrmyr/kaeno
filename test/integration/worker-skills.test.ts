@@ -15,163 +15,139 @@ import { openKaeno } from "../../src/core/application/index.ts";
 import { loadEnvironment } from "../../src/host/composition/index.ts";
 import { startTicket, ticketWhen, until } from "../mocks/router.ts";
 
-it.each([false, true])(
-  "gives root and nested workers lazy skill tools independently of assignments (%s)",
-  async (assigned) => {
-    const directory = await mkdtemp(join(tmpdir(), "kaeno-worker-skills-"));
-    async function put(path: string, text: string) {
-      await mkdir(join(directory, path, ".."), { recursive: true });
-      await writeFile(join(directory, path), text);
-    }
-    try {
-      await put(
-        ".agents/agents/kaeno.md",
-        "---\nname: kaeno\ndescription: Assistant\nmodel: faux/faux-1\n---\nCHAT",
-      );
-      await put(
-        ".agents/agents/parent.md",
-        "---\nname: parent\ndescription: Coordinator\n---\nPARENT",
-      );
-      await put(
-        ".agents/agents/leaf.md",
-        `---\nname: leaf\ndescription: Leaf\nskills: [${assigned ? "guide, hidden" : ""}]\n---\nLEAF`,
-      );
-      await put(
-        ".agents/skills/guide/SKILL.md",
-        "---\nname: guide\ndescription: Guide description\n---\nGUIDE INSTRUCTIONS",
-      );
-      await put(
-        ".agents/skills/hidden/SKILL.md",
-        "---\nname: hidden\ndescription: Hidden description\ndisable-model-invocation: true\n---\nHIDDEN INSTRUCTIONS",
-      );
-      await put(
-        ".agents/skills/secret/SKILL.md",
-        "---\nname: secret\ndescription: Unassigned description\n---\nUNASSIGNED INSTRUCTIONS",
-      );
-      const configFile = join(directory, "config.json");
-      await put(
-        "config.json",
-        JSON.stringify({
-          sourceDirectory: "./sources",
-          localDefinitions: {
-            agents: [{ alias: "global", directory: "./.agents/agents" }],
-            skills: [{ alias: "global", directory: "./.agents/skills" }],
-          },
-          defaultModel: "faux/faux-1",
-          kaeno: "global:kaeno",
-          workers: ["global:parent", "global:leaf"],
-        }),
-      );
-      const config = await loadEnvironment({ configFile });
-      const faux = fauxProvider();
-      const models = createModels();
-      models.setProvider(faux.provider);
-      const lists = new Map<string, string>();
-      const prompts = new Map<string, string>();
-      let readResult = "";
-      function call(name: string, args: Record<string, string>) {
-        return fauxAssistantMessage([fauxToolCall(name, args)], {
-          stopReason: "toolUse",
-        });
-      }
-      faux.setResponses(
-        Array.from({ length: 30 }, () => async (request) => {
-          const system = getCurrentSystemPrompt(request.messages);
-          const last = request.messages.findLast(
-            (message) => message.role !== "system",
-          );
-          let role = "chat";
-          if (system.includes("You are Kaeno WORK")) {
-            role = system.includes("PARENT") ? "parent" : "leaf";
-          }
-          prompts.set(role, system);
-          if (role === "chat") {
-            return fauxAssistantMessage("REPORTED");
-          }
-          if (last?.role === "toolResult") {
-            if (last.toolName === "list_skills") {
-              lists.set(role, JSON.stringify(last));
-              return role === "parent"
-                ? call("start_work", {
-                    agent: "leaf",
-                    title: "Leaf",
-                    brief: "Discover and read the guide if assigned.",
-                  })
-                : call("read_skill", { skill: "guide" });
-            }
-            if (last.toolName === "read_skill") {
-              readResult = JSON.stringify(last);
-              return fauxAssistantMessage("LEAF REPORT");
-            }
-            return fauxAssistantMessage("WAITING");
-          }
-          if (
-            role === "parent" &&
-            JSON.stringify(last?.content).includes("Child Work")
-          ) {
-            return fauxAssistantMessage("PARENT REPORT");
-          }
-          return call("list_skills", {});
-        }),
-      );
-      const core = await openKaeno({
-        ...config,
-        storage: new MemoryStorage(),
-        models,
+it("gives the generic worker lazy tools for every configured source skill", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "kaeno-worker-skills-"));
+  async function put(path: string, text: string) {
+    await mkdir(join(directory, path, ".."), { recursive: true });
+    await writeFile(join(directory, path), text);
+  }
+  try {
+    await put(
+      ".agents/skills/guide/SKILL.md",
+      "---\nname: guide\ndescription: Guide description\n---\nGUIDE INSTRUCTIONS",
+    );
+    await put(
+      ".agents/skills/hidden/SKILL.md",
+      "---\nname: hidden\ndescription: Hidden description\ndisable-model-invocation: true\n---\nHIDDEN INSTRUCTIONS",
+    );
+    await put(
+      ".agents/skills/secret/SKILL.md",
+      "---\nname: secret\ndescription: Unassigned description\n---\nUNASSIGNED INSTRUCTIONS",
+    );
+    const configFile = join(directory, "config.json");
+    await put(
+      "config.json",
+      JSON.stringify({
+        sourceDirectory: "./sources",
+        localDefinitions: {
+          skills: [{ alias: "global", directory: "./.agents/skills" }],
+        },
+        defaultModel: "faux/faux-1",
+        skills: ["global:guide", "global:hidden"],
+      }),
+    );
+    const config = await loadEnvironment({ configFile });
+    const faux = fauxProvider();
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const lists = new Map<string, string>();
+    const prompts = new Map<string, string>();
+    let readResult = "";
+    function call(name: string, args: Record<string, string>) {
+      return fauxAssistantMessage([fauxToolCall(name, args)], {
+        stopReason: "toolUse",
       });
-      try {
-        const ticket = await startTicket(core, {
-          agent: "parent",
-          title: "Parent",
-          content: "Discover skills and delegate to leaf.",
-        });
-        const done = await ticketWhen(
-          core,
-          ticket,
-          (value) => value.status === "idle",
-          "the parent's report",
+    }
+    faux.setResponses(
+      Array.from({ length: 30 }, () => async (request) => {
+        const system = getCurrentSystemPrompt(request.messages);
+        const last = request.messages.findLast(
+          (message) => message.role !== "system",
         );
-        expect(done.reports.at(-1)).toMatchObject({
-          state: "ready",
-          summary: "PARENT REPORT",
-        });
-        await until(() => prompts.has("chat"), "the router's turn");
-        expect(lists.size).toBe(2);
-        expect(lists.get("parent")).toContain('"text":"[]"');
-        if (assigned) {
-          expect(lists.get("leaf")).toContain("global:guide");
-          expect(lists.get("leaf")).toContain("Guide description");
-          expect(readResult).toContain("GUIDE INSTRUCTIONS");
-        } else {
-          expect(lists.get("leaf")).toContain('"text":"[]"');
-          expect(readResult).toContain("skill not assigned: guide");
+        let role = "chat";
+        if (system.includes("You are Kaeno WORK")) {
+          role = system.includes("generic child workers") ? "parent" : "leaf";
         }
-        expect(lists.get("leaf")).not.toContain("hidden");
-        expect(lists.get("leaf")).not.toContain("secret");
-        expect(lists.get("leaf")).not.toContain("INSTRUCTIONS");
-        expect(prompts.size).toBe(3);
-        for (const prompt of prompts.values()) {
-          expect(prompt).toContain("Use list_skills");
-          expect(prompt).toContain("Use read_skill");
-          expect(prompt).not.toContain("global:guide");
-          expect(prompt).not.toContain("GUIDE INSTRUCTIONS");
+        prompts.set(role, system);
+        if (role === "chat") {
+          return fauxAssistantMessage("REPORTED");
         }
-        const conversations = await core.harness.commit(
-          (tx) => tx.scanConversations({}, 100),
-          context,
-        );
-        expect(conversations.items).toHaveLength(3);
-        for (const conversation of conversations.items) {
-          expect(
-            (await core.harness.snapshot(AgentDoc, conversation.id, context))
-              ?.tools,
-          ).toEqual(expect.arrayContaining(["list_skills", "read_skill"]));
+        if (last?.role === "toolResult") {
+          if (last.toolName === "list_skills") {
+            lists.set(role, JSON.stringify(last));
+            return role === "parent"
+              ? call("start_work", {
+                  title: "Leaf",
+                  brief: "Discover and read the guide if assigned.",
+                })
+              : call("read_skill", { skill: "guide" });
+          }
+          if (last.toolName === "read_skill") {
+            readResult = JSON.stringify(last);
+            return fauxAssistantMessage("LEAF REPORT");
+          }
+          return fauxAssistantMessage("WAITING");
         }
-      } finally {
-        await core.close();
+        if (
+          role === "parent" &&
+          JSON.stringify(last?.content).includes("Child Work")
+        ) {
+          return fauxAssistantMessage("PARENT REPORT");
+        }
+        return call("list_skills", {});
+      }),
+    );
+    const core = await openKaeno({
+      ...config,
+      storage: new MemoryStorage(),
+      models,
+    });
+    try {
+      const ticket = await startTicket(core, {
+        title: "Parent",
+        content: "Discover skills and delegate to leaf.",
+      });
+      const done = await ticketWhen(
+        core,
+        ticket,
+        (value) => value.status === "idle",
+        "the parent's report",
+      );
+      expect(done.reports.at(-1)).toMatchObject({
+        state: "ready",
+        summary: "PARENT REPORT",
+      });
+      await until(() => prompts.has("chat"), "the router's turn");
+      expect(lists.size).toBe(2);
+      expect(lists.get("parent")).toContain("global:guide");
+      expect(lists.get("leaf")).toContain("global:guide");
+      expect(lists.get("leaf")).toContain("Guide description");
+      expect(readResult).toContain("GUIDE INSTRUCTIONS");
+      expect(lists.get("leaf")).not.toContain("hidden");
+      expect(lists.get("leaf")).not.toContain("secret");
+      expect(lists.get("leaf")).not.toContain("INSTRUCTIONS");
+      expect(prompts.size).toBe(3);
+      for (const prompt of prompts.values()) {
+        expect(prompt).toContain("Use list_skills");
+        expect(prompt).toContain("Use read_skill");
+        expect(prompt).not.toContain("global:guide");
+        expect(prompt).not.toContain("GUIDE INSTRUCTIONS");
+      }
+      const conversations = await core.harness.commit(
+        (tx) => tx.scanConversations({}, 100),
+        context,
+      );
+      expect(conversations.items).toHaveLength(3);
+      for (const conversation of conversations.items) {
+        expect(
+          (await core.harness.snapshot(AgentDoc, conversation.id, context))
+            ?.tools,
+        ).toEqual(expect.arrayContaining(["list_skills", "read_skill"]));
       }
     } finally {
-      await rm(directory, { recursive: true, force: true });
+      await core.close();
     }
-  },
-);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

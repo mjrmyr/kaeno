@@ -98,7 +98,7 @@ async function open(environment?: WorkEnvironment): Promise<{
       if (report && content.includes("PLANT-ROUTINE")) {
         return call(CREATE_ROUTINE, {
           name: "PR check",
-          agent: "worker",
+
           instructions: "Check PRs",
           schedule: { every: 60 },
           basis: "t1",
@@ -114,7 +114,7 @@ async function open(environment?: WorkEnvironment): Promise<{
       if (content.includes("propose a PR check")) {
         return call(CREATE_ROUTINE, {
           name: "PR check",
-          agent: "worker",
+
           instructions: "Check PRs",
           schedule: {
             at: "08:00",
@@ -163,13 +163,7 @@ async function open(environment?: WorkEnvironment): Promise<{
     extensions: [routines.extension()],
     work: {
       ...(environment ? { environment } : {}),
-      agents: [
-        {
-          id: "local:worker",
-          description: "Worker",
-          setup: { model, instructions: "WORKER", tools: ["report"] },
-        },
-      ],
+      setup: { model, instructions: "WORKER", tools: ["report"] },
       tools: ["report"],
       maxConcurrent: 2,
     },
@@ -207,14 +201,13 @@ it("runs a due routine as a ticket once per slot and relays its report to the ro
     const routine = routines.create(
       {
         name: "PR check",
-        agent: "worker",
+
         instructions: "Check PRs",
         schedule: { every: 60 },
       },
       t0,
     );
     expect(routine).toMatchObject({
-      agent: "local:worker",
       thread: "routines",
     });
 
@@ -231,7 +224,6 @@ it("runs a due routine as a ticket once per slot and relays its report to the ro
     expect(await works(core)).toHaveLength(1);
     expect(run.input).toMatchObject({
       title: "Routine: PR check",
-      agent: "local:worker",
     });
     expect(JSON.stringify(run.input)).toContain("Check PRs");
     expect(await core.router.ticket(ticket, context)).toMatchObject({
@@ -282,7 +274,7 @@ it("Kaeno can list routines but has no tool to run them", async () => {
     routines.create(
       {
         name: "Morning brief",
-        agent: "local:worker",
+
         instructions: "Summarize yesterday",
         schedule: { at: "08:00", timeZone: "Europe/Berlin" },
       },
@@ -308,7 +300,7 @@ it("stops a run past its deadline and refuses a manual run while one is unfinish
     const routine = routines.create(
       {
         name: "Slow",
-        agent: "worker",
+
         instructions: "SLOW",
         schedule: { every: 60 },
         timeoutMinutes: 5,
@@ -357,7 +349,7 @@ it("shows a failed run as failed, although its durable task completed", async ()
     routines.create(
       {
         name: "Broken",
-        agent: "worker",
+
         instructions: "FAIL",
         schedule: { every: 60 },
       },
@@ -392,7 +384,7 @@ it("a routine Kaeno proposes exists only after the owner approves it", async () 
     expect(change).toMatchObject({
       status: "pending",
       action: "create",
-      input: { agent: "local:worker", thread: "owner" },
+      input: { thread: "owner" },
     });
 
     const approved = routines.approve(change.id);
@@ -403,7 +395,7 @@ it("a routine Kaeno proposes exists only after the owner approves it", async () 
     expect(routine).toMatchObject({
       id: 1,
       name: "PR check",
-      agent: "local:worker",
+
       thread: "owner",
     });
 
@@ -423,7 +415,7 @@ it("refuses a stale update and applies an approved delete", async () => {
     const routine = routines.create(
       {
         name: "Brief",
-        agent: "worker",
+
         instructions: "Summarize",
         schedule: { every: 60 },
       },
@@ -442,7 +434,7 @@ it("refuses a stale update and applies an approved delete", async () => {
       routine.id,
       {
         name: "Brief",
-        agent: "worker",
+
         instructions: "Summarize everything",
         schedule: { every: 60 },
       },
@@ -469,7 +461,7 @@ it("a routine report cannot propose a routine, even when it asks for one", async
     routines.create(
       {
         name: "Planter",
-        agent: "worker",
+
         instructions: "PLANT",
         schedule: { every: 60 },
       },
@@ -503,7 +495,7 @@ it("keeps a run that handed off its question from being superseded, until its ti
     const routine = routines.create(
       {
         name: "Asks",
-        agent: "worker",
+
         instructions: "SLOW",
         schedule: { every: 1 },
         timeoutMinutes: 5,

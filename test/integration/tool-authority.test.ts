@@ -114,13 +114,7 @@ async function fixture(router: Router) {
       },
     ],
     work: {
-      agents: [
-        {
-          id: "worker",
-          description: "Works",
-          setup: { model, instructions: "WORKER", tools: ["report"] },
-        },
-      ],
+      setup: { model, instructions: "WORKER", tools: ["report"] },
       tools: ["report"],
     },
   });
@@ -224,7 +218,6 @@ it("a worker report cannot authorise a mutation, even citing the owner's earlier
               {
                 trigger: "t1",
                 kind: "accept",
-                agent: "worker",
                 title: "Settings",
                 ack: "On it.",
               },

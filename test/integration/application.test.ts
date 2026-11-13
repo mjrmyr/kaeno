@@ -20,7 +20,7 @@ it("refuses to start without a token", async () => {
   expect(output).toContain("Set KAENO_TOKEN");
 }, 15000);
 
-it("boots the actual core entrypoint and shuts down cleanly", async () => {
+it("boots the actual host with zero agent definitions and shuts down cleanly", async () => {
   const root = await mkdtemp(join(tmpdir(), "kaeno-application-"));
   const reservation = createServer();
   reservation.listen(0, "127.0.0.1");
@@ -41,19 +41,11 @@ it("boots the actual core entrypoint and shuts down cleanly", async () => {
   await new Promise<void>((done) => reservation.close(() => done()));
   await new Promise<void>((done) => hooks.close(() => done()));
   await mkdir(join(root, ".kaeno"));
-  await mkdir(join(root, "agents/kaeno"), { recursive: true });
-  await writeFile(
-    join(root, "agents/kaeno.md"),
-    "---\nname: kaeno\ndescription: Test assistant\nmodel: openai/gpt-4.1\n---\nAnswer clearly.\n",
-  );
   const configFile = join(root, "config.json");
   await writeFile(
     configFile,
     JSON.stringify({
       sourceDirectory: "./sources",
-      localDefinitions: { agents: [{ alias: "local", directory: "./agents" }] },
-      kaeno: "local:kaeno",
-      workers: [],
     }),
   );
   await writeFile(join(root, "docker.json"), "{}");

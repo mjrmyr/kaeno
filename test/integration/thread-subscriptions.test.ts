@@ -26,20 +26,13 @@ it("joins thread subscriptions to the caller's transaction without granting exte
     models,
     assistant: { model, instructions: "Router", tools: ["route", "reply"] },
     work: {
-      agents: [
-        {
-          id: "worker",
-          description: "Worker",
-          setup: { model, instructions: "Worker", tools: [] },
-        },
-      ],
+      setup: { model, instructions: "Worker", tools: [] },
       tools: [],
       maxConcurrent: 1,
     },
   });
   try {
     const ticket = await startTicket(core, {
-      agent: "worker",
       content: "Work",
     });
     await until(

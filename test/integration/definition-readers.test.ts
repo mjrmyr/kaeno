@@ -9,7 +9,7 @@ import type { InstalledExtension } from "../../src/extensions/contributions/inde
 import {
   definitionOriginSchema,
   type DefinitionReader,
-  type AgentSource,
+  type DefinitionSource,
 } from "../../src/extensions/definitions/index.ts";
 import {
   githubExtension,
@@ -25,21 +25,15 @@ async function put(root: string, path: string, text: string) {
   await mkdir(join(root, path, ".."), { recursive: true });
   await writeFile(join(root, path), text);
 }
-function agent(body: string, fields = "") {
-  return `---\nname: coordinator\ndescription: Coordinator\nmodel: faux/faux-1\n${fields}---\n${body}`;
-}
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "kaeno-definition-readers-"));
   roots.push(root);
-  await put(root, "agents/coordinator.md", agent("LOCAL"));
   const configFile = join(root, "config.json");
   async function configure(fields: Record<string, unknown> = {}) {
     await writeFile(
       configFile,
       JSON.stringify({
         sourceDirectory: "sources",
-        localDefinitions: { agents: [{ alias: "local", directory: "agents" }] },
-        kaeno: "local:coordinator",
         ...fields,
       }),
     );
@@ -58,11 +52,6 @@ function reader(
     read: vi.fn<DefinitionReader["read"]>(async (_request, destination) => {
       await put(
         destination,
-        "agents/coordinator.md",
-        agent(body, "skills: [owner/shared:literature]\n"),
-      );
-      await put(
-        destination,
         "skills/literature/SKILL.md",
         `---\nname: literature\ndescription: Research\n---\n${body}`,
       );
@@ -70,15 +59,15 @@ function reader(
     }),
   };
 }
-function repositories(agentProvider: string, skillProvider = agentProvider) {
+function repositories(first: string, second = first) {
   return {
-    agentRepositories: [
-      { provider: agentProvider, repository: "owner/shared", path: "agents" },
-    ],
-    skillRepositories: [
-      { provider: skillProvider, repository: "owner/shared", path: "skills" },
-    ],
-    kaeno: "owner/shared:coordinator",
+    skillRepositories:
+      first === second
+        ? [{ provider: first, repository: "owner/shared", path: "skills" }]
+        : [
+            { provider: first, repository: "owner/profiles", path: "skills" },
+            { provider: second, repository: "owner/shared", path: "skills" },
+          ],
   };
 }
 function install(...readers: DefinitionReader[]): InstalledExtension {
@@ -106,10 +95,7 @@ afterEach(async () => {
 
 it("composes custom source capabilities without importing GitHub implementations", async () => {
   const { configFile, configure } = await fixture();
-  await configure({
-    agentRepositories: [{ provider: "custom", repository: "owner/profiles" }],
-    kaeno: "owner/profiles:coordinator",
-  });
+  await configure(repositories("custom"));
   const script = `
     import { registerHooks } from "node:module";
     import { mkdir, writeFile } from "node:fs/promises";
@@ -122,19 +108,19 @@ it("composes custom source capabilities without importing GitHub implementations
     const configuration = await loadEnvironment({
       configFile: process.argv[1],
       extensions: [{ definitionReaders: [{ name: "custom", async read(_request, destination) {
-        await mkdir(join(destination, "agents"));
-        await writeFile(join(destination, "agents/coordinator.md"), ${JSON.stringify(agent("CUSTOM"))});
+        await mkdir(join(destination, "skills/literature"), {recursive:true});
+        await writeFile(join(destination, "skills/literature/SKILL.md"), ${JSON.stringify("---\nname: literature\ndescription: Research\n---\nCUSTOM")});
         return { commit: "a".repeat(40) };
       } }] }],
     });
-    console.log(configuration.assistant.instructions);
+    console.log(JSON.stringify(configuration.assistant.bindings));
   `;
   const { stdout } = await promisify(execFile)(
     process.execPath,
     ["--input-type=module", "-e", script, configFile],
     { timeout: 10_000 },
   );
-  expect(stdout.trim()).toBe("CUSTOM");
+  expect(stdout).toContain("CUSTOM");
 });
 
 it("routes equal repository/ref inputs by provider and snapshots each provider's provenance", async () => {
@@ -147,28 +133,17 @@ it("routes equal repository/ref inputs by provider and snapshots each provider's
     extensions: [install(profiles, research)],
   });
   expect(profiles.read).toHaveBeenCalledExactlyOnceWith(
-    { repository: "owner/shared", ref: "HEAD" },
+    { repository: "owner/profiles", ref: "HEAD" },
     expect.any(String),
     expect.any(AbortSignal),
   );
   expect(research.read).toHaveBeenCalledTimes(1);
-  expect(composed.assistant.instructions).toBe("AGENT FROM PROFILES");
-  expect(composed.assistant.bindings).toContainEqual(
-    expect.objectContaining({
-      owner: "kaeno-definition-origins",
-      value: expect.objectContaining({
-        origin: expect.objectContaining({
-          provider: "profiles",
-          repository: "owner/shared",
-        }),
-      }),
-    }),
-  );
+  expect(composed.assistant.instructions).toContain("You are Kaeno");
   expect(composed.assistant.bindings).toContainEqual(
     expect.objectContaining({
       owner: "kaeno-skills",
       value: {
-        skills: [
+        skills: expect.arrayContaining([
           expect.objectContaining({
             id: "owner/shared:literature",
             documents: {
@@ -179,7 +154,7 @@ it("routes equal repository/ref inputs by provider and snapshots each provider's
               repository: "owner/shared",
             }),
           }),
-        ],
+        ]),
       },
     }),
   );
@@ -275,7 +250,7 @@ it.each(["refresh", "offline"] as const)(
   async (sourceMode) => {
     const { configFile, configure } = await fixture();
     await configure({
-      agentRepositories: [
+      skillRepositories: [
         { provider: "known", repository: "owner/first" },
         { provider: "missing", repository: "owner/second" },
       ],
@@ -328,7 +303,7 @@ it("does not reuse another provider's offline cohort and retains both captured s
   ).rejects.toThrow("offline input set");
   expect(second.read).not.toHaveBeenCalled();
   const capturedSecond = await loadEnvironment(options);
-  expect(capturedSecond.assistant.instructions).toBe("SECOND");
+  expect(JSON.stringify(capturedSecond.assistant.bindings)).toContain("SECOND");
   first.read.mockClear();
   second.read.mockClear();
   expect(
@@ -397,8 +372,8 @@ it("rejects injected aliases colliding with configured repositories before fetch
   const campus = reader("campus");
   const injected = {
     alias: "owner/shared",
-    snapshot: vi.fn<AgentSource["snapshot"]>(async () => ({
-      documents: [],
+    snapshot: vi.fn<DefinitionSource["snapshot"]>(async () => ({
+      packages: [],
       diagnostics: [],
     })),
   };
@@ -406,9 +381,9 @@ it("rejects injected aliases colliding with configured repositories before fetch
     loadEnvironment({
       configFile,
       extensions: [install(campus)],
-      agentSources: [injected],
+      skillSources: [injected],
     }),
-  ).rejects.toThrow('Duplicate definition source alias "owner/shared"');
+  ).rejects.toThrow("Duplicate skill source alias");
   expect(campus.read).not.toHaveBeenCalled();
   expect(injected.snapshot).not.toHaveBeenCalled();
 });

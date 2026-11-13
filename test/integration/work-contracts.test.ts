@@ -76,11 +76,10 @@ function required<T>(value: T | undefined): T {
   return value;
 }
 function launch(agent: string, brief: string) {
-  return call("start_work", { agent, title: agent, brief });
+  return call("start_work", { title: agent, brief });
 }
 async function ticket(core: Kaeno, agent: string, brief: string, key: string) {
   const id = await startTicket(core, {
-    agent,
     title: agent,
     content: brief,
     key,
@@ -161,7 +160,7 @@ it("keeps two real question/reply cycles live and reports only the final answer"
     models,
     assistant,
     work: {
-      agents: [agent("worker", ["message_parent"])],
+      setup: agent("worker", ["message_parent"]).setup,
       tools: ["message_parent"],
       environment: env,
     },
@@ -270,7 +269,7 @@ it("reopens an awaiting-reply SQLite checkpoint without repeating the brief or q
     models,
     assistant,
     work: {
-      agents: [agent("worker", ["message_parent"])],
+      setup: agent("worker", ["message_parent"]).setup,
       tools: ["message_parent"],
       environment: env,
     },
@@ -337,7 +336,7 @@ it.each([false, true])(
       models,
       assistant,
       work: {
-        agents: [agent("worker", ["list_work"])],
+        setup: agent("worker", ["list_work"]).setup,
         tools: ["list_work"],
         environment: env,
       },
@@ -382,7 +381,7 @@ it("waits for a live child, then cancels the subtree and releases both", async (
     const last = request.messages.findLast(
       (message) => message.role !== "system",
     );
-    if (prompt.includes("AGENT:leaf")) {
+    if (!prompt.includes("generic child workers")) {
       childStarted = true;
       return call("message_parent", { text: "CHILD BLOCKED" });
     }
@@ -403,10 +402,7 @@ it("waits for a live child, then cancels the subtree and releases both", async (
     models,
     assistant,
     work: {
-      agents: [
-        agent("parent", ["start_work"]),
-        agent("leaf", ["message_parent"]),
-      ],
+      setup: agent("parent", ["start_work", "message_parent"]).setup,
       tools: ["start_work", "message_parent"],
       environment: env,
       maxDepth: 2,
@@ -421,8 +417,7 @@ it("waits for a live child, then cancels the subtree and releases both", async (
     const parent = required(
       records.find(
         (record) =>
-          z.object({ agent: z.string() }).parse(record.input).agent ===
-          "parent",
+          z.object({ depth: z.number() }).parse(record.input).depth === 1,
       ),
     );
     const child = required(records.find((record) => record.id !== parent.id));
@@ -492,7 +487,7 @@ it("holds an owner's message until the brief is admitted, then accepts a reply a
       { durable: defineExtension({ name: "pause-test", tools: [pause] }) },
     ],
     work: {
-      agents: [agent("worker", ["message_parent", "pause"])],
+      setup: agent("worker", ["message_parent", "pause"]).setup,
       tools: ["message_parent", "pause"],
       environment: env,
     },

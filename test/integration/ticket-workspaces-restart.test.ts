@@ -104,7 +104,6 @@ function respond(request: ModelContext) {
           {
             trigger: id,
             kind: "accept",
-            agent: "worker",
             title: id,
             ack: "On it.",
           },
@@ -142,13 +141,7 @@ async function open(path: string, provider: SandboxProvider): Promise<Kaeno> {
     ],
     onReport: () => {},
     work: {
-      agents: [
-        {
-          id: "worker",
-          description: "Does tasks",
-          setup: { model, instructions: "WORKER", tools: ["report"] },
-        },
-      ],
+      setup: { model, instructions: "WORKER", tools: ["report"] },
       tools: ["report"],
       maxDepth: 1,
       maxConcurrent: 2,

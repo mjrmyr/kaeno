@@ -1353,7 +1353,11 @@ it("reports startup cleanup errors without blocking recovery and retries on the 
       instructions: "CHAT",
     },
     work: {
-      agents: [],
+      setup: {
+        model: { provider: "faux", modelId: "faux-1" },
+        instructions: "WORKER",
+        tools: [],
+      },
       tools: [],
       environment: {
         identity: "test:cleanup",
@@ -1590,7 +1594,6 @@ it("preserves real workspace files across ticket Assignments and SQLite restart 
       if (last?.role === "toolResult" && last.toolName === "probe") {
         proof = JSON.stringify(last.content);
         return call("start_work", {
-          agent: "coder",
           title: "Child",
           brief: "This must not wait forever for the parent's slot.",
         });
@@ -1623,7 +1626,7 @@ it("preserves real workspace files across ticket Assignments and SQLite restart 
         { durable: defineExtension({ name: "probe", tools: [probe] }) },
       ],
       work: {
-        agents: [coder],
+        setup: coder.setup,
         tools: [probe.name, "start_work", "report"],
         environment: extension.environment,
         maxConcurrent: 4,
@@ -1633,7 +1636,6 @@ it("preserves real workspace files across ticket Assignments and SQLite restart 
   let core = await open();
   cleanups.push(() => core.close());
   const ticket = await startTicket(core, {
-    agent: "coder",
     title: "Code",
     content: "Exercise the environment, then try to delegate.",
   });
