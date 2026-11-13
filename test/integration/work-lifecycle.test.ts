@@ -120,7 +120,6 @@ async function fixture(
             : fauxAssistantMessage(
                 [
                   fauxToolCall("start_work", {
-                    agent: "child",
                     title: "Child",
                     brief: "Ask a question",
                   }),
@@ -153,26 +152,11 @@ async function fixture(
       { durable: defineExtension({ name: "lifecycle-test", tools: [block] }) },
     ],
     work: {
-      agents: [
-        {
-          id: "worker",
-          description: "Worker",
-          setup: {
-            model,
-            instructions: "WORKER",
-            tools: ["message_parent", "block", "start_work"],
-          },
-        },
-        {
-          id: "child",
-          description: "Child",
-          setup: {
-            model,
-            instructions: "CHILD",
-            tools: ["message_parent", "block"],
-          },
-        },
-      ],
+      setup: {
+        model,
+        instructions: "WORKER",
+        tools: ["message_parent", "block", "start_work"],
+      },
       tools: ["message_parent", "block", "start_work"],
       maxConcurrent: 3,
       environment: {
@@ -198,7 +182,6 @@ async function fixture(
     },
   });
   await startTicket(core, {
-    agent: "worker",
     title: "Work",
     content: "Do work",
     key: "lifecycle",

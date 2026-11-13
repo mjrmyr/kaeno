@@ -780,10 +780,9 @@ it.each([
       parseEnvironmentConfiguration(
         {
           sourceDirectory: "cache",
-          agentRepositories: [
+          skillRepositories: [
             { provider: "github", repository: "owner/definitions", path },
           ],
-          kaeno: "owner/definitions:reviewer",
         },
         join(root, "config.json"),
       ),

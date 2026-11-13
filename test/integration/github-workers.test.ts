@@ -80,12 +80,9 @@ it("gives the assistant, root worker, and nested worker GitHub discovery by defa
       JSON.stringify({
         sourceDirectory: "./sources",
         localDefinitions: {
-          agents: [{ alias: "global", directory: "./.agents/agents" }],
           skills: [{ alias: "global", directory: "./.agents/skills" }],
         },
         defaultModel: "faux/faux-1",
-        kaeno: "global:kaeno",
-        workers: ["global:coder", "global:reviewer"],
       }),
     );
     const config = await loadEnvironment({
@@ -136,7 +133,6 @@ it("gives the assistant, root worker, and nested worker GitHub discovery by defa
                 {
                   trigger: "t1",
                   kind: "accept",
-                  agent: "coder",
                   title: "Code",
                   ack: "On it.",
                 },
@@ -159,7 +155,6 @@ it("gives the assistant, root worker, and nested worker GitHub discovery by defa
             results.set(role, JSON.stringify(last));
             if (role === "coder") {
               return call("start_work", {
-                agent: "reviewer",
                 title: "Review",
                 brief: "Discover your own available repository access.",
               });
@@ -239,12 +234,8 @@ it("configures GitHub for every agent while respecting explicit tool overrides",
       configFile,
       JSON.stringify({
         sourceDirectory: "./sources",
-        localDefinitions: {
-          agents: [{ alias: "global", directory: "./.agents/agents" }],
-        },
+        localDefinitions: {},
         defaultModel: "faux/faux-1",
-        kaeno: "global:kaeno",
-        workers: ["global:coder"],
       }),
     );
     const options: LoadEnvironmentOptions = {
@@ -262,21 +253,8 @@ it("configures GitHub for every agent while respecting explicit tool overrides",
       }),
     };
     const config = await loadEnvironment(options);
-    const setup = config.work?.agents.find(
-      (agent) => agent.id === "global:coder",
-    )?.setup;
-    expect(
-      setup?.bindings?.filter(
-        (binding) => binding.owner !== "kaeno-definition-origins",
-      ),
-    ).toEqual([githubBinding(installationId)]);
-    expect(setup?.bindings).toContainEqual(
-      expect.objectContaining({
-        owner: "kaeno-definition-origins",
-        version: 1,
-      }),
-    );
-    expect(setup?.tools).toEqual(expect.arrayContaining([...GITHUB_TOOLS]));
+    expect(config.work.bindings).toEqual([githubBinding(installationId)]);
+    expect(config.work.tools).toEqual(expect.arrayContaining([...GITHUB_TOOLS]));
     expect(config.work?.tools).toEqual(
       expect.arrayContaining([...GITHUB_TOOLS]),
     );
@@ -313,12 +291,11 @@ it("configures GitHub for every agent while respecting explicit tool overrides",
     );
     const overridden = await loadEnvironment(options);
     expect(
-      overridden.work?.agents.find((agent) => agent.id === "global:coder")
-        ?.setup.tools,
+      overridden.work.tools,
     ).toEqual([]);
     expect(overridden.assistant.tools).toEqual(["github_list_repositories"]);
     expect(
-      overridden.work.agents[0].setup.bindings?.some(
+      overridden.work.bindings?.some(
         (binding) => binding.owner === "kaeno-github",
       ),
     ).toBe(false);
@@ -331,14 +308,8 @@ it("configures GitHub for every agent while respecting explicit tool overrides",
     );
     const disabled = await loadEnvironment({ configFile });
     expect(
-      disabled.work?.agents.find((agent) => agent.id === "global:coder")?.setup
-        .bindings,
-    ).toEqual([
-      expect.objectContaining({
-        owner: "kaeno-definition-origins",
-        version: 1,
-      }),
-    ]);
+      disabled.work?.bindings,
+    ).toEqual([]);
     expect(disabled.assistant.bindings).toEqual([
       expect.objectContaining({
         owner: "kaeno-definition-origins",

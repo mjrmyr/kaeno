@@ -573,7 +573,6 @@ it("automatically follows a published PR, survives restart, and wakes its worker
   );
   try {
     const ticket = await startTicket(fx.core, {
-      agent: "coder",
       content: "Publish changes",
     });
     await until(

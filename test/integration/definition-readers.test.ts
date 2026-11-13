@@ -9,7 +9,6 @@ import type { InstalledExtension } from "../../src/extensions/contributions/inde
 import {
   definitionOriginSchema,
   type DefinitionReader,
-  type AgentSource,
 } from "../../src/extensions/definitions/index.ts";
 import {
   githubExtension,
@@ -38,8 +37,6 @@ async function fixture() {
       configFile,
       JSON.stringify({
         sourceDirectory: "sources",
-        localDefinitions: { agents: [{ alias: "local", directory: "agents" }] },
-        kaeno: "local:coordinator",
         ...fields,
       }),
     );
@@ -72,13 +69,9 @@ function reader(
 }
 function repositories(agentProvider: string, skillProvider = agentProvider) {
   return {
-    agentRepositories: [
-      { provider: agentProvider, repository: "owner/shared", path: "agents" },
-    ],
     skillRepositories: [
       { provider: skillProvider, repository: "owner/shared", path: "skills" },
     ],
-    kaeno: "owner/shared:coordinator",
   };
 }
 function install(...readers: DefinitionReader[]): InstalledExtension {
@@ -107,8 +100,6 @@ afterEach(async () => {
 it("composes custom source capabilities without importing GitHub implementations", async () => {
   const { configFile, configure } = await fixture();
   await configure({
-    agentRepositories: [{ provider: "custom", repository: "owner/profiles" }],
-    kaeno: "owner/profiles:coordinator",
   });
   const script = `
     import { registerHooks } from "node:module";
@@ -275,7 +266,7 @@ it.each(["refresh", "offline"] as const)(
   async (sourceMode) => {
     const { configFile, configure } = await fixture();
     await configure({
-      agentRepositories: [
+      skillRepositories: [
         { provider: "known", repository: "owner/first" },
         { provider: "missing", repository: "owner/second" },
       ],
@@ -397,16 +388,13 @@ it("rejects injected aliases colliding with configured repositories before fetch
   const campus = reader("campus");
   const injected = {
     alias: "owner/shared",
-    snapshot: vi.fn<AgentSource["snapshot"]>(async () => ({
-      documents: [],
-      diagnostics: [],
-    })),
+    snapshot: vi.fn(async () => ({ packages: [], diagnostics: [] })),
   };
   await expect(
     loadEnvironment({
       configFile,
       extensions: [install(campus)],
-      agentSources: [injected],
+      skillSources: [injected],
     }),
   ).rejects.toThrow('Duplicate definition source alias "owner/shared"');
   expect(campus.read).not.toHaveBeenCalled();

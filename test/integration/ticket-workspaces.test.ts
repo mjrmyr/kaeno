@@ -114,7 +114,6 @@ async function fixture(options: {
               {
                 trigger: id,
                 kind: "accept",
-                agent: "worker",
                 title: id,
                 ack: "On it.",
               },
@@ -154,13 +153,7 @@ async function fixture(options: {
     ],
     onReport: (error) => console.error("REPORT", error),
     work: {
-      agents: [
-        {
-          id: "worker",
-          description: "Does tasks",
-          setup: { model, instructions: "WORKER", tools: ["report"] },
-        },
-      ],
+      setup: { model, instructions: "WORKER", tools: ["report"] },
       tools: ["report"],
       maxDepth: 1,
       maxConcurrent: options.maxConcurrent ?? 2,

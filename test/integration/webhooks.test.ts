@@ -78,7 +78,6 @@ async function fixture(pauseWorker?: () => Promise<void>) {
               {
                 trigger,
                 kind: "accept",
-                agent: "worker",
                 title: "job",
                 ack: "On it.",
               },
@@ -109,17 +108,11 @@ async function fixture(pauseWorker?: () => Promise<void>) {
     ],
     onReport: (error) => console.error("REPORT", error),
     work: {
-      agents: [
-        {
-          id: "worker",
-          description: "Does tasks",
-          setup: {
+      setup: {
             model,
             instructions: "WORKER",
             tools: ["report", "follow_thread"],
           },
-        },
-      ],
       tools: ["report", "follow_thread"],
       maxDepth: 1,
       maxConcurrent: 2,

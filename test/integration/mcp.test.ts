@@ -906,9 +906,6 @@ it("composes actual assistant/worker policy; tools removed from the config leave
     configFile,
     JSON.stringify({
       sourceDirectory: "sources",
-      localDefinitions: { agents: [{ alias: "local", directory: "agents" }] },
-      kaeno: "local:assistant",
-      workers: ["local:worker"],
     }),
   );
   async function compose() {
@@ -942,12 +939,12 @@ it("composes actual assistant/worker policy; tools removed from the config leave
   let configuration = await compose();
   expect(configuration.assistant.tools).toContain("demo_read");
   expect(configuration.assistant.tools).not.toContain("demo_write");
-  expect(configuration.work.agents[0].setup.tools).toContain("demo_write");
+  expect(configuration.work.setup.tools).toContain("demo_write");
   await target.configure([{ upstream: "read", readOnly: true }]);
   installed = await target.install();
   configuration = await compose();
   expect(configuration.work.tools).not.toContain("demo_write");
-  expect(configuration.work.agents[0].setup.tools).not.toContain("demo_write");
+  expect(configuration.work.setup.tools).not.toContain("demo_write");
   await writeFile(
     join(target.directory, "agents", "assistant.md"),
     "---\nname: assistant\ndescription: fixture\nmodel: faux/faux-1\ntools: [demo_write]\n---\nFixture",

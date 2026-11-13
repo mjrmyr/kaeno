@@ -62,11 +62,8 @@ async function fixture(assistantFields = "", workerFields = "") {
     JSON.stringify({
       sourceDirectory: "sources",
       localDefinitions: {
-        agents: [{ alias: "local", directory: "agents" }],
         skills: [{ alias: "local", directory: "skills" }],
       },
-      kaeno: "local:assistant",
-      workers: ["local:worker", "local:other"],
     }),
   );
   return { root, configFile };
@@ -204,9 +201,7 @@ it("derives WORK approval from availability, not defaults or selected tools", as
     "config.json",
     JSON.stringify({
       sourceDirectory: "sources",
-      localDefinitions: { agents: [{ alias: "local", directory: "agents" }] },
-      kaeno: "local:assistant",
-      workers: [],
+      localDefinitions: {},
     }),
   );
   const config = await loadEnvironment({
@@ -220,7 +215,7 @@ it("derives WORK approval from availability, not defaults or selected tools", as
       },
     }),
   });
-  expect(config.work.agents).toEqual([]);
+  expect(config.work.setup.instructions).toContain("You are Kaeno WORK");
   expect(config.work.tools).toContain("custom_open");
   expect(config.work.tools).not.toContain("custom_save");
   expect(bind).not.toHaveBeenCalled();
@@ -240,7 +235,7 @@ it("lets explicit empty fields independently override extension defaults", async
   expect(config.assistant.bindings?.map((binding) => binding.owner)).toEqual([
     "kaeno-definition-origins",
   ]);
-  const worker = config.work.agents[0].setup;
+  const worker = config.work.setup;
   expect(worker.tools).toEqual([]);
   expect(worker.bindings).toContainEqual(
     expect.objectContaining({
@@ -250,7 +245,7 @@ it("lets explicit empty fields independently override extension defaults", async
   );
   expect(bind.mock.calls[0]).toEqual([{ tools: [], skills: ["custom:guide"] }]);
 });
-it("keeps per-agent skill defaults separate and cannot widen role permissions", async () => {
+it("applies role skill defaults and cannot widen role permissions", async () => {
   const { configFile } = await fixture();
   const { extension } = feature();
   const config = await loadEnvironment({
@@ -262,32 +257,17 @@ it("keeps per-agent skill defaults separate and cannot widen role permissions", 
         ...base.worker,
         available: [...base.worker.available, extension],
       },
-      forAgent: (target, role) =>
-        target.role === "worker"
-          ? {
-              ...role,
-              defaults: [
-                ...role.defaults,
-                {
-                  skills: [
-                    `custom:${target.id === "local:worker" ? "guide" : "hidden"}`,
-                  ],
-                },
-              ],
-            }
-          : role,
+      worker: {
+        ...base.worker,
+        available: [...base.worker.available, extension],
+        defaults: [...base.worker.defaults, { skills: ["custom:guide"] }],
+      },
     }),
   });
-  expect(config.work.agents[0].setup.bindings).toContainEqual(
+  expect(config.work.setup.bindings).toContainEqual(
     expect.objectContaining({
       owner: "kaeno-skills",
       value: { skills: [expect.objectContaining({ id: "custom:guide" })] },
-    }),
-  );
-  expect(config.work.agents[1].setup.bindings).toContainEqual(
-    expect.objectContaining({
-      owner: "kaeno-skills",
-      value: { skills: [expect.objectContaining({ id: "custom:hidden" })] },
     }),
   );
   await expect(
@@ -296,10 +276,10 @@ it("keeps per-agent skill defaults separate and cannot widen role permissions", 
       extensions: [extension],
       policy: (base) => ({
         ...base,
-        forAgent: (_target, role) => ({
-          ...role,
-          available: [...role.available, extension],
-        }),
+        worker: {
+          ...base.worker,
+          available: [...base.worker.available, extension],
+        },
       }),
     }),
   ).rejects.toThrow("availability");
@@ -584,7 +564,6 @@ it("rejects changed private scope in frozen WORK before provisioning, reconcilia
   });
   try {
     await startTicket(core, {
-      agent: config.work.agents[0].id,
       content: "Wait",
       title: "Pending",
     });
@@ -613,7 +592,7 @@ it("rejects changed private scope in frozen WORK before provisioning, reconcilia
               }
             : runtime,
         ),
-        work: { ...config.work, agents: [], environment },
+        work: { ...config.work, environment },
       }),
     ).rejects.toThrow("Wrong configured private scope");
     expect(start).not.toHaveBeenCalled();
@@ -640,7 +619,7 @@ it("derives real discovered Browser worker contributions and rejects an assistan
   };
   const config = await loadEnvironment(options);
   expect(config.work.tools).toEqual(expect.arrayContaining([...BROWSER_TOOLS]));
-  expect(config.work.agents[0].setup.tools).toEqual(
+  expect(config.work.setup.tools).toEqual(
     expect.arrayContaining([...BROWSER_TOOLS]),
   );
   expect(config.assistant.tools).not.toContain("browser_snapshot");

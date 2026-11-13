@@ -129,7 +129,6 @@ export async function ask(
 export async function startTicket(
   core: Kaeno,
   request: {
-    agent: string;
     content: UserInput;
     title?: string;
     key?: string;

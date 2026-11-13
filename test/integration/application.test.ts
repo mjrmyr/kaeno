@@ -51,9 +51,6 @@ it("boots the actual core entrypoint and shuts down cleanly", async () => {
     configFile,
     JSON.stringify({
       sourceDirectory: "./sources",
-      localDefinitions: { agents: [{ alias: "local", directory: "./agents" }] },
-      kaeno: "local:kaeno",
-      workers: [],
     }),
   );
   await writeFile(join(root, "docker.json"), "{}");

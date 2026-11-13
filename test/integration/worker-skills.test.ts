@@ -15,9 +15,7 @@ import { openKaeno } from "../../src/core/application/index.ts";
 import { loadEnvironment } from "../../src/host/composition/index.ts";
 import { startTicket, ticketWhen, until } from "../mocks/router.ts";
 
-it.each([false, true])(
-  "gives root and nested workers lazy skill tools independently of assignments (%s)",
-  async (assigned) => {
+it("gives the generic worker lazy tools for every configured source skill", async () => {
     const directory = await mkdtemp(join(tmpdir(), "kaeno-worker-skills-"));
     async function put(path: string, text: string) {
       await mkdir(join(directory, path, ".."), { recursive: true });
@@ -54,12 +52,9 @@ it.each([false, true])(
         JSON.stringify({
           sourceDirectory: "./sources",
           localDefinitions: {
-            agents: [{ alias: "global", directory: "./.agents/agents" }],
             skills: [{ alias: "global", directory: "./.agents/skills" }],
           },
           defaultModel: "faux/faux-1",
-          kaeno: "global:kaeno",
-          workers: ["global:parent", "global:leaf"],
         }),
       );
       const config = await loadEnvironment({ configFile });
@@ -93,7 +88,6 @@ it.each([false, true])(
               lists.set(role, JSON.stringify(last));
               return role === "parent"
                 ? call("start_work", {
-                    agent: "leaf",
                     title: "Leaf",
                     brief: "Discover and read the guide if assigned.",
                   })
@@ -121,7 +115,6 @@ it.each([false, true])(
       });
       try {
         const ticket = await startTicket(core, {
-          agent: "parent",
           title: "Parent",
           content: "Discover skills and delegate to leaf.",
         });
@@ -138,14 +131,9 @@ it.each([false, true])(
         await until(() => prompts.has("chat"), "the router's turn");
         expect(lists.size).toBe(2);
         expect(lists.get("parent")).toContain('"text":"[]"');
-        if (assigned) {
-          expect(lists.get("leaf")).toContain("global:guide");
-          expect(lists.get("leaf")).toContain("Guide description");
-          expect(readResult).toContain("GUIDE INSTRUCTIONS");
-        } else {
-          expect(lists.get("leaf")).toContain('"text":"[]"');
-          expect(readResult).toContain("skill not assigned: guide");
-        }
+        expect(lists.get("leaf")).toContain("global:guide");
+        expect(lists.get("leaf")).toContain("Guide description");
+        expect(readResult).toContain("GUIDE INSTRUCTIONS");
         expect(lists.get("leaf")).not.toContain("hidden");
         expect(lists.get("leaf")).not.toContain("secret");
         expect(lists.get("leaf")).not.toContain("INSTRUCTIONS");
@@ -173,5 +161,4 @@ it.each([false, true])(
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
-  },
-);
+});

@@ -106,17 +106,11 @@ async function fixture(options: {
     },
     extensions: [{ durable: defineExtension({ name: "hold", tools: [hold] }) }],
     work: {
-      agents: [
-        {
-          id: "worker",
-          description: "Worker",
-          setup: {
+      setup: {
             model,
             instructions: "WORKER",
             tools: ["message_parent", "report", "hold"],
           },
-        },
-      ],
       tools: ["message_parent", "report", "hold"],
       environment: environment(release),
       maxDepth: 1,
@@ -126,7 +120,6 @@ async function fixture(options: {
   let workId: TaskId | undefined;
   async function launch() {
     const ticket = await startTicket(core, {
-      agent: "worker",
       title: "Progress",
       content: "Work",
       key: "progress",
@@ -380,7 +373,6 @@ it("routes child progress to its WORK parent without stopping the child", async 
       if (system.includes("PARENT PROFILE")) {
         if (last?.role === "user" && content.includes("Coordinate")) {
           return call("start_work", {
-            agent: "child",
             title: "Child",
             brief: "Work",
           });
@@ -434,7 +426,6 @@ it("routes child progress to its WORK parent without stopping the child", async 
   });
   try {
     await startTicket(core, {
-      agent: "parent",
       title: "Parent",
       content: "Coordinate",
     });

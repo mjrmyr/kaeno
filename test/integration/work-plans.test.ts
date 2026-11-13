@@ -18,10 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { z } from "zod";
-import {
-  openKaeno,
-  type AgentProfile,
-} from "../../src/core/application/index.ts";
+import { openKaeno } from "../../src/core/application/index.ts";
 import {
   isRouterRequest,
   receive,
@@ -37,15 +34,7 @@ it("runs all-to-all delegation through core-only agents, keeps frozen children, 
   const models = createModels();
   models.setProvider(faux.provider);
   const model = { provider: "faux", modelId: "faux-1" };
-  const leafSetup = { model, instructions: "LEAF", tools: [] };
-  const agents: AgentProfile[] = [
-    {
-      id: "parent",
-      description: "Coordinates",
-      setup: { model, instructions: "PARENT", tools: ["start_work"] },
-    },
-    { id: "leaf", description: "Answers", setup: leafSetup },
-  ];
+  const setup = { model, instructions: "PARENT", tools: ["start_work"] };
   const prompts: string[] = [];
   faux.setResponses(
     Array.from({ length: 30 }, () => async (request) => {
@@ -66,7 +55,6 @@ it("runs all-to-all delegation through core-only agents, keeps frozen children, 
         return fauxAssistantMessage(
           [
             fauxToolCall("start_work", {
-              agent: "leaf",
               title: "Leaf",
               brief: "Answer",
             }),
@@ -95,7 +83,7 @@ it("runs all-to-all delegation through core-only agents, keeps frozen children, 
       tools: [...ROUTER_ASSISTANT_TOOLS],
     },
     work: {
-      agents,
+      setup,
       tools: ["start_work"],
       maxDepth: 2,
       maxConcurrent: 3,
@@ -103,7 +91,6 @@ it("runs all-to-all delegation through core-only agents, keeps frozen children, 
   });
   try {
     const ticket = await startTicket(core, {
-      agent: "parent",
       title: "Parent",
       content: "Coordinate",
     });
@@ -139,25 +126,15 @@ it("runs all-to-all delegation through core-only agents, keeps frozen children, 
     ).toBe(true);
     const record = (
       await core.harness.commit((tx) => tx.scanTasks({}, 100), context)
-    ).items.find(
-      (task) =>
-        task.kind === "kaeno.work" &&
-        JSON.stringify(task.input).includes('"agent":"parent"'),
-    );
+    ).items.find((task) => task.kind === "kaeno.work");
     expect(record?.version).toBe(4);
     expect(record?.input).toMatchObject({
-      agent: "parent",
       parent: { kind: "ticket", ticket },
       conversation: { kind: "ticket", id: done.conversation },
       plan: {
-        root: "parent",
+        root: "worker",
         participants: {
-          parent: {
-            id: "parent",
-            description: "Coordinates",
-            setup: { model, instructions: "PARENT", tools: ["start_work"] },
-          },
-          leaf: { id: "leaf", description: "Answers" },
+          worker: expect.objectContaining({ setup: { model, instructions: expect.any(String) } }),
         },
       },
     });
@@ -193,7 +170,6 @@ it("keeps the router usable and explains a failed ticket without configured agen
               {
                 trigger: "t1",
                 kind: "accept",
-                agent: "broken",
                 title: "Attempt",
                 ack: "On it.",
               },
@@ -218,7 +194,7 @@ it("keeps the router usable and explains a failed ticket without configured agen
     storage: new MemoryStorage(),
     models,
     assistant: { model, instructions: "ROUTER", tools },
-    work: { agents: [], tools: [] },
+    work: { setup: { model, instructions: "WORKER", tools: [] }, tools: [] },
   });
   try {
     const router = await core.router.routerConversation(context);
@@ -234,9 +210,7 @@ it("keeps the router usable and explains a failed ticket without configured agen
       "the router's answer",
     );
     expect(observedFailure).toBe(true);
-    await expect(
-      startTicket(core, { agent: "broken", content: "Delegate" }),
-    ).rejects.toThrow(/Unknown agent "broken"/);
+    await startTicket(core, { content: "Delegate" });
     const tasks = await core.harness.commit(
       (tx) => tx.scanTasks({}, 100),
       context,
@@ -250,74 +224,17 @@ it("keeps the router usable and explains a failed ticket without configured agen
   }
 });
 
-it.each([
-  {
-    agents: [
-      {
-        id: "broken",
-        description: "Broken worker",
-        setup: {
-          model: { provider: "faux", modelId: "faux-1" },
-          instructions: "BROKEN",
-          tools: ["missing_tool"],
-        },
-      },
-    ],
-    error: 'Agent broken: tool "missing_tool" is not available here',
-  },
-  {
-    agents: [
-      {
-        id: "unbound",
-        description: "Missing binding owner",
-        setup: {
-          model: { provider: "faux", modelId: "faux-1" },
-          instructions: "UNBOUND",
-          tools: [],
-          bindings: [{ owner: "not-installed", version: 1, value: {} }],
-        },
-      },
-    ],
-    error: "Agent unbound",
-  },
-  {
-    agents: [
-      {
-        id: "twice",
-        description: "First",
-        setup: {
-          model: { provider: "faux", modelId: "faux-1" },
-          instructions: "A",
-        },
-      },
-      {
-        id: "twice",
-        description: "Second",
-        setup: {
-          model: { provider: "faux", modelId: "faux-1" },
-          instructions: "B",
-        },
-      },
-    ],
-    error: 'Duplicate agent "twice"',
-  },
-])(
-  "rejects a misconfigured agent when Kaeno opens ($error)",
-  async ({ agents, error }) => {
-    await expect(
-      openKaeno({
-        storage: new MemoryStorage(),
-        models: createModels(),
-        assistant: {
-          model: { provider: "faux", modelId: "faux-1" },
-          instructions: "ROUTER",
-          tools: [...ROUTER_ASSISTANT_TOOLS],
-        },
-        work: { agents, tools: [] },
-      }),
-    ).rejects.toThrow(error);
-  },
-);
+it("rejects a generic worker setup that selects unavailable tools", async () => {
+  const model = { provider: "faux", modelId: "faux-1" };
+  await expect(
+    openKaeno({
+      storage: new MemoryStorage(),
+      models: createModels(),
+      assistant: { model, instructions: "ROUTER", tools: [...ROUTER_ASSISTANT_TOOLS] },
+      work: { setup: { model, instructions: "WORKER", tools: ["missing_tool"] }, tools: [] },
+    }),
+  ).rejects.toThrow('tool "missing_tool" is not available here');
+});
 
 it.each(["message_parent", "report", "start_work", "list_work"])(
   "keeps the WORK tool %s out of the assistant's selectable tools",
@@ -331,7 +248,7 @@ it.each(["message_parent", "report", "start_work", "list_work"])(
           instructions: "ROUTER",
           tools: [tool],
         },
-        work: { agents: [], tools: [] },
+        work: { setup: { model, instructions: "WORKER", tools: [] }, tools: [] },
       }),
     ).rejects.toThrow(`Assistant: tool "${tool}" is not available here`);
   },
@@ -353,13 +270,7 @@ it("fails paused preflight when an approved tool disappears from a saved unfinis
   const extension = {
     durable: defineExtension({ name: "test-reader", tools: [read] }),
   };
-  const agents: AgentProfile[] = [
-    {
-      id: "worker",
-      description: "Worker",
-      setup: { model, instructions: "WORKER", tools: [read.name] },
-    },
-  ];
+  const setup = { model, instructions: "WORKER", tools: [read.name] };
   let ensuring = false;
   const environment = {
     identity: "test:pending",
@@ -391,11 +302,10 @@ it("fails paused preflight when an approved tool disappears from a saved unfinis
       tools: [...ROUTER_ASSISTANT_TOOLS],
     },
     extensions: [extension],
-    work: { agents, tools: [read.name], environment },
+    work: { setup, tools: [read.name], environment },
   });
   try {
     await startTicket(core, {
-      agent: "worker",
       title: "Pending",
       content: "Wait",
     });
@@ -411,7 +321,7 @@ it("fails paused preflight when an approved tool disappears from a saved unfinis
           tools: [...ROUTER_ASSISTANT_TOOLS],
         },
         extensions: [extension],
-        work: { agents: [], tools: [], environment },
+        work: { setup: { model, instructions: "WORKER", tools: [] }, tools: [], environment },
       }),
     ).rejects.toThrow(/Saved WORK no longer fits/);
   } finally {

@@ -207,13 +207,7 @@ async function open(options: {
       }),
     ],
     work: {
-      agents: [
-        {
-          id: "worker",
-          description: "Worker",
-          setup: { model, instructions: "WORKER", tools: ["report"] },
-        },
-      ],
+      setup: { model, instructions: "WORKER", tools: ["report"] },
       tools: ["report"],
       maxConcurrent: 2,
     },
