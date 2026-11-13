@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "observer:kubernetes": "node src/extensions/kubernetes/observation/main.ts",
     "start": "node --env-file-if-exists=.env src/host/main.ts",
     "auth": "node --env-file-if-exists=.env scripts/auth.ts",
     "prepare": "husky",

@@ -200,3 +200,7 @@ tools at startup. [Setup, security boundaries and phase-1 limitations](docs/mcp.
 cover host Streamable HTTP tools (`none`/header-file authentication) and code-declared WORK MCP
 servers that run inside each sandbox, like Browser. OAuth is not implemented. GitHub credentials
 and publishing remain native.
+
+## Kubernetes observation
+
+The generic Kubernetes extension includes an independently deployed, read-only observer and explicitly assigned host tools. See [privacy-filtered Kubernetes observation](docs/kubernetes-observation.md) for configuration, limits and the live deployment verification gate. It does not create schedules, deploy manifests or grant remediation access.
