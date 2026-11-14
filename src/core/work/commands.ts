@@ -11,7 +11,11 @@ import {
   type UserInput,
 } from "@earendil-works/pi-durable";
 import { z } from "zod";
-import { parseTaskId, requireConversation } from "../durable/index.ts";
+import {
+  parseConversationId,
+  parseTaskId,
+  requireConversation,
+} from "../durable/index.ts";
 import { inspectWork, listWork, liveWork, requireChild } from "./directory.ts";
 import {
   WorkIndex,
@@ -32,7 +36,7 @@ import {
   assertPlanFits,
   planFor,
   readPlan,
-  resolveAgentId,
+  WORKER_ID,
   storedPlan,
   type WorkPlan,
 } from "./plan.ts";
@@ -66,7 +70,6 @@ interface WorkCommands {
       owner: ConversationId;
       key: string;
       ticket: string;
-      agent: string;
       title: string;
       content: UserInput;
       conversation: ConversationId;
@@ -82,21 +85,15 @@ export function createWorkCommands(
   task: WorkTask,
 ): WorkCommands {
   const maxActive = settings.maxActive ?? 32;
-  /** Pure: the root plan for a requested agent, from the agents loaded at startup. */
-  function prepareRootPlan(requested: string): WorkPlan {
-    const agents = settings.agents;
-    if (agents.length === 0) {
-      throw new Error(
-        "No worker agents are configured. Configure at least one available agent before starting work.",
-      );
-    }
-    return planFor(
-      resolveAgentId(
-        requested,
-        agents.map((agent) => agent.id),
-      ),
-      agents,
-    );
+  /** Only new work uses the current generic setup; saved scopes keep their original plan. */
+  function prepareRootPlan(): WorkPlan {
+    return planFor(WORKER_ID, [
+      {
+        id: WORKER_ID,
+        description: "General-purpose worker",
+        setup: settings.setup,
+      },
+    ]);
   }
   /**
    * Admit one WORK started by `conversationId`. `key` is the idempotency key: a replayed admission
@@ -109,7 +106,6 @@ export function createWorkCommands(
       parent: WorkParent;
       caller: Readonly<WorkScopeState> | undefined;
       key: string;
-      agent: string;
       title: string;
       brief: UserInput;
       conversation: WorkConversation;
@@ -117,16 +113,28 @@ export function createWorkCommands(
     },
     context: Context,
   ): Promise<TaskId<WorkResult>> {
-    const { conversationId, parent, caller, key, agent, title, brief } =
-      request;
+    const { conversationId, parent, caller, key, title, brief } = request;
     const isRoot = parent.kind === "ticket";
     // A replayed call that already launched its work keeps it; a new root plan is prepared outside
-    // the admission transaction from the agents loaded at startup, then saved inside it.
+    // the admission transaction from the generic setup, then saved inside it.
     const launched = (
       await runtime.snapshot(WorkIndex, conversationId, context)
     )?.launches[key];
-    const rootPlan =
-      launched === undefined && isRoot ? prepareRootPlan(agent) : undefined;
+    const saved =
+      launched === undefined && isRoot && request.conversation.kind === "ticket"
+        ? await runtime.snapshot(
+            WorkScope,
+            parseConversationId(request.conversation.id),
+            context,
+          )
+        : undefined;
+    let rootPlan: WorkPlan | undefined;
+    if (launched === undefined && isRoot) {
+      rootPlan =
+        saved && saved.agent !== null
+          ? readPlan(saved.plan)
+          : prepareRootPlan();
+    }
     const capacity =
       launched === undefined
         ? await settings.environment?.capacity?.(context)
@@ -148,7 +156,7 @@ export function createWorkCommands(
           throw new Error("Work launch changed during admission; retry");
         }
         plan = rootPlan;
-        agentId = rootPlan.root;
+        agentId = saved?.agent ?? rootPlan.root;
         depth = 1;
       } else {
         if (!caller) {
@@ -160,7 +168,8 @@ export function createWorkCommands(
             "This WORK is at the maximum nesting depth and cannot start child work",
           );
         }
-        agentId = resolveAgentId(agent, Object.keys(plan.agents));
+        // Legacy scopes delegate with their saved setup, never today's configuration.
+        agentId = caller.agent ?? plan.root;
         depth = caller.depth + 1;
       }
       assertPlanFits(plan, settings.surface());
@@ -230,14 +239,13 @@ export function createWorkCommands(
   const start = defineTool({
     name: START_WORK,
     description:
-      "Start a child WORK agent. Returns immediately; its messages and final report arrive later as messages. Pick an agent listed in your instructions and give a complete, self-contained brief.",
+      "Start a generic child worker. Returns immediately; its messages and final report arrive later as messages. Give a complete, self-contained brief and specify any skills the task needs.",
     parameters: Type.Object({
-      agent: Type.String({ description: "Agent ID from your instructions" }),
       title: Type.String({ minLength: 1, maxLength: 160 }),
       brief: Type.String({ minLength: 1, maxLength: 64000 }),
     }),
     replay: "safe",
-    execute: async ({ agent, title, brief }, api, context) => {
+    execute: async ({ title, brief }, api, context) => {
       const caller = await requireWorkCaller(api, context);
       // The tool call is the idempotency key: a replayed call finds its work.
       const id = await launchWork(
@@ -247,7 +255,6 @@ export function createWorkCommands(
           parent: { kind: "work", conversationId: api.conversationId },
           caller,
           key: String(api.taskId),
-          agent,
           title,
           brief,
           conversation: { kind: "owned" },
@@ -259,10 +266,10 @@ export function createWorkCommands(
         content: [
           {
             type: "text",
-            text: `Started work #${id}: ${title} (agent ${agent}). Its messages and report arrive later as messages. End your turn when you have nothing else to do.`,
+            text: `Started work #${id}: ${title}. Its messages and report arrive later as messages. End your turn when you have nothing else to do.`,
           },
         ],
-        details: { workId: id, agent },
+        details: { workId: id },
       };
     },
   });
@@ -565,7 +572,6 @@ export function createWorkCommands(
           parent: { kind: "ticket", ticket: request.ticket },
           caller: undefined,
           key: `ticket:${request.key}`,
-          agent: request.agent,
           title: request.title,
           brief: request.content,
           conversation: { kind: "ticket", id: request.conversation },

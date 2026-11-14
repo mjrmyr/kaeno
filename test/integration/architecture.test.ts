@@ -82,7 +82,7 @@ it("rejects core and extension imports that cross layer boundaries", async () =>
   try {
     for (const path of [
       "src/core/work",
-      "src/extensions/agents",
+      "src/extensions/skills",
       "src/channels/chat",
       "src/core/application",
       "src/host/composition",
@@ -106,20 +106,20 @@ it("rejects core and extension imports that cross layer boundaries", async () =>
       }),
     );
     await writeFile(
-      join(directory, "src/extensions/agents/index.ts"),
+      join(directory, "src/extensions/skills/index.ts"),
       'import type { Loaded } from "../../host/composition/index.ts"; import type { Chat } from "../../channels/chat/index.ts"; export interface Definition { name: string; loaded: Loaded; chat: Chat } export const tool = "start_work";',
     );
     await writeFile(
       join(directory, "src/channels/chat/index.ts"),
-      'import type { Loaded } from "../../host/composition/index.ts"; import type { Definition } from "../../extensions/agents/index.ts"; import type { Work } from "../../core/work/index.ts"; export interface Chat { loaded: Loaded; definition: Definition; work: Work }',
+      'import type { Loaded } from "../../host/composition/index.ts"; import type { Definition } from "../../extensions/skills/index.ts"; import type { Work } from "../../core/work/index.ts"; export interface Chat { loaded: Loaded; definition: Definition; work: Work }',
     );
     await writeFile(
       join(directory, "src/core/work/index.ts"),
-      'import { readFile } from "node:fs/promises"; import type { Definition } from "../../extensions/agents/index.ts"; export interface Work { definition: Definition } export const read = readFile; export const load = () => import("yaml");',
+      'import { readFile } from "node:fs/promises"; import type { Definition } from "../../extensions/skills/index.ts"; export interface Work { definition: Definition } export const read = readFile; export const load = () => import("yaml");',
     );
     await writeFile(
       join(directory, "src/core/application/index.ts"),
-      'export type { Definition } from "../../extensions/agents/index.ts";',
+      'export type { Definition } from "../../extensions/skills/index.ts";',
     );
     await writeFile(
       join(directory, "src/host/composition/index.ts"),
@@ -140,13 +140,13 @@ it("rejects core and extension imports that cross layer boundaries", async () =>
       (error) => z.object({ stderr: z.string() }).parse(error).stderr,
     );
     expect(result).toContain(
-      'Core feature "work" cannot import "extensions/agents"',
+      'Core feature "work" cannot import "extensions/skills"',
     );
     expect(result).toContain(
-      'Core feature "application" cannot re-export "extensions/agents"',
+      'Core feature "application" cannot re-export "extensions/skills"',
     );
-    expect(result).toContain('Extension "agents" cannot import the host');
-    expect(result).toContain('Extension "agents" cannot import channels');
+    expect(result).toContain('Extension "skills" cannot import the host');
+    expect(result).toContain('Extension "skills" cannot import channels');
     expect(result).toContain('Channel "chat" cannot import the host');
     expect(result).toContain('Channel "chat" cannot import extensions');
     expect(result).toContain(

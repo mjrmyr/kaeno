@@ -20,7 +20,6 @@ export interface MemoryAccess {
 
 export interface RoutineFields {
   name: string;
-  agent: string;
   instructions: string;
   schedule:
     { every: number } | { at: string; timeZone: string; days?: number[] };
@@ -63,7 +62,7 @@ export type RoutineChange = (
 
 export interface RoutineAccess {
   describe(now: number): Promise<RoutineView[]>;
-  /** The capability validates feature-specific input, including agent resolution. */
+  /** The capability validates feature-specific input, including schedule validation. */
   create(input: unknown): Routine;
   replace(id: number, input: unknown): boolean;
   remove(id: number): boolean;

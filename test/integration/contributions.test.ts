@@ -33,23 +33,13 @@ import {
 } from "../../src/host/composition/index.ts";
 
 const roots: string[] = [];
-function manifest(name: string, fields = ""): string {
-  return `---\nname: ${name}\ndescription: ${name}\nmodel: faux/faux-1\n${fields}---\n${name} instructions`;
-}
 async function put(root: string, path: string, text: string) {
   await mkdir(join(root, path, ".."), { recursive: true });
   await writeFile(join(root, path), text);
 }
-async function fixture(assistantFields = "", workerFields = "") {
+async function fixture(skills: readonly string[] = []) {
   const root = await mkdtemp(join(tmpdir(), "kaeno-contributions-"));
   roots.push(root);
-  await put(
-    root,
-    "agents/assistant.md",
-    manifest("assistant", assistantFields),
-  );
-  await put(root, "agents/worker.md", manifest("worker", workerFields));
-  await put(root, "agents/other.md", manifest("other"));
   await put(
     root,
     "skills/source/SKILL.md",
@@ -61,12 +51,11 @@ async function fixture(assistantFields = "", workerFields = "") {
     "config.json",
     JSON.stringify({
       sourceDirectory: "sources",
+      defaultModel: "faux/faux-1",
+      skills,
       localDefinitions: {
-        agents: [{ alias: "local", directory: "agents" }],
         skills: [{ alias: "local", directory: "skills" }],
       },
-      kaeno: "local:assistant",
-      workers: ["local:worker", "local:other"],
     }),
   );
   return { root, configFile };
@@ -148,7 +137,7 @@ it("installs native definitions without assigning tools, skills or private bindi
   expect(bind).not.toHaveBeenCalled();
 });
 it("binds an explicit tool selected from availability without adding defaults", async () => {
-  const { configFile } = await fixture("tools: [custom_open]\n");
+  const { configFile } = await fixture();
   const { extension, bind } = feature();
   const config = await loadEnvironment({
     configFile,
@@ -158,6 +147,7 @@ it("binds an explicit tool selected from availability without adding defaults", 
       assistant: {
         ...base.assistant,
         available: [...base.assistant.available, { tools: ["custom_open"] }],
+        defaults: [{ tools: ["custom_open"] }],
       },
     }),
   });
@@ -175,7 +165,7 @@ it("binds an explicit tool selected from availability without adding defaults", 
 it.each(["custom_save", "missing"])(
   "rejects an explicit tool outside the ceiling: %s",
   async (name) => {
-    const { configFile } = await fixture(`tools: [${name}]\n`);
+    const { configFile } = await fixture();
     const { extension, bind } = feature();
     await expect(
       loadEnvironment({
@@ -189,10 +179,15 @@ it.each(["custom_save", "missing"])(
               ...base.assistant.available,
               { tools: ["custom_open"] },
             ],
+            defaults: [{ tools: [name] }],
           },
         }),
       }),
-    ).rejects.toThrow(`tool "${name}" is outside policy availability`);
+    ).rejects.toThrow(
+      name === "missing"
+        ? `Policy tool "${name}" is not installed`
+        : `tool "${name}" is outside policy availability`,
+    );
     expect(bind).not.toHaveBeenCalled();
   },
 );
@@ -204,9 +199,7 @@ it("derives WORK approval from availability, not defaults or selected tools", as
     "config.json",
     JSON.stringify({
       sourceDirectory: "sources",
-      localDefinitions: { agents: [{ alias: "local", directory: "agents" }] },
-      kaeno: "local:assistant",
-      workers: [],
+      localDefinitions: {},
     }),
   );
   const config = await loadEnvironment({
@@ -220,37 +213,40 @@ it("derives WORK approval from availability, not defaults or selected tools", as
       },
     }),
   });
-  expect(config.work.agents).toEqual([]);
+  expect(config.work.setup.instructions).toBe("");
   expect(config.work.tools).toContain("custom_open");
   expect(config.work.tools).not.toContain("custom_save");
   expect(bind).not.toHaveBeenCalled();
 });
-it("lets explicit empty fields independently override extension defaults", async () => {
-  const { configFile } = await fixture(
-    "tools: []\nskills: []\n",
-    "tools: []\nskills: [custom:guide]\n",
-  );
+it("keeps role tool and skill defaults independent", async () => {
+  const { configFile } = await fixture();
   const { extension, bind } = feature();
   const config = await loadEnvironment({
     configFile,
     extensions: [extension],
-    policy: grant(extension),
+    policy: (base) => ({
+      assistant: { ...base.assistant, defaults: [{ tools: [] }] },
+      worker: {
+        available: [...base.worker.available, extension],
+        defaults: [{ tools: [], skills: ["custom:guide"] }],
+      },
+    }),
   });
   expect(config.assistant.tools).toEqual([]);
-  expect(config.assistant.bindings?.map((binding) => binding.owner)).toEqual([
-    "kaeno-definition-origins",
-  ]);
-  const worker = config.work.agents[0].setup;
-  expect(worker.tools).toEqual([]);
-  expect(worker.bindings).toContainEqual(
+  expect(config.assistant.bindings).toEqual([]);
+  expect(config.work.setup.tools).toEqual([]);
+  expect(config.work.setup.bindings).toContainEqual(
     expect.objectContaining({
       owner: "kaeno-skills",
       value: { skills: [expect.objectContaining({ id: "custom:guide" })] },
     }),
   );
-  expect(bind.mock.calls[0]).toEqual([{ tools: [], skills: ["custom:guide"] }]);
+  expect(bind).toHaveBeenCalledExactlyOnceWith({
+    tools: [],
+    skills: ["custom:guide"],
+  });
 });
-it("keeps per-agent skill defaults separate and cannot widen role permissions", async () => {
+it("applies role skill defaults and cannot widen role permissions", async () => {
   const { configFile } = await fixture();
   const { extension } = feature();
   const config = await loadEnvironment({
@@ -261,33 +257,14 @@ it("keeps per-agent skill defaults separate and cannot widen role permissions", 
       worker: {
         ...base.worker,
         available: [...base.worker.available, extension],
+        defaults: [...base.worker.defaults, { skills: ["custom:guide"] }],
       },
-      forAgent: (target, role) =>
-        target.role === "worker"
-          ? {
-              ...role,
-              defaults: [
-                ...role.defaults,
-                {
-                  skills: [
-                    `custom:${target.id === "local:worker" ? "guide" : "hidden"}`,
-                  ],
-                },
-              ],
-            }
-          : role,
     }),
   });
-  expect(config.work.agents[0].setup.bindings).toContainEqual(
+  expect(config.work.setup.bindings).toContainEqual(
     expect.objectContaining({
       owner: "kaeno-skills",
       value: { skills: [expect.objectContaining({ id: "custom:guide" })] },
-    }),
-  );
-  expect(config.work.agents[1].setup.bindings).toContainEqual(
-    expect.objectContaining({
-      owner: "kaeno-skills",
-      value: { skills: [expect.objectContaining({ id: "custom:hidden" })] },
     }),
   );
   await expect(
@@ -296,10 +273,11 @@ it("keeps per-agent skill defaults separate and cannot widen role permissions", 
       extensions: [extension],
       policy: (base) => ({
         ...base,
-        forAgent: (_target, role) => ({
-          ...role,
-          available: [...role.available, extension],
-        }),
+        worker: {
+          ...base.worker,
+          available: [...base.worker.available, { tools: ["custom_open"] }],
+          defaults: [{ tools: ["custom_save"] }],
+        },
       }),
     }),
   ).rejects.toThrow("availability");
@@ -322,8 +300,8 @@ it("rejects defaults outside availability before any binding producer runs", asy
   ).rejects.toThrow("Worker defaults");
   expect(bind).not.toHaveBeenCalled();
 });
-it("does not silently filter forbidden wildcard members or ambiguous aliases", async () => {
-  const { configFile } = await fixture("skills: [custom:*]\n");
+it("refuses forbidden wildcard members and ambiguous skill aliases", async () => {
+  const { configFile } = await fixture();
   const { extension } = feature();
   await expect(
     loadEnvironment({
@@ -332,27 +310,23 @@ it("does not silently filter forbidden wildcard members or ambiguous aliases", a
       policy: (base) => ({
         ...base,
         assistant: {
-          ...base.assistant,
           available: [
             ...base.assistant.available,
             { skills: ["custom:guide"] },
           ],
+          defaults: [{ skills: ["custom:*"] }],
         },
       }),
     }),
   ).rejects.toThrow('skill "custom:hidden" is outside policy availability');
-  const { root } = await fixture();
-  const other = feature("other").extension;
-  await put(
-    root,
-    "agents/assistant.md",
-    manifest("assistant", "skills: [guide]\n"),
-  );
   await expect(
     loadEnvironment({
-      configFile: join(root, "config.json"),
-      extensions: [extension, other],
-      policy: grant(extension),
+      configFile,
+      extensions: [extension, feature("other").extension],
+      policy: (base) => ({
+        ...base,
+        assistant: { ...base.assistant, defaults: [{ skills: ["guide"] }] },
+      }),
     }),
   ).rejects.toThrow('ambiguous skill "guide"');
 });
@@ -442,16 +416,21 @@ it.each([
     }),
   ).rejects.toThrow();
 });
-it("rejects duplicate explicit tools and foreign read-only metadata", async () => {
-  const { configFile } = await fixture("tools: [custom_open, custom_open]\n");
+it("deduplicates role selectors and rejects foreign read-only metadata", async () => {
+  const { configFile } = await fixture();
   const { extension } = feature();
-  await expect(
-    loadEnvironment({
-      configFile,
-      extensions: [extension],
-      policy: grant(extension),
+  const config = await loadEnvironment({
+    configFile,
+    extensions: [extension],
+    policy: (base) => ({
+      ...base,
+      assistant: {
+        available: [...base.assistant.available, extension],
+        defaults: [{ tools: ["custom_open", "custom_open"] }],
+      },
     }),
-  ).rejects.toThrow("duplicate tool selection");
+  });
+  expect(config.assistant.tools).toEqual(["custom_open"]);
   await expect(
     loadEnvironment({
       configFile,
@@ -493,7 +472,7 @@ it("supports mixed named tool/skill selectors without silently dropping either k
 });
 
 it("limits assigned skill snapshots rather than the available source catalog", async () => {
-  const { root, configFile } = await fixture("skills: [local:source]\n");
+  const { root, configFile } = await fixture(["local:source"]);
   for (const name of ["large1", "large2"]) {
     await put(
       root,
@@ -512,27 +491,30 @@ it("limits assigned skill snapshots rather than the available source catalog", a
       value: { skills: [expect.objectContaining({ id: "local:source" })] },
     }),
   );
-  await put(root, "agents/assistant.md", manifest("assistant", "skills: []\n"));
-  expect(
-    (await loadEnvironment({ configFile })).assistant.bindings?.some(
-      (binding) => binding.owner === "kaeno-skills",
-    ),
-  ).toBe(false);
-  await put(
-    root,
-    "agents/assistant.md",
-    manifest("assistant", "skills: [local:large1, local:large2]\n"),
+  async function updateSkills(skills: string[]): Promise<void> {
+    await put(
+      root,
+      "config.json",
+      JSON.stringify({
+        sourceDirectory: "sources",
+        defaultModel: "faux/faux-1",
+        localDefinitions: { skills: [{ alias: "local", directory: "skills" }] },
+        skills,
+      }),
+    );
+  }
+  await updateSkills([]);
+  expect((await loadEnvironment({ configFile })).assistant.bindings).toEqual(
+    [],
   );
+  await updateSkills(["local:large1", "local:large2"]);
   await expect(loadEnvironment({ configFile })).rejects.toThrow(
     "assigned skill snapshots exceed 8 MiB",
   );
 });
 
 it("rejects changed private scope in frozen WORK before provisioning, reconciliation or service start", async () => {
-  const { root, configFile } = await fixture(
-    "",
-    "tools: []\nskills: [custom:guide]\n",
-  );
+  const { root, configFile } = await fixture();
   const { extension } = feature();
   const config = await loadEnvironment({
     configFile,
@@ -584,7 +566,6 @@ it("rejects changed private scope in frozen WORK before provisioning, reconcilia
   });
   try {
     await startTicket(core, {
-      agent: config.work.agents[0].id,
       content: "Wait",
       title: "Pending",
     });
@@ -613,7 +594,7 @@ it("rejects changed private scope in frozen WORK before provisioning, reconcilia
               }
             : runtime,
         ),
-        work: { ...config.work, agents: [], environment },
+        work: { ...config.work, environment },
       }),
     ).rejects.toThrow("Wrong configured private scope");
     expect(start).not.toHaveBeenCalled();
@@ -625,7 +606,7 @@ it("rejects changed private scope in frozen WORK before provisioning, reconcilia
 });
 
 it("derives real discovered Browser worker contributions and rejects an assistant self-grant", async () => {
-  const { root, configFile } = await fixture();
+  const { configFile } = await fixture();
   const { extension: browser, live } = await browserExtension();
   const options: LoadEnvironmentOptions = {
     configFile,
@@ -640,22 +621,26 @@ it("derives real discovered Browser worker contributions and rejects an assistan
   };
   const config = await loadEnvironment(options);
   expect(config.work.tools).toEqual(expect.arrayContaining([...BROWSER_TOOLS]));
-  expect(config.work.agents[0].setup.tools).toEqual(
+  expect(config.work.setup.tools).toEqual(
     expect.arrayContaining([...BROWSER_TOOLS]),
   );
   expect(config.assistant.tools).not.toContain("browser_snapshot");
-  await put(
-    root,
-    "agents/assistant.md",
-    manifest("assistant", "tools: [browser_snapshot]\n"),
-  );
-  await expect(loadEnvironment(options)).rejects.toThrow(
-    'tool "browser_snapshot" is outside policy availability',
-  );
+  await expect(
+    loadEnvironment({
+      ...options,
+      policy: (base) => ({
+        ...base,
+        assistant: {
+          ...base.assistant,
+          defaults: [{ tools: ["browser_snapshot"] }],
+        },
+      }),
+    }),
+  ).rejects.toThrow('tool "browser_snapshot" is outside policy availability');
 });
 
 it("recovers a pending router run's native skill snapshot without its producer or source files", async () => {
-  const { root, configFile } = await fixture("tools: []\n");
+  const { root, configFile } = await fixture();
   const mixed = feature("guides").extension;
   const guides: AgentExtension = {
     runtime: { durable: defineExtension({ name: "guides" }) },
@@ -664,7 +649,13 @@ it("recovers a pending router run's native skill snapshot without its producer o
   const config = await loadEnvironment({
     configFile,
     extensions: [guides],
-    policy: grant(guides),
+    policy: (base) => ({
+      ...grant(guides)(base),
+      assistant: {
+        available: [...base.assistant.available, guides],
+        defaults: [guides],
+      },
+    }),
   });
   const faux = fauxProvider();
   const models = createModels();
@@ -687,7 +678,6 @@ it("recovers a pending router run's native skill snapshot without its producer o
   } finally {
     await first.close();
   }
-  await rm(join(root, "agents"), { recursive: true });
   await rm(join(root, "skills"), { recursive: true });
   let observed = "";
   faux.setResponses([

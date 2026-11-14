@@ -42,7 +42,6 @@ const scheduleParameter = Type.Union([
 ]);
 const routineParameters = {
   name: Type.String({ minLength: 1, maxLength: 80 }),
-  agent: Type.String({ description: "Worker agent ID from your instructions" }),
   instructions: Type.String({
     minLength: 1,
     description: "Complete, self-contained brief that every run starts with",
@@ -100,7 +99,7 @@ export interface RoutineView extends Routine {
 }
 
 /**
- * Owner-defined scheduled work. Each run is a ticket for the routine's agent, started by the host with the
+ * Owner-defined scheduled work. Each run is a ticket for the generic worker, started by the host with the
  * owner's standing approval (no router decision), and its report reaches the router, which relays it to the
  * routine's thread. Kaeno lists routines
  * and may propose creating, changing or deleting one; a proposal changes nothing until the owner
@@ -125,7 +124,7 @@ export class Routines {
     const list = defineTool({
       name: LIST_ROUTINES,
       description:
-        "List the owner's routines (work that runs on its own schedule) with agent, schedule, last run and next run, plus your proposed changes still awaiting the owner. You cannot run routines.",
+        "List the owner's routines (work that runs on its own schedule) with schedule, last run and next run, plus your proposed changes still awaiting the owner. You cannot run routines.",
       parameters: Type.Object({}),
       replay: "safe",
       execute: async (_args, _api, context) => ({
@@ -413,7 +412,6 @@ export class Routines {
         source: "routine",
         thread: `routine:${routine.id}`,
         replyThread: routine.thread,
-        agent: routine.agent,
         title: `Routine: ${routine.name}`,
         content: routine.instructions,
       });
@@ -499,7 +497,7 @@ export class Routines {
     if (!work) {
       throw new Error("Routines need WORK, which is not configured");
     }
-    return { ...parsed, agent: work.resolveAgent(parsed.agent) };
+    return parsed;
   }
 
   private attached(): Kaeno {

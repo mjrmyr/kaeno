@@ -157,18 +157,12 @@ async function fixture(options: { work?: boolean } = {}) {
       ...(options.work
         ? {
             work: {
-              agents: [
-                {
-                  id: "coder",
-                  description: "Codes",
-                  setup: {
-                    model: { provider: "faux", modelId: "faux-1" },
-                    instructions: "WORKER",
-                    tools: [...GITHUB_TOOLS],
-                    bindings: [githubBinding(12)],
-                  },
-                },
-              ],
+              setup: {
+                model: { provider: "faux", modelId: "faux-1" },
+                instructions: "WORKER",
+                tools: [...GITHUB_TOOLS],
+                bindings: [githubBinding(12)],
+              },
               tools: [...GITHUB_TOOLS],
               maxConcurrent: 1,
             },
@@ -573,7 +567,6 @@ it("automatically follows a published PR, survives restart, and wakes its worker
   );
   try {
     const ticket = await startTicket(fx.core, {
-      agent: "coder",
       content: "Publish changes",
     });
     await until(

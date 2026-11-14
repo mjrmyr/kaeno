@@ -59,7 +59,7 @@ it("constructs interchangeable installed backends with native extensions and sta
   try {
     const configFile = join(directory, "config.json");
     const databaseFile = join(directory, "db.sqlite");
-    const base = { sourceDirectory: "sources", kaeno: "local:kaeno" };
+    const base = { sourceDirectory: "sources" };
     const dockerConfig = parseEnvironmentConfiguration(
       base,
       configFile,

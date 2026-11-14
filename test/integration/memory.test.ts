@@ -131,7 +131,6 @@ it("a work report cannot plant a memory", async () => {
               {
                 trigger: "t1",
                 kind: "accept",
-                agent: "worker",
                 title: "Check",
                 ack: "On it.",
               },
@@ -152,13 +151,7 @@ it("a work report cannot plant a memory", async () => {
     },
     extensions: [memoryExtension(saved)],
     work: {
-      agents: [
-        {
-          id: "worker",
-          description: "Checks things",
-          setup: { model, instructions: "WORKER", tools: ["report"] },
-        },
-      ],
+      setup: { model, instructions: "WORKER", tools: ["report"] },
       tools: ["report"],
     },
   });

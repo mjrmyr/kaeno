@@ -44,7 +44,6 @@ import {
   WORK_EXTENSION,
   WORK_TOOLS,
   Work,
-  type AgentProfile,
   type WorkEnvironment,
   type WorkReports,
 } from "../work/index.ts";
@@ -106,13 +105,13 @@ export interface KaenoChannel {
   ): Promise<void | (() => Promise<void>)>;
 }
 
-/** Durable multi-agent WORK. Absent: Kaeno runs standalone without WORK tools. */
+/** Durable WORK. Absent: Kaeno runs standalone without WORK tools. */
 export interface WorkOptions {
-  /** Agents WORK may start. Copied and checked against the approved worker surface when Kaeno opens. */
-  agents: readonly AgentProfile[];
-  /** Where agents run; absent means they only have their selected tools. */
+  /** Generic worker setup. Copied and checked against the approved worker surface when Kaeno opens. */
+  setup: ConversationSetup;
+  /** Where workers run; absent means they only have their selected tools. */
   environment?: WorkEnvironment;
-  /** Tool names agents may select, from installed extensions. */
+  /** Tool names the worker setup may select, from installed extensions. */
   tools: readonly string[];
   maxDepth?: number;
   maxConcurrent?: number;
@@ -221,7 +220,9 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
   };
   const delivery = defineDelivery(() => notifier);
 
-  const workOptions = options.work;
+  const workOptions = options.work
+    ? { ...options.work, setup: structuredClone(options.work.setup) }
+    : undefined;
   if (workOptions) {
     z.object({
       maxDepth: z.number().int().min(1).max(8).optional(),
@@ -230,7 +231,6 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
     }).parse(workOptions);
   }
   let workerSurface: SetupSurface | undefined;
-  const agents = structuredClone(workOptions?.agents ?? []);
   const reportsToRouter: WorkReports = {
     report: (tx, reported) => engine.report(tx, reported),
     ended: (tx, ticket, workId) => engine.assignmentEnded(tx, ticket, workId),
@@ -238,7 +238,7 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
   };
   const work = workOptions
     ? new Work(reference.getHarness, reportsToRouter, {
-        agents,
+        setup: workOptions.setup,
         environment: workOptions.environment,
         onReport: options.onReport,
         surface: () => {
@@ -368,20 +368,13 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
       }
     }
     const approved = new Set(workOptions.tools);
-    // Protocol tools are native tools too: the host must explicitly approve them before an
-    // agent definition can select them.
+    // Protocol tools are native tools too: the host must explicitly approve them before a
+    // worker setup can select them.
     const surface = surfaceOf(durable, (name) => approved.has(name));
     workerSurface = surface;
-    const ids = new Set<string>();
-    for (const agent of agents) {
-      if (ids.has(agent.id)) {
-        throw new Error(`Duplicate agent "${agent.id}"`);
-      }
-      ids.add(agent.id);
-      assertSetupFits(`Agent ${agent.id}`, agent.setup, surface);
-      for (const binding of agent.setup.bindings ?? []) {
-        byName.get(binding.owner)?.validateBinding?.(binding);
-      }
+    assertSetupFits("Worker", workOptions.setup, surface);
+    for (const binding of workOptions.setup.bindings ?? []) {
+      byName.get(binding.owner)?.validateBinding?.(binding);
     }
   }
 
@@ -392,7 +385,7 @@ export async function openKaeno(options: OpenKaenoOptions): Promise<Kaeno> {
       extraExtensions: [policy],
       instructions: routerInstructions({
         assistant: options.assistant.instructions,
-        agents: work?.describeAgents() ?? "",
+        work: work !== undefined,
         channels: CHANNEL_NORMS,
       }),
       cwd: null,

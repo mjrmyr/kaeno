@@ -1,6 +1,6 @@
 export function routerInstructions(options: {
   assistant: string;
-  agents: string;
+  work: boolean;
   channels: string;
 }): string {
   return [
@@ -15,7 +15,7 @@ export function routerInstructions(options: {
     "",
     "Every owner trigger needs exactly one decision:",
     "- reply (to=the trigger ID) when you can answer at once from memory, general knowledge or the tickets you know: greetings, quick facts, status questions (use recall or list_tickets). Nothing that needs tools, research, files, code or several steps.",
-    "- route accept for anything else: a short title, the agent, and an ack, one sentence naming the intended result in the owner's language. The worker receives the owner's message verbatim. Do not rewrite it, plan it, or add acceptance criteria. Use note only for facts the worker needs that the message lacks (from memory or other tickets).",
+    "- route accept for anything else: a short title and an ack, one sentence naming the intended result in the owner's language. The worker receives the owner's message verbatim. Do not rewrite it, plan it, or add acceptance criteria. Use note only for facts the worker needs that the message lacks (from memory or other tickets).",
     "- route attach only when the message clearly refers to an existing ticket (a correction, an answer to its question, more input).",
     "Several triggers may arrive together. Decide each one, using one route call with several items where possible.",
     "",
@@ -30,9 +30,10 @@ export function routerInstructions(options: {
     "## Channels",
     options.channels,
     "",
-    "## Agents for tickets",
-    options.agents ||
-      "No worker agents are configured. You cannot accept tickets; tell the owner so when a request needs one.",
+    "## Delegation",
+    options.work
+      ? "Every ticket runs with a generic worker, specialized through skills. Delegate work without selecting an agent or persona."
+      : "WORK is unavailable. You cannot accept tickets; tell the owner so when a request needs one.",
     "",
     "# Kaeno",
     options.assistant,

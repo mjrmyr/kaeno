@@ -29,7 +29,7 @@ The optional `src/extensions/github` extension lets a worker discover private re
 
 `appId` is the numeric App ID, not the client ID. `installationId` identifies your installation. `privateKeyFile` resolves relative to this configuration file.
 
-GitHub is the source of truth for accessible repositories and permissions. There are no local permission lists or per-agent repository policies. All agents, including Kaeno and nested workers, use the same installation. GitHub tools are included in their defaults when configured. Explicit `tools` lists still override defaults; omit `github_publish` from an explicit list for a discovery/checkout-only agent.
+GitHub is the source of truth for accessible repositories and permissions. There are no local permission lists or per-agent repository policies. Root and nested generic workers use the same installation. GitHub tools are worker defaults when configured; Kaeno itself remains a router without execution tools. Embedders may narrow worker-role defaults and availability for discovery/checkout-only use.
 
 6. No GitHub-specific agent configuration is required. For example, this worker inherits the configured tools:
 
@@ -230,12 +230,12 @@ const configuration = await loadEnvironment({
 });
 ```
 
-Pass the returned configuration to `openKaeno` with storage/models and the chosen WORK environment, as usual. Each `agentRepositories`/`skillRepositories` declaration requires an explicit `provider`: `github` uses isolated anonymous access; `github-app-<installationId>` uses the configured App's host-only credentials for private definitions. Both readers live inside the configured GitHub integration, with no separate host reader argument. An App reader never falls back to public access on failure. Changing installations changes the reader name, so source configuration and cache identity cannot silently redirect.
+Pass the returned configuration to `openKaeno` with storage/models and the chosen WORK environment, as usual. Each `skillRepositories` declaration requires an explicit `provider`: `github` uses isolated anonymous access; `github-app-<installationId>` uses the configured App's host-only credentials for private definitions. Both readers live inside the configured GitHub integration, with no separate host reader argument. An App reader never falls back to public access on failure. Changing installations changes the reader name, so source configuration and cache identity cannot silently redirect.
 
 Without App configuration, install `githubExtension()` (no arguments) in the same `githubExtensions` list. It provides only the `github` definition reader: no dummy runtime, private binding or agent tools. See [definition-reader selection and migration](extensions.md#definition-readers).
 
 ## Verification
 
-`npm run verify` covers native read-tool schemas and execution, PR head metadata, pagination/filtering, scoped-token authorization, missing/mismatched assignments, API permission/not-found failures, bounded log streaming, unsafe redirects and credential-free downloads, as well as installation-wide discovery, contextual instructions, default capability availability in Kaeno, root workers, and nested workers, workflow skill loading, binary-safe local Git transfer, interrupted checkout adoption, immutable pending publish recovery across SQLite restart, PR response-loss reconciliation, dirty-workspace preservation, draft-only publishing, GitHub authorization failures, and unexpected remote-head rejection.
+`npm run verify` covers native read-tool schemas and execution, PR head metadata, pagination/filtering, scoped-token authorization, missing/mismatched assignments, API permission/not-found failures, bounded log streaming, unsafe redirects and credential-free downloads, as well as installation-wide discovery, contextual instructions, worker-only capability availability in root and nested workers, workflow skill loading, binary-safe local Git transfer, interrupted checkout adoption, immutable pending publish recovery across SQLite restart, PR response-loss reconciliation, dirty-workspace preservation, draft-only publishing, GitHub authorization failures, and unexpected remote-head rejection.
 
 These tests use a mocked GitHub HTTP API and real temporary Git repositories/execution environments. A live installation test remains necessary before claiming compatibility with your GitHub App configuration.

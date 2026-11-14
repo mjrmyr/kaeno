@@ -22,7 +22,7 @@ import {
   requireConversation,
   type Stored,
 } from "../durable/index.ts";
-import { readParent, WorkScope } from "../work/index.ts";
+import { readParent, WorkScope, WORKER_ID } from "../work/index.ts";
 import {
   admitDelivery,
   readReplies,
@@ -79,7 +79,6 @@ export interface TicketWork {
       owner: ConversationId;
       key: string;
       ticket: string;
-      agent: string;
       title: string;
       content: UserInput;
       conversation: ConversationId;
@@ -88,8 +87,6 @@ export interface TicketWork {
     context: Context,
   ): Promise<TaskId>;
   isNoSlot(error: unknown): boolean;
-  /** The configured agent a requested name refers to; throws when unknown or ambiguous. */
-  resolveAgent(requested: string): string;
 }
 export interface ChannelInfo {
   maxWords?: number;
@@ -329,13 +326,11 @@ export class Engine {
       source: string;
       thread: string;
       replyThread: string;
-      agent: string;
       title: string;
       content: UserInput;
     },
   ): Promise<string> {
-    const work = this.requireWork();
-    const agent = work.resolveAgent(request.agent);
+    this.requireWork();
     const key = await tx.doc(TriggerKeyDoc, request.key, null);
     if (key.id !== null) {
       const known = await tx.doc(TriggerDoc, key.id, null);
@@ -367,7 +362,6 @@ export class Engine {
     trim(thread.recent, LIMITS.recentThread);
     const ticket = await this.createTicket(tx, {
       trigger,
-      agent,
       title: request.title,
       own: { key: request.thread },
       replyThread: request.replyThread,
@@ -468,20 +462,18 @@ export class Engine {
     tx: Tx,
     request: {
       trigger: string;
-      agent: string;
       title: string;
       ack: string;
       note?: string;
       own?: { key: string; route: ChannelRoute };
     },
   ): Promise<string> {
-    const agent = this.requireWork().resolveAgent(request.agent);
+    this.requireWork();
     const trigger = await tx.doc(TriggerDoc, request.trigger, null);
     this.assertUndecided(trigger);
     const direct = trigger.disposition ? undefined : trigger.requestId;
     const ticket = await this.createTicket(tx, {
       trigger,
-      agent,
       title: request.title,
       own: request.own,
       replyThread: trigger.threads[0],
@@ -959,7 +951,6 @@ export class Engine {
             owner,
             key: `${id}:${number}`,
             ticket: id,
-            agent: ticket.agent,
             title: ticket.title,
             content: await this.briefing(ticket, context),
             conversation: parseConversationId(ticket.conversation),
@@ -1093,7 +1084,6 @@ export class Engine {
     tx: Tx,
     request: {
       trigger: Trigger;
-      agent: string;
       title: string;
       own: { key: string; route?: ChannelRoute } | undefined;
       replyThread: string;
@@ -1110,7 +1100,7 @@ export class Engine {
     const ticket = await tx.doc(TicketDoc, id, {
       id,
       title: request.title,
-      agent: request.agent,
+      agent: WORKER_ID,
       createdAt: now,
       updatedAt: now,
       origin: request.trigger.id,

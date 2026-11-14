@@ -72,26 +72,17 @@ const executionSchema = z
   .strict();
 export type ExecutionConfiguration = z.output<typeof executionSchema>;
 
-const qualified = z.string().regex(/^[^:\s]+:[^:\s*]+$/);
-/** `source:*` selects every valid agent of one source except the one Kaeno runs as. */
-const workerSelector = z
-  .string()
-  .regex(/^[^:\s*]+:(\*|[^:\s*]+)$/, "expected source:name or source:*");
 const schema = z
   .object({
     sourceDirectory: z.string().min(1),
-    agentRepositories: z.array(repositoryDeclaration).default([]),
     skillRepositories: z.array(repositoryDeclaration).default([]),
     localDefinitions: z
       .object({
-        agents: z.array(directoryDeclaration).default([]),
         skills: z.array(directoryDeclaration).default([]),
       })
       .strict()
-      .default({ agents: [], skills: [] }),
-    // The agent Kaeno runs as; its skills come from its own profile, like every worker's.
-    kaeno: qualified,
-    workers: z.array(workerSelector).default([]),
+      .default({ skills: [] }),
+    skills: z.array(z.string().min(1)).optional(),
     defaultModel: z.string().min(1).optional(),
     execution: executionSchema.prefault({
       provider: "docker",
@@ -103,8 +94,7 @@ export interface EnvironmentConfiguration {
   sourceDirectory: string;
   repositories: RepositoryDefinitionSource[];
   directories: DirectoryDefinitionSource[];
-  kaeno: string;
-  workers: string[];
+  skills?: string[];
   defaultModel?: string;
   execution: ExecutionConfiguration;
 }
@@ -113,6 +103,21 @@ export function parseEnvironmentConfiguration(
   value: unknown,
   configFile: string,
 ): EnvironmentConfiguration {
+  if (typeof value === "object" && value !== null) {
+    const legacy = ["agentRepositories", "kaeno", "workers"].filter(
+      (key) => key in value,
+    );
+    const local =
+      "localDefinitions" in value ? value.localDefinitions : undefined;
+    if (
+      legacy.length ||
+      (typeof local === "object" && local !== null && "agents" in local)
+    ) {
+      throw new Error(
+        "Agent definitions are no longer supported. Remove agentRepositories, kaeno, workers and localDefinitions.agents; configure skillRepositories/localDefinitions.skills and optional skills/defaultModel instead.",
+      );
+    }
+  }
   const parsed = schema.safeParse(value);
   if (!parsed.success) {
     throw new Error(
@@ -120,56 +125,36 @@ export function parseEnvironmentConfiguration(
     );
   }
   const config = parsed.data;
-  if (new Set(config.workers).size !== config.workers.length) {
-    throw new Error("Configuration: duplicate worker selection");
-  }
   const repositories: RepositoryDefinitionSource[] = [];
   const directories: DirectoryDefinitionSource[] = [];
-  const refs = new Map<string, string>();
-  for (const kind of ["agents", "skills"] as const) {
-    const aliases = new Set<string>();
-    const declarations =
-      kind === "agents" ? config.agentRepositories : config.skillRepositories;
-    for (const item of declarations) {
-      if (aliases.has(item.repository)) {
-        throw new Error(
-          `Configuration: duplicate ${kind} repository ${item.repository}`,
-        );
-      }
-      const identity = JSON.stringify([item.provider, item.repository]);
-      if (refs.has(identity) && refs.get(identity) !== item.ref) {
-        throw new Error(
-          `Configuration: conflicting refs for ${item.repository}`,
-        );
-      }
-      aliases.add(item.repository);
-      refs.set(identity, item.ref);
-      repositories.push({
-        kind,
-        ...item,
-        path: item.path ?? (kind === "agents" ? "agents" : ""),
-      });
+  const aliases = new Set<string>();
+  for (const item of config.skillRepositories) {
+    if (aliases.has(item.repository)) {
+      throw new Error(
+        `Configuration: duplicate skills repository ${item.repository}`,
+      );
     }
-    for (const item of config.localDefinitions[kind]) {
-      if (aliases.has(item.alias)) {
-        throw new Error(
-          `Configuration: duplicate ${kind} source alias ${item.alias}`,
-        );
-      }
-      aliases.add(item.alias);
-      directories.push({
-        kind,
-        alias: item.alias,
-        directory: resolve(dirname(configFile), item.directory),
-      });
+    aliases.add(item.repository);
+    repositories.push({ kind: "skills", ...item, path: item.path ?? "" });
+  }
+  for (const item of config.localDefinitions.skills) {
+    if (aliases.has(item.alias)) {
+      throw new Error(
+        `Configuration: duplicate skills source alias ${item.alias}`,
+      );
     }
+    aliases.add(item.alias);
+    directories.push({
+      kind: "skills",
+      alias: item.alias,
+      directory: resolve(dirname(configFile), item.directory),
+    });
   }
   return {
     sourceDirectory: resolve(dirname(configFile), config.sourceDirectory),
     repositories,
     directories,
-    kaeno: config.kaeno,
-    workers: config.workers,
+    skills: config.skills,
     defaultModel: config.defaultModel,
     execution: {
       ...config.execution,

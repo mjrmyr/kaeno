@@ -93,7 +93,11 @@ it.each([
           models,
           assistant: { model, instructions: "CHAT" },
           work: {
-            agents: [],
+            setup: {
+              model: { provider: "faux", modelId: "faux-1" },
+              instructions: "WORKER",
+              tools: [],
+            },
             tools: [],
             environment: {
               identity: "new:backend",
@@ -192,17 +196,11 @@ it.each(["test:docker", "test:microsandbox", undefined])(
           tools: [...ROUTER_ASSISTANT_TOOLS],
         },
         work: {
-          agents: [
-            {
-              id: "worker",
-              description: "Worker",
-              setup: {
-                model,
-                instructions: "WORKER",
-                tools: ["message_parent"],
-              },
-            },
-          ],
+          setup: {
+            model,
+            instructions: "WORKER",
+            tools: ["message_parent"],
+          },
           tools: ["message_parent"],
           environment:
             target === undefined ? undefined : environmentFor(target),
@@ -212,7 +210,6 @@ it.each(["test:docker", "test:microsandbox", undefined])(
     const core = await open(identity);
     try {
       await startTicket(core, {
-        agent: "worker",
         title: "Pending",
         content: "Ask for input",
       });

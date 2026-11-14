@@ -114,13 +114,7 @@ async function fixture(options: {
     ],
     onReport: (error) => console.error("REPORT", error),
     work: {
-      agents: [
-        {
-          id: "worker",
-          description: "Does tasks",
-          setup: { model, instructions: "WORKER", tools: ["report"] },
-        },
-      ],
+      setup: { model, instructions: "WORKER", tools: ["report"] },
       tools: ["report"],
       maxDepth: 1,
       maxConcurrent: options.maxConcurrent ?? 2,
@@ -164,7 +158,6 @@ it("accepts a ticket, relays its result, and passes a follow-up in its thread st
             {
               trigger: "t1",
               kind: "accept",
-              agent: "worker",
               title: "Research",
               ack: "On it.",
             },
@@ -305,7 +298,6 @@ it("refuses a mutation whose basis is not an owner message in front of the route
             {
               trigger: "t2",
               kind: "accept",
-              agent: "worker",
               title: "X",
               ack: "ok",
             },
@@ -353,7 +345,6 @@ it("never starts work from a report, and drops reports of a stopped ticket", asy
             {
               trigger: "t1",
               kind: "accept",
-              agent: "worker",
               title: "A",
               ack: "ok",
             },
@@ -368,7 +359,6 @@ it("never starts work from a report, and drops reports of a stopped ticket", asy
                 {
                   trigger: "t1",
                   kind: "accept",
-                  agent: "worker",
                   title: "B",
                   ack: "ok",
                 },
@@ -449,7 +439,6 @@ it("queues accepted tickets until a slot is free", async () => {
         items: ids.map((id) => ({
           trigger: id,
           kind: "accept",
-          agent: "worker",
           title: `T${id}`,
           ack: "ok",
         })),

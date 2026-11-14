@@ -15,7 +15,7 @@ import {
   githubExtension,
   loadGitHubConfiguration,
 } from "../extensions/github/index.ts";
-import { parseModelRef } from "../extensions/agents/index.ts";
+import { parseModelRef } from "./composition/index.ts";
 import { ApiServer } from "../channels/api/index.ts";
 import { loadTelegram } from "../channels/telegram/index.ts";
 import { loadWebhooks, WebhookServer } from "../channels/webhooks/index.ts";

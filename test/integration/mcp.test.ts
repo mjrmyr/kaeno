@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -894,21 +894,11 @@ it("failed harness startup closes the MCP lifecycle without starting any network
 it("composes actual assistant/worker policy; tools removed from the config leave the WORK ceiling", async () => {
   const target = await fixture();
   let installed = await target.install();
-  await mkdir(join(target.directory, "agents"), { recursive: true });
-  for (const name of ["assistant", "worker"]) {
-    await writeFile(
-      join(target.directory, "agents", `${name}.md`),
-      `---\nname: ${name}\ndescription: fixture\nmodel: faux/faux-1\n${name === "assistant" ? "tools: [demo_read]\n" : ""}---\nFixture instructions`,
-    );
-  }
   const configFile = join(target.directory, "environment.json");
   await writeFile(
     configFile,
     JSON.stringify({
       sourceDirectory: "sources",
-      localDefinitions: { agents: [{ alias: "local", directory: "agents" }] },
-      kaeno: "local:assistant",
-      workers: ["local:worker"],
     }),
   );
   async function compose() {
@@ -924,6 +914,7 @@ it("composes actual assistant/worker policy; tools removed from the config leave
           defaults: [
             ...base.assistant.defaults,
             ...installed.policy.assistant.defaults,
+            ...installed.policy.assistant.available,
           ],
         },
         worker: {
@@ -942,15 +933,11 @@ it("composes actual assistant/worker policy; tools removed from the config leave
   let configuration = await compose();
   expect(configuration.assistant.tools).toContain("demo_read");
   expect(configuration.assistant.tools).not.toContain("demo_write");
-  expect(configuration.work.agents[0].setup.tools).toContain("demo_write");
+  expect(configuration.work.setup.tools).toContain("demo_write");
   await target.configure([{ upstream: "read", readOnly: true }]);
   installed = await target.install();
   configuration = await compose();
   expect(configuration.work.tools).not.toContain("demo_write");
-  expect(configuration.work.agents[0].setup.tools).not.toContain("demo_write");
-  await writeFile(
-    join(target.directory, "agents", "assistant.md"),
-    "---\nname: assistant\ndescription: fixture\nmodel: faux/faux-1\ntools: [demo_write]\n---\nFixture",
-  );
-  await expect(compose()).rejects.toThrow(/demo_write/);
+  expect(configuration.work.setup.tools).not.toContain("demo_write");
+  expect(configuration.assistant.tools).not.toContain("demo_write");
 });

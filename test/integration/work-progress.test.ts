@@ -112,17 +112,11 @@ async function fixture(options: {
     },
     extensions: [{ durable: defineExtension({ name: "hold", tools: [hold] }) }],
     work: {
-      agents: [
-        {
-          id: "worker",
-          description: "Worker",
-          setup: {
-            model,
-            instructions: "WORKER",
-            tools: ["message_parent", "report", "hold"],
-          },
-        },
-      ],
+      setup: {
+        model,
+        instructions: "WORKER",
+        tools: ["message_parent", "report", "hold"],
+      },
       tools: ["message_parent", "report", "hold"],
       environment: environment(release),
       maxDepth: 1,
@@ -132,7 +126,6 @@ async function fixture(options: {
   let workId: TaskId | undefined;
   async function launch() {
     const ticket = await startTicket(core, {
-      agent: "worker",
       title: "Progress",
       content: "Work",
       key: "progress",
@@ -371,7 +364,7 @@ it("routes child progress to its WORK parent without stopping the child", async 
       if (isRouterRequest(request)) {
         return answer("ACK");
       }
-      if (system.includes("CHILD PROFILE")) {
+      if (!system.includes("generic child workers")) {
         if (++childTurns === 1) {
           return call("message_parent", {
             kind: "progress",
@@ -386,7 +379,6 @@ it("routes child progress to its WORK parent without stopping the child", async 
       if (system.includes("PARENT PROFILE")) {
         if (last?.role === "user" && content.includes("Coordinate")) {
           return call("start_work", {
-            agent: "child",
             title: "Child",
             brief: "Work",
           });
@@ -413,26 +405,11 @@ it("routes child progress to its WORK parent without stopping the child", async 
     },
     extensions: [{ durable: defineExtension({ name: "hold", tools: [hold] }) }],
     work: {
-      agents: [
-        {
-          id: "parent",
-          description: "Parent",
-          setup: {
-            model,
-            instructions: "PARENT PROFILE",
-            tools: ["start_work"],
-          },
-        },
-        {
-          id: "child",
-          description: "Child",
-          setup: {
-            model,
-            instructions: "CHILD PROFILE",
-            tools: ["message_parent", "hold"],
-          },
-        },
-      ],
+      setup: {
+        model,
+        instructions: "PARENT PROFILE",
+        tools: ["start_work", "message_parent", "hold"],
+      },
       tools: ["start_work", "message_parent", "hold"],
       maxDepth: 2,
       maxConcurrent: 3,
@@ -440,7 +417,6 @@ it("routes child progress to its WORK parent without stopping the child", async 
   });
   try {
     await startTicket(core, {
-      agent: "parent",
       title: "Parent",
       content: "Coordinate",
     });
@@ -451,7 +427,7 @@ it("routes child progress to its WORK parent without stopping the child", async 
       context,
     );
     const child = records.items.find((record) =>
-      JSON.stringify(record.input).includes('"agent":"child"'),
+      JSON.stringify(record.input).includes('"depth":2'),
     );
     expect(child?.state).toMatchObject({ checkpoint: { phase: "supervise" } });
     expect(JSON.stringify(child?.state)).not.toContain('"awaiting":"reply"');

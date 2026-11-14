@@ -1,3 +1,4 @@
+import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord";
 import type { TaskRecord } from "@earendil-works/pi-durable";
 import { expect, it, vi } from "vitest";
@@ -9,6 +10,9 @@ import { conversationId, taskId } from "../../../test/mocks/identifiers.ts";
 import {
   listWork,
   NoWorkSlot,
+  planFor,
+  storedPlan,
+  WORKER_ID,
   Work,
   WorkIndex,
   WorkScope,
@@ -35,13 +39,7 @@ function setup(): {
   const runtime = createMockRuntime(createMockTransaction());
   const sink = reports();
   const work = new Work(() => runtime, sink, {
-    agents: [
-      {
-        id: "local:root",
-        description: "Root",
-        setup: { model: { provider: "faux", modelId: "x" }, instructions: "" },
-      },
-    ],
+    setup: { model: { provider: "faux", modelId: "x" }, instructions: "" },
     surface: () => ({ tools: new Map(), extensions: new Map() }),
     maxDepth: 2,
     maxConcurrent: 4,
@@ -74,8 +72,15 @@ it("publishes orchestration and parent tools and reports an empty directory", as
     "report",
   ]);
   expect(await listWork(() => runtime, conversationId(12))).toEqual([]);
-  expect(work.describeAgents()).toContain("- local:root: Root");
-  expect(work.resolveAgent("root")).toBe("local:root");
+  const start = work.orchestrationTools.find(
+    (tool) => tool.name === "start_work",
+  );
+  if (!start) {
+    throw new Error("Missing start_work tool");
+  }
+  expect(start.parameters).toMatchObject({ required: ["title", "brief"] });
+  expect(start.parameters).not.toHaveProperty("properties.agent");
+  expect(start.description).not.toContain("Pick an agent");
 });
 it("preserves the durable task and document identities behind the public API", () => {
   const { work } = setup();
@@ -200,3 +205,71 @@ it("recognizes a full slot so the router can queue a ticket instead of failing i
   expect(work.isNoSlot(new NoWorkSlot("full"))).toBe(true);
   expect(work.isNoSlot(new Error("full"))).toBe(false);
 });
+
+it.each([false, true])(
+  "admits work with a generic setup or the unchanged saved ticket plan (saved=%s)",
+  async (saved) => {
+    const tx = createMockTransaction();
+    vi.mocked(tx.scanTasks).mockResolvedValue({ items: [] });
+    const created = vi.spyOn(tx, "createTask").mockResolvedValue(taskId(25));
+    const runtime = createMockRuntime(tx);
+    const oldSetup = {
+      model: { provider: "faux", modelId: "old" },
+      instructions: "Historical instructions",
+    };
+    const oldPlan = planFor("legacy:root", [
+      { id: "legacy:root", description: "Old root", setup: oldSetup },
+      { id: "legacy:other", description: "Old other", setup: oldSetup },
+    ]);
+    vi.spyOn(runtime, "snapshot")
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(
+        saved
+          ? {
+              ...WorkScope.definition.initial(),
+              agent: "legacy:other",
+              plan: storedPlan(oldPlan),
+            }
+          : undefined,
+      );
+    const work = new Work(() => runtime, reports(), {
+      setup: { model: { provider: "faux", modelId: "new" }, instructions: "" },
+      surface: () => ({ tools: new Map(), extensions: new Map() }),
+      maxDepth: 2,
+      maxConcurrent: 4,
+    });
+    expect(
+      await work.launch(
+        {
+          owner: conversationId(12),
+          key: "assignment",
+          ticket: "k1",
+          title: "Job",
+          content: "Do the job",
+          conversation: conversationId(13),
+          reserve: 0,
+        },
+        context,
+      ),
+    ).toBe(taskId(25));
+    const input = created.mock.calls[0][1];
+    expect(input).toMatchObject({ agent: saved ? "legacy:other" : WORKER_ID });
+    expect(input).toHaveProperty(
+      "plan",
+      saved
+        ? storedPlan(oldPlan)
+        : storedPlan(
+            planFor(WORKER_ID, [
+              {
+                id: WORKER_ID,
+                description: "General-purpose worker",
+                setup: {
+                  model: { provider: "faux", modelId: "new" },
+                  instructions: "",
+                },
+              },
+            ]),
+          ),
+    );
+  },
+);

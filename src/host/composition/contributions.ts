@@ -5,7 +5,6 @@ import {
   type Binding,
   type KaenoExtension,
 } from "../../core/application/index.ts";
-import type { AgentDefinition } from "../../extensions/agents/index.ts";
 import type {
   AgentExtension,
   InstalledExtension,
@@ -24,11 +23,6 @@ export interface RolePolicy {
 export interface AgentPolicies {
   readonly assistant: RolePolicy;
   readonly worker: RolePolicy;
-  /** May narrow role availability, never widen it. Defaults must fit the narrowed ceiling. */
-  forAgent?(
-    target: { readonly id: string; readonly role: "assistant" | "worker" },
-    policy: RolePolicy,
-  ): RolePolicy;
 }
 export type ContributionPolicy = (base: {
   readonly assistant: RolePolicy;
@@ -50,10 +44,7 @@ interface ResolvedContributions {
 }
 interface ResolvedExtensions {
   workerTools: readonly string[];
-  resolve(
-    agent: AgentDefinition,
-    role: "assistant" | "worker",
-  ): ResolvedContributions;
+  resolve(role: "assistant" | "worker"): ResolvedContributions;
 }
 const privateBindingSchema = bindingSchema.omit({ owner: true }).strict();
 
@@ -65,6 +56,7 @@ export function resolveExtensions(options: {
   assistantTools: readonly string[];
   workerTools: readonly string[];
   policy?: ContributionPolicy;
+  skills?: readonly string[];
 }): ResolvedExtensions {
   const installed = new Set(options.extensions);
   const extensions = options.extensions.filter(
@@ -190,11 +182,23 @@ export function resolveExtensions(options: {
   const base = {
     assistant: {
       available: [{ tools: options.assistantTools }, sourceSkills],
-      defaults: [{ tools: options.assistantTools }],
+      defaults: [
+        { tools: options.assistantTools },
+        {
+          skills:
+            options.skills ?? options.sourceSkills.list().map(({ id }) => id),
+        },
+      ],
     },
     worker: {
       available: [{ tools: options.workerTools }, sourceSkills],
-      defaults: [{ tools: options.workerTools }],
+      defaults: [
+        { tools: options.workerTools },
+        {
+          skills:
+            options.skills ?? options.sourceSkills.list().map(({ id }) => id),
+        },
+      ],
     },
   };
   const policy: AgentPolicies = options.policy?.(base) ?? base;
@@ -205,30 +209,8 @@ export function resolveExtensions(options: {
 
   return {
     workerTools: roles.worker.available.tools,
-    resolve(
-      agent: AgentDefinition,
-      role: "assistant" | "worker",
-    ): ResolvedContributions {
-      const target = { id: agent.id, role };
-      const narrowed = policy.forAgent?.(target, policy[role]);
-      const effective = narrowed
-        ? policyOf(narrowed, `Agent ${agent.id}`)
-        : roles[role];
-      within(
-        `Agent ${agent.id} availability`,
-        effective.available,
-        roles[role].available,
-      );
-      const selected = {
-        tools: agent.tools ? [...agent.tools] : effective.defaults.tools,
-        skills: agent.skills
-          ? catalog.select(agent.skills)
-          : effective.defaults.skills,
-      };
-      if (new Set(selected.tools).size !== selected.tools.length) {
-        throw new Error(`Agent ${agent.id}: duplicate tool selection`);
-      }
-      within(`Agent ${agent.id}`, selected, effective.available);
+    resolve(role: "assistant" | "worker"): ResolvedContributions {
+      const selected = roles[role].defaults;
       const skillBinding = skillBinder(catalog)(selected.skills);
       const bindings: Binding[] = [];
       for (const extension of extensions) {

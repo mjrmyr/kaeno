@@ -62,7 +62,7 @@ export function parseManifest(text: string, location: string): Manifest {
   return { metadata: metadata.data, body: text.slice(match[0].length).trim() };
 }
 
-/** Required nonempty discovery metadata shared by agents and skills. */
+/** Required nonempty discovery metadata for skills. */
 export function discoveryMetadata(
   manifest: Manifest,
   location: string,

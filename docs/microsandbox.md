@@ -28,7 +28,7 @@ Copy `microsandbox.config.example.json` to `.kaeno/microsandbox.json`. Select it
 }
 ```
 
-This fragment sits alongside the normal source/agent configuration. The path resolves relative to that owner file. The referenced file must exist; `{}` uses these defaults:
+This fragment sits alongside the normal skills-source configuration. The path resolves relative to that owner file. The referenced file must exist; `{}` uses these defaults:
 
 ```json
 {

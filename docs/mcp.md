@@ -69,7 +69,7 @@ Kaeno discovers all configured servers in parallel at startup (30 s budget). An 
 `mcp.json` fails startup. A server that is unreachable, rejects credentials or returns
 invalid advertising does **not**: Kaeno logs `mcp: <id>: ...` and keeps starting. Its
 allowlisted tools, and any allowlisted tool a reachable server does not advertise, are
-registered as placeholders: they keep saved conversations and profile selections valid,
+registered as placeholders: they keep saved conversations and saved tool selections valid,
 are left out of worker defaults, and return `not_loaded` without sending a request.
 Restart Kaeno once the server is back. Tools the server advertises but the config does
 not list are never registered.
@@ -83,7 +83,7 @@ Profiles can request `tools: [issues_get_issue, issues_create_comment]` within r
 The feature derives its policy, and `src/host/main.ts` composes it:
 
 - Assistant availability: live `readOnly: true` tools only. No MCP assistant defaults.
-  The assistant profile must explicitly request the read tools it needs.
+  The host assistant-role policy must explicitly select the read tools it needs.
 - Worker availability: entire extensions. Worker defaults: all allowlisted tools.
 - `readOnly` means result-turn permission, **not** safe replay or concurrent execution.
   `replay: "safe"` and `executionMode: "parallel"` are separate, explicit owner grants.

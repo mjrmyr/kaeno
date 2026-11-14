@@ -129,7 +129,6 @@ export async function ask(
 export async function startTicket(
   core: Kaeno,
   request: {
-    agent: string;
     content: UserInput;
     title?: string;
     key?: string;
@@ -145,7 +144,6 @@ export async function startTicket(
         source: "test",
         thread: request.thread ?? `test:ticket:${key}`,
         replyThread: request.replyThread ?? "test:chat",
-        agent: request.agent,
         title: request.title ?? "Test",
         content: request.content,
       }),

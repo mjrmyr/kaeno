@@ -1,11 +1,10 @@
 export { listWork } from "./directory.ts";
 export {
   assertPlanFits,
-  describeAgents,
   planFor,
   readPlan,
-  resolveAgentId,
   storedPlan,
+  WORKER_ID,
 } from "./plan.ts";
 export type {
   AgentProfile,

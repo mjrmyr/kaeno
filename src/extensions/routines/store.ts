@@ -6,8 +6,6 @@ import { scheduleSchema } from "./schedule.ts";
 export const routineInputSchema = z
   .object({
     name: z.string().trim().min(1).max(80),
-    /** Worker agent that runs it, for example `mjrmyr/myriad:swe`. */
-    agent: z.string().min(1),
     /** The brief each run starts with. */
     instructions: z.string().trim().min(1).max(64_000),
     schedule: scheduleSchema,
@@ -22,7 +20,7 @@ export const routineInputSchema = z
   })
   .strict();
 export type RoutineInput = z.input<typeof routineInputSchema>;
-/** Validated routine fields, with defaults applied and the agent resolved. */
+/** Validated routine fields, with defaults applied. */
 export type RoutineFields = z.output<typeof routineInputSchema>;
 export interface Routine extends RoutineFields {
   id: number;
@@ -71,10 +69,23 @@ const changeRow = z.object({
   decided_at: z.number().nullable(),
   result: z.number().nullable(),
 });
+/** Old proposals may carry a worker name; routines now always use the generic worker. */
+function readProposal(text: string): RoutineProposal {
+  const value = JSON.parse(text);
+  if (
+    value &&
+    typeof value === "object" &&
+    value.input &&
+    typeof value.input === "object"
+  ) {
+    delete value.input.agent;
+  }
+  return proposalSchema.parse(value);
+}
 function changeOf(row: unknown): RoutineChange {
   const parsed = changeRow.parse(row);
   return {
-    ...proposalSchema.parse(JSON.parse(parsed.proposal)),
+    ...readProposal(parsed.proposal),
     id: parsed.id,
     status: parsed.status,
     createdAt: parsed.created_at,
@@ -106,7 +117,6 @@ function routineOf(row: unknown): Routine {
   return {
     id: parsed.id,
     name: parsed.name,
-    agent: parsed.agent,
     instructions: parsed.instructions,
     schedule: scheduleSchema.parse(JSON.parse(parsed.schedule)),
     thread: parsed.thread,
@@ -302,7 +312,7 @@ export class RoutineStore {
   private values(input: RoutineFields) {
     return [
       input.name,
-      input.agent,
+      "kaeno:worker", // Retained database column; no longer a configurable agent.
       input.instructions,
       JSON.stringify(input.schedule),
       input.thread,

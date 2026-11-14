@@ -12,15 +12,14 @@ import { join } from "node:path";
 import { expect, it } from "vitest";
 import { ask } from "../mocks/router.ts";
 import {
-  parseAgent,
-  parseAgents,
-  resolveAgentSetup,
-  resolveAgents,
-} from "../../src/extensions/agents/index.ts";
-import { openKaeno, type Binding } from "../../src/core/application/index.ts";
-import type {
-  DefinitionOrigin,
-  DefinitionPackage,
+  openKaeno,
+  type Binding,
+  type ConversationSetup,
+} from "../../src/core/application/index.ts";
+import {
+  definitionOriginsExtension,
+  type DefinitionOrigin,
+  type DefinitionPackage,
 } from "../../src/extensions/definitions/index.ts";
 import {
   loadSkills,
@@ -76,16 +75,12 @@ it.each([{ tools: [] }, { tools: ["read_skill"] }])(
     const native = structuredClone(guide);
     const binder = skillBinder(new SkillCatalog([]), [native]);
     native.documents["SKILL.md"] = "MUTATED";
-    const agent = parseAgent(
-      `---\nname: assistant\ndescription: Assistant\nskills: []\ntools: ${JSON.stringify(tools)}\n---\nAnswer`,
-      "local",
-      "assistant.md",
-    );
-    const setup = resolveAgentSetup(
-      agent,
-      { model, tools: ["list_skills"] },
-      binder,
-    );
+    const setup: ConversationSetup = {
+      model,
+      instructions: "Answer",
+      tools,
+      bindings: [bind(binder, [])],
+    };
     expect(setup.tools).toEqual(tools);
     expect(setup.bindings).toHaveLength(1);
     expect(setup.bindings?.[0].owner).toBe("kaeno-skills");
@@ -139,34 +134,27 @@ it.each([{ tools: [] }, { tools: ["read_skill"] }])(
   },
 );
 
-it("resolves worker-specific native contributions without leaking skills between participants", () => {
-  const agents = ["first", "second"].map((name) =>
-    parseAgent(
-      `---\nname: ${name}\ndescription: Worker\ntools: []\n---\nInstructions`,
-      "local",
-      `${name}.md`,
-    ),
-  );
-  const [first, second] = resolveAgents({
-    agents,
-    defaults: { model, tools: ["list_skills", "read_skill"] },
-    skills: (agent) =>
-      skillBinder(new SkillCatalog([]), agent.name === "first" ? [guide] : []),
-  });
-  expect(first.setup.tools).toEqual([]);
-  expect(first.setup.bindings).toEqual([
+it("keeps native skill contributions isolated between conversation setups", () => {
+  const first: ConversationSetup = {
+    model,
+    instructions: "First worker",
+    tools: [],
+    bindings: [bind(skillBinder(new SkillCatalog([]), [guide]), [])],
+  };
+  const second: ConversationSetup = {
+    model,
+    instructions: "Second worker",
+    tools: [],
+    bindings: [],
+  };
+  expect(first.bindings).toEqual([
     bind(skillBinder(new SkillCatalog([]), [guide]), []),
   ]);
-  expect(second.setup.bindings).toEqual([]);
+  expect(second.bindings).toEqual([]);
 });
 
 it("does not create an empty skills binding without native contributions", () => {
-  const binder = skillBinder(new SkillCatalog([]));
-  expect(binder([])).toBeUndefined();
-  const agent = parseAgent(manifest("assistant"), "local", "assistant.md");
-  expect(
-    resolveAgentSetup(agent, { model, tools: [] }, binder).bindings,
-  ).toEqual([]);
+  expect(skillBinder(new SkillCatalog([]))([])).toBeUndefined();
   expect(skillBinder(new SkillCatalog([]), [guide])([])).toBeDefined();
 });
 
@@ -265,7 +253,7 @@ it.each([
 });
 
 it.each([repositoryOrigin, directoryOrigin])(
-  "retains supplied agent and skill provenance (%j), binary assets, and old records",
+  "retains supplied skill provenance (%j), binary assets, and old records",
   async (origin) => {
     const root = await mkdtemp(join(tmpdir(), "kaeno-definition-skills-"));
     try {
@@ -277,16 +265,6 @@ it.each([repositoryOrigin, directoryOrigin])(
         manifest: manifest("guide"),
         origin,
       };
-      const agents = parseAgents([
-        {
-          source: definition.source,
-          manifestPath: join(root, "guide.md"),
-          manifest: definition.manifest,
-          origin,
-        },
-      ]);
-      expect(agents.diagnostics).toEqual([]);
-      expect(agents.agents[0].origin).toEqual(origin);
       const loaded = await loadSkills([definition]);
       expect(loaded.diagnostics).toEqual([]);
       const snapshots = loaded.catalog.bind(["source:*"]);
@@ -317,15 +295,6 @@ it.each([repositoryOrigin, directoryOrigin])(
           value: { skills: [{ ...guide, origin: { kind: "repository" } }] },
         }),
       ).toThrow();
-      expect(
-        parseAgents([
-          {
-            source: "legacy",
-            manifestPath: join(root, "guide.md"),
-            manifest: manifest("guide"),
-          },
-        ]).agents[0],
-      ).not.toHaveProperty("origin");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -382,3 +351,28 @@ it("accepts source-level invalidity from discovery without any inspectable malfo
     /invalid skill packages/,
   );
 });
+
+it.each([repositoryOrigin, directoryOrigin])(
+  "validates historical saved agent-origin bindings without producing new ones (%j)",
+  (origin) => {
+    const extension = definitionOriginsExtension();
+    const binding: Binding = {
+      owner: extension.durable.name,
+      version: 1,
+      value: { agent: "local:retired-worker", origin },
+    };
+    expect(() => extension.validateBinding?.(binding)).not.toThrow();
+    expect(() =>
+      extension.validateBinding?.({ ...binding, version: 2 }),
+    ).toThrow(/unsupported origin binding/);
+    expect(() =>
+      extension.validateBinding?.({
+        ...binding,
+        value: {
+          agent: "local:retired-worker",
+          origin: { kind: "repository" },
+        },
+      }),
+    ).toThrow();
+  },
+);

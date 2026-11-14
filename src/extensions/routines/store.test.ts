@@ -4,7 +4,6 @@ import { routineInputSchema, RoutineStore } from "./index.ts";
 
 const input = routineInputSchema.parse({
   name: "PR check",
-  agent: "local:worker",
   instructions: "Check PRs",
   schedule: { every: 60 },
 });
@@ -102,4 +101,29 @@ it("rolls back everything a failed transaction wrote, including nested calls", (
   ).toThrow("apply failed");
   expect(store.list()).toEqual([]);
   expect(store.changes()).toEqual([]);
+});
+
+it("reads existing routines and proposals without exposing or selecting historical agents", () => {
+  const database = new DatabaseSync(":memory:");
+  const store = new RoutineStore(database);
+  const routine = store.create(input, 1);
+  database
+    .prepare("UPDATE routines SET agent = ? WHERE id = ?")
+    .run("removed:persona", routine.id);
+  expect(store.get(routine.id)).toEqual(routine);
+  expect(store.get(routine.id)).not.toHaveProperty("agent");
+
+  store.propose("old", { action: "create", input }, 1);
+  database.prepare("UPDATE routine_changes SET proposal = ? WHERE id = ?").run(
+    JSON.stringify({
+      action: "create",
+      input: { ...input, agent: "removed:persona" },
+    }),
+    "old",
+  );
+  expect(store.change("old")).toMatchObject({ action: "create", input });
+  expect(store.change("old")).not.toHaveProperty("input.agent");
+  expect(() =>
+    routineInputSchema.parse({ ...input, agent: "removed:persona" }),
+  ).toThrow();
 });

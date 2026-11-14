@@ -38,11 +38,11 @@ const commitA = "a".repeat(40);
 const commitB = "b".repeat(40);
 const repositories: RepositoryDefinitionSource[] = [
   {
-    kind: "agents",
+    kind: "skills",
     provider: "github",
     repository: "owner/definitions",
     ref: "HEAD",
-    path: "agents",
+    path: "guides",
   },
   {
     kind: "skills",
@@ -86,7 +86,7 @@ async function put(root: string, path: string, content: string | Uint8Array) {
 async function exportDefinitions(destination: string, version = "first") {
   await put(
     destination,
-    "agents/reviewer.md",
+    "guides/reviewer/SKILL.md",
     `---\nname: reviewer\ndescription: Review\n---\n${version}\n`,
   );
   await put(
@@ -123,25 +123,14 @@ function forbiddenReader() {
 }
 
 async function snapshot(sources: DefinitionSources) {
-  const agents = [];
+  const primary: DefinitionPackage[] = [];
   const skills: DefinitionPackage[] = [];
-  for (const source of sources.agents) {
-    const result = await source.snapshot();
-    expect(result.diagnostics).toEqual([]);
-    agents.push(...result.documents);
-  }
-  for (const source of sources.skills) {
+  for (const [index, source] of sources.skills.entries()) {
     const result = await source.snapshot("SKILL.md");
     expect(result.diagnostics).toEqual([]);
-    skills.push(...result.packages);
+    (index === 0 ? primary : skills).push(...result.packages);
   }
-  return { agents, skills };
-}
-
-async function fileHash(path: string) {
-  return createHash("sha256")
-    .update(await readFile(path))
-    .digest("hex");
+  return { primary, skills };
 }
 
 async function localGit(root: string) {
@@ -201,14 +190,13 @@ function launchPausedWriter(directory: string, marker: string) {
       repositories: ${JSON.stringify(twoRepositories)},
       directories: [],
       readers: [{ name: "github", async read(request, destination) {
-        const kind = request.repository === "owner/other" ? "skills" : "agents";
-        const packageDirectory = join(destination, kind, ...(kind === "skills" ? ["child"] : []));
+        const kind = request.repository === "owner/other" ? "skills" : "guides";
+        const packageDirectory = join(destination, kind, "child");
         await mkdir(packageDirectory, { recursive: true });
-        await writeFile(join(packageDirectory, kind === "skills" ? "SKILL.md" : "child.md"), "unpublished child version");
+        await writeFile(join(packageDirectory, "SKILL.md"), "unpublished child version");
         return { commit: ${JSON.stringify(commitB)} };
       } }],
     }, async (sources) => {
-      for (const source of sources.agents) await source.snapshot();
       for (const source of sources.skills) await source.snapshot("SKILL.md");
       await writeFile(${JSON.stringify(marker)}, "ready");
       await new Promise(() => { setInterval(() => {}, 1000); });
@@ -274,7 +262,7 @@ afterEach(async () => {
   );
 });
 
-it("deduplicates a real Git export across kinds and preserves commit, package provenance, binary assets and executable modes", async () => {
+it("deduplicates a real Git export across skill roots and preserves commit, package provenance, binary assets and executable modes", async () => {
   const { root, directory } = await fixture();
   const { repository, git } = await localGit(root);
   const firstCommit = await git(["rev-parse", "HEAD"]);
@@ -298,9 +286,9 @@ it("deduplicates a real Git export across kinds and preserves commit, package pr
   const first = await withDefinitionSources(options, snapshot);
   expect(reader.read).toHaveBeenCalledTimes(1);
   expect(fetch).not.toHaveBeenCalled();
-  expect(first.agents).toHaveLength(1);
+  expect(first.primary).toHaveLength(1);
   expect(first.skills).toHaveLength(1);
-  const agent = at(first.agents, 0);
+  const agent = at(first.primary, 0);
   const skill = at(first.skills, 0);
   expect(agent.source).toBe("owner/definitions");
   expect(agent.origin).toEqual({
@@ -309,8 +297,8 @@ it("deduplicates a real Git export across kinds and preserves commit, package pr
     repository: "owner/definitions",
     ref: "HEAD",
     commit: firstCommit,
-    path: "agents/reviewer.md",
-    contentHash: await fileHash(agent.manifestPath),
+    path: "guides/reviewer",
+    contentHash: await definitionTreeHash(agent.directory),
   });
   expect(skill.origin).toEqual({
     kind: "repository",
@@ -334,10 +322,10 @@ it("deduplicates a real Git export across kinds and preserves commit, package pr
     (await lstat(join(skill.directory, "assets/blob.bin"))).mode & 0o222,
   ).toBe(0);
   await expect(
-    lstat(join(dirname(dirname(agent.manifestPath)), ".git")),
+    lstat(join(dirname(dirname(join(agent.directory, "SKILL.md"))), ".git")),
   ).rejects.toMatchObject({ code: "ENOENT" });
 
-  await put(repository, "agents/reviewer.md", "second commit\n");
+  await put(repository, "guides/reviewer/SKILL.md", "second commit\n");
   await git(["add", "."]);
   await git(["commit", "-m", "second"]);
   const secondCommit = await git(["rev-parse", "HEAD"]);
@@ -350,21 +338,21 @@ it("deduplicates a real Git export across kinds and preserves commit, package pr
   expect(offlineReader.read).not.toHaveBeenCalled();
   const refreshed = await withDefinitionSources(options, snapshot);
   expect(reader.read).toHaveBeenCalledTimes(2);
-  expect(refreshed.agents[0]?.origin).toMatchObject({ commit: secondCommit });
-  expect(refreshed.agents[0]?.manifest).toBe("second commit\n");
-  expect(first.agents[0]?.manifest).toContain("first");
+  expect(refreshed.primary[0]?.origin).toMatchObject({ commit: secondCommit });
+  expect(refreshed.primary[0]?.manifest).toBe("second commit\n");
+  expect(first.primary[0]?.manifest).toContain("first");
 });
 
-it("captures local inputs once across kinds and serves captured bytes after the live input disappears", async () => {
+it("captures local inputs once across skill roots and serves captured bytes after the live input disappears", async () => {
   const { root, directory } = await fixture();
   const local = join(root, "local");
-  await put(local, "reviewer.md", "local agent");
+  await put(local, "reviewer/SKILL.md", "local agent");
   await put(local, "reviewer/SKILL.md", "local skill");
   await put(local, "reviewer/blob.bin", binary);
   await chmod(join(local, "reviewer/blob.bin"), 0o700);
   const reader = forbiddenReader();
   const directories = [
-    { kind: "agents" as const, alias: "work", directory: local },
+    { kind: "skills" as const, alias: "work", directory: local },
     { kind: "skills" as const, alias: "tools", directory: local },
   ];
   const options = {
@@ -374,20 +362,20 @@ it("captures local inputs once across kinds and serves captured bytes after the 
     readers: [reader],
   };
   const captured = await withDefinitionSources(options, async (sources) => {
-    await put(local, "reviewer.md", "mutated after capture");
+    await put(local, "reviewer/SKILL.md", "mutated after capture");
     return snapshot(sources);
   });
-  const agent = at(captured.agents, 0);
-  expect(agent.manifest).toBe("local agent");
-  expect(agent.manifestPath).not.toBe(join(local, "reviewer.md"));
-  expect(dirname(agent.manifestPath)).toBe(
-    dirname(at(captured.skills, 0).directory),
+  const agent = at(captured.primary, 0);
+  expect(agent.manifest).toBe("local skill");
+  expect(join(agent.directory, "SKILL.md")).not.toBe(
+    join(local, "reviewer/SKILL.md"),
   );
+  expect(agent.directory).toBe(at(captured.skills, 0).directory);
   expect(agent.origin).toEqual({
     kind: "directory",
     source: "work",
-    path: join(local, "reviewer.md"),
-    contentHash: await fileHash(agent.manifestPath),
+    path: join(local, "reviewer"),
+    contentHash: await definitionTreeHash(agent.directory),
   });
   expect(captured.skills[0]?.origin).toMatchObject({
     kind: "directory",
@@ -407,14 +395,14 @@ it("captures local inputs once across kinds and serves captured bytes after the 
   expect(reader.read).not.toHaveBeenCalled();
 });
 
-it("requires an exact offline recipe, including kind, root path, alias and absolute local input directory", async () => {
+it("requires an exact offline recipe, including root path, alias and absolute local input directory", async () => {
   const { root, directory } = await fixture();
   const local = join(root, "local");
   const otherLocal = join(root, "other-local");
-  await put(local, "reviewer.md", "same bytes");
-  await put(otherLocal, "reviewer.md", "same bytes");
+  await put(local, "reviewer/SKILL.md", "same bytes");
+  await put(otherLocal, "reviewer/SKILL.md", "same bytes");
   const directories = [
-    { kind: "agents" as const, alias: "local", directory: local },
+    { kind: "skills" as const, alias: "local", directory: local },
   ];
   const options = {
     directory,
@@ -437,7 +425,6 @@ it("requires an exact offline recipe, including kind, root path, alias and absol
     },
     { repositories: [...repositories].reverse() },
     { directories: [{ ...at(directories, 0), alias: "renamed" }] },
-    { directories: [{ ...at(directories, 0), kind: "skills" as const }] },
     { directories: [{ ...at(directories, 0), directory: otherLocal }] },
   ];
   for (const variant of variants) {
@@ -461,9 +448,9 @@ it("requires an exact offline recipe, including kind, root path, alias and absol
     readers: [injectedReader("second", commitB)],
   };
   const otherRoot = await withDefinitionSources(otherRootOptions, snapshot);
-  // Explicit repository root is exact: nested agents/reviewer.md is not discovered.
-  expect(otherRoot.agents).toHaveLength(1);
-  expect(otherRoot.agents[0]?.origin).toMatchObject({ kind: "directory" });
+  // Repository skill discovery is recursive from the exact configured root.
+  expect(otherRoot.primary).toHaveLength(2);
+  expect(otherRoot.primary[0]?.origin).toMatchObject({ kind: "repository" });
   expect(
     await withDefinitionSources(
       { ...otherRootOptions, readers: [reader], mode: "offline" },
@@ -528,7 +515,7 @@ it.each(["second repository", "selected consumer"] as const)(
         { ...options, readers: [{ name: "github", read }] },
         async (sources) => {
           const selected = await snapshot(sources);
-          expect(selected.agents[0]?.manifest).toContain("unpublished");
+          expect(selected.primary[0]?.manifest).toContain("unpublished");
           throw new Error("selected consumer failed");
         },
       ),
@@ -702,12 +689,12 @@ it.each(["symlink", "fifo"] as const)(
   async (unsafe) => {
     const { root, directory } = await fixture();
     const local = join(root, "local");
-    await put(local, "reviewer.md", "local");
+    await put(local, "reviewer/SKILL.md", "local");
     if (unsafe === "symlink") {
-      await mkdir(join(local, "reviewer"));
+      await mkdir(join(local, "reviewer"), { recursive: true });
       await symlink("../reviewer.md", join(local, "reviewer/link"));
     } else {
-      await mkdir(join(local, "reviewer"));
+      await mkdir(join(local, "reviewer"), { recursive: true });
       await execute("mkfifo", [join(local, "reviewer/pipe")]);
     }
     const reader = forbiddenReader();
@@ -715,7 +702,7 @@ it.each(["symlink", "fifo"] as const)(
       directory,
       repositories: [],
       directories: [
-        { kind: "agents" as const, alias: "local", directory: local },
+        { kind: "skills" as const, alias: "local", directory: local },
       ],
       readers: [reader],
     };
@@ -731,11 +718,11 @@ it.each(["symlink", "fifo"] as const)(
   },
 );
 
-it("captures local agents below a linked ancestor but rejects a linked input root", async () => {
+it("captures local skills below a linked ancestor but rejects a linked input root", async () => {
   const { root, directory } = await fixture();
   await put(
     root,
-    "real/agents/reviewer.md",
+    "real/guides/reviewer/SKILL.md",
     "---\nname: reviewer\ndescription: Review\n---\nlocal\n",
   );
   // Ancestors belong to the operator (e.g. macOS /var -> /private/var).
@@ -745,19 +732,19 @@ it("captures local agents below a linked ancestor but rejects a linked input roo
       directory,
       repositories: [],
       directories: [
-        { kind: "agents" as const, alias: "local", directory: local },
+        { kind: "skills" as const, alias: "local", directory: local },
       ],
       readers: [forbiddenReader()],
     };
   }
   const captured = await withDefinitionSources(
-    options(join(root, "alias/agents")),
+    options(join(root, "alias/guides")),
     snapshot,
   );
-  expect(captured.agents.map((agent) => agent.manifest)).toEqual([
+  expect(captured.primary.map((agent) => agent.manifest)).toEqual([
     "---\nname: reviewer\ndescription: Review\n---\nlocal\n",
   ]);
-  await symlink(join(root, "real/agents"), join(root, "linked"));
+  await symlink(join(root, "real/guides"), join(root, "linked"));
   await expect(
     withDefinitionSources(options(join(root, "linked")), snapshot),
   ).rejects.toThrow(/links\/special/);
@@ -780,10 +767,9 @@ it.each([
       parseEnvironmentConfiguration(
         {
           sourceDirectory: "cache",
-          agentRepositories: [
+          skillRepositories: [
             { provider: "github", repository: "owner/definitions", path },
           ],
-          kaeno: "owner/definitions:reviewer",
         },
         join(root, "config.json"),
       ),
@@ -1067,17 +1053,17 @@ it("serializes concurrent writers through consumption and publishes only coheren
     if (!outcome.ok) {
       throw outcome.error;
     }
-    expect(outcome.value.agents).toHaveLength(1);
+    expect(outcome.value.primary).toHaveLength(1);
     expect(outcome.value.skills).toHaveLength(1);
-    expect(outcome.value.agents[0]?.manifest.split("---\n").at(-1)).toBe(
+    expect(outcome.value.primary[0]?.manifest.split("---\n").at(-1)).toBe(
       outcome.value.skills[0]?.manifest.split("---\n").at(-1),
     );
-    expect(outcome.value.agents[0]?.origin?.kind).toBe("repository");
+    expect(outcome.value.primary[0]?.origin?.kind).toBe("repository");
     expect(outcome.value.skills[0]?.origin).toMatchObject({
       commit:
-        outcome.value.agents[0]?.origin &&
-        "commit" in outcome.value.agents[0].origin
-          ? outcome.value.agents[0].origin.commit
+        outcome.value.primary[0]?.origin &&
+        "commit" in outcome.value.primary[0].origin
+          ? outcome.value.primary[0].origin.commit
           : "missing",
     });
   }
@@ -1142,7 +1128,7 @@ it.each([false, true])(
       { ...options, readers: [injectedReader("recovered", commitB)] },
       snapshot,
     );
-    expect(refreshed.agents[0]?.manifest).toContain("recovered");
+    expect(refreshed.primary[0]?.manifest).toContain("recovered");
     expect(refreshed.skills[0]?.manifest).toContain("recovered");
     expect(await withDefinitionSources(offlineOptions, snapshot)).toEqual(
       refreshed,
@@ -1151,7 +1137,7 @@ it.each([false, true])(
   20_000,
 );
 
-it("does not reinterpret a legacy completed cohort as flat discovery offline", async () => {
+it("does not reinterpret a legacy completed cohort under a different record version offline", async () => {
   const { directory } = await fixture();
   const options = {
     directory,
@@ -1183,7 +1169,7 @@ it("does not reinterpret a legacy completed cohort as flat discovery offline", a
       { ...options, readers: [reader], mode: "offline" },
       snapshot,
     ),
-  ).rejects.toThrow(/refresh required for flat agent discovery/);
+  ).rejects.toThrow(/offline input set/);
   expect(reader.read).not.toHaveBeenCalled();
   const refreshed = await withDefinitionSources(options, snapshot);
   expect(await readFile(legacyRecord, "utf8")).toBe(legacy);

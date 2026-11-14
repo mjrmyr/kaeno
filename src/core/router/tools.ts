@@ -113,11 +113,6 @@ export function routerTools(engine: Engine): ToolRegistration[] {
             Type.Literal("attach"),
             Type.Literal("ignore"),
           ]),
-          agent: Type.Optional(
-            Type.String({
-              description: "accept: agent ID from your instructions",
-            }),
-          ),
           title: Type.Optional(
             Type.String({
               maxLength: 80,
@@ -164,7 +159,6 @@ export function routerTools(engine: Engine): ToolRegistration[] {
     item: {
       trigger: string;
       kind: "accept" | "attach" | "ignore";
-      agent?: string;
       title?: string;
       ack?: string;
       ticket?: string;
@@ -199,16 +193,15 @@ export function routerTools(engine: Engine): ToolRegistration[] {
       );
       return `attached to ${ticket}`;
     }
-    if (!item.agent || !item.title || !item.ack) {
-      throw new Error("accept needs agent, title and ack");
+    if (!item.title || !item.ack) {
+      throw new Error("accept needs title and ack");
     }
-    const { agent, title, ack } = item;
+    const { title, ack } = item;
     const own = await engine.openOwnThread(item.trigger, title, context);
     const id = await api.commit(
       (tx) =>
         engine.accept(tx, {
           trigger: item.trigger,
-          agent,
           title,
           ack,
           ...(item.note ? { note: item.note } : {}),
