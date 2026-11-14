@@ -57,7 +57,14 @@ export interface ThreadRecord {
 }
 export type TicketStatus = "queued" | "running" | "idle" | "ended";
 export type ReportState =
-  "progress" | "waiting" | "blocked" | "ready" | "failed" | "dropped" | "quiet";
+  | "answer"
+  | "progress"
+  | "waiting"
+  | "blocked"
+  | "ready"
+  | "failed"
+  | "dropped"
+  | "quiet";
 export const FINAL_REPORTS: readonly ReportState[] = [
   "ready",
   "failed",
@@ -74,6 +81,7 @@ export interface TicketReport {
   state: ReportState;
   summary: string;
   at: number;
+  answerTo?: string;
 }
 export interface TicketRecord {
   id: string;
@@ -95,6 +103,8 @@ export interface TicketRecord {
     system?: boolean;
   }[];
   pending: TicketInput[];
+  /** Owner messages forwarded by the router that may receive a nonblocking answer. */
+  answerable?: string[];
   /** Wakes by system events since the owner's last input. */
   systemWakes: number;
   reports: TicketReport[];

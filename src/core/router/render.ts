@@ -96,7 +96,7 @@ export function renderTrigger(
 
 export function renderReport(ticket: Ticket, report: TicketReport): string {
   return [
-    `<report${attribute("ticket", ticket.id)}${attribute("title", ticket.title)}${attribute("state", report.state)}${attribute("thread", ticket.ownThread ?? ticket.replyThread)}>`,
+    `<report${attribute("ticket", ticket.id)}${attribute("title", ticket.title)}${attribute("state", report.state)}${attribute("answerTo", report.answerTo)}${attribute("thread", ticket.ownThread ?? ticket.replyThread)}>`,
     truncateWithRecall(report.summary, LIMITS.near, ticket.id),
     "</report>",
   ].join("\n");

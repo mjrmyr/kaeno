@@ -24,6 +24,7 @@ import {
   assignment,
   isRouterRequest,
   receive,
+  replies,
   ROUTER_ASSISTANT_TOOLS,
   settle,
   sinceLastAnswer,
@@ -53,6 +54,8 @@ function environment(release: WorkEnvironment["release"]): WorkEnvironment {
 async function fixture(options: {
   worker: FauxResponseFactory;
   replyOnQuestion?: boolean;
+  router?: (batch: string) => ReturnType<typeof answer>;
+  hold?: () => Promise<void>;
 }) {
   const faux = fauxProvider();
   const models = createModels();
@@ -68,7 +71,7 @@ async function fixture(options: {
     parameters: Type.Object({}),
     execute: async () => {
       entered();
-      await busy.promise;
+      await (options.hold ? options.hold() : busy.promise);
       return { content: [{ type: "text", text: "continue" }] };
     },
   });
@@ -87,6 +90,9 @@ async function fixture(options: {
       }
       const batch = sinceLastAnswer(request);
       routerBatches.push(batch);
+      if (options.router) {
+        return options.router(batch);
+      }
       return options.replyOnQuestion && batch.includes('state=\\"waiting\\"')
         ? call("message_ticket", {
             ticket: "k1",
@@ -464,3 +470,145 @@ it("routes child progress to its WORK parent without stopping the child", async 
     await core.close();
   }
 });
+
+it.each(["router-forwarded", "direct-thread"])(
+  "delivers a %s owner-requested answer while ordinary progress stays internal and WORK keeps running",
+  async (path) => {
+    let turn = 0;
+    let ownerTrigger = "";
+    const delivered: string[] = [];
+    const initialStep = latch();
+    const continuingStep = latch();
+    let holds = 0;
+    const lifecycle = await fixture({
+      hold: () =>
+        ++holds === 1 ? initialStep.promise : continuingStep.promise,
+      router: (batch) => {
+        if (
+          batch.includes("How many workers?") &&
+          !batch.includes('state=\\"answer\\"')
+        ) {
+          return call("message_ticket", {
+            ticket: "k1",
+            text: "How many workers?",
+            basis: ownerTrigger,
+          });
+        }
+        if (batch.includes('state=\\"answer\\"')) {
+          return call("reply", {
+            to: ownerTrigger,
+            text: "Three workers, one testing and two implementing.",
+          });
+        }
+        return answer("ACK");
+      },
+      worker: async (request) => {
+        turn++;
+        if (turn === 1) {
+          return call("hold", {});
+        }
+        if (turn === 2) {
+          delivered.push(JSON.stringify(request.messages));
+          return call("report", {
+            state: "progress",
+            text: "Still implementing",
+          });
+        }
+        if (turn === 3) {
+          return call("report", {
+            state: "answer",
+            answerTo: ownerTrigger,
+            text: "Three workers, one testing and two implementing.",
+          });
+        }
+        if (turn === 4) {
+          return call("hold", {});
+        }
+        return answer("Done");
+      },
+    });
+    try {
+      await lifecycle.launch();
+      await vi.waitFor(() => expect(lifecycle.entered).toHaveBeenCalledOnce());
+      expect(await lifecycle.inspect()).toMatchObject({ status: "running" });
+      // receive enqueues dispatch after commit; hold the expected next ID before it runs.
+      ownerTrigger = "t2";
+      const received = await receive(lifecycle.core, "How many workers?", {
+        key: "owner-question",
+        ...(path === "direct-thread" ? { thread: "test:ticket:progress" } : {}),
+      });
+      expect(received.id).toBe(ownerTrigger);
+      await vi.waitFor(async () =>
+        expect(
+          (await lifecycle.core.router.ticket("k1", context)).answerable,
+        ).toContain(ownerTrigger),
+      );
+      initialStep.release();
+      await vi.waitFor(() =>
+        expect(lifecycle.entered).toHaveBeenCalledTimes(2),
+      );
+      await vi.waitFor(async () =>
+        expect(await replies(lifecycle.core, received.thread)).toEqual([
+          expect.objectContaining({
+            text: "Three workers, one testing and two implementing.",
+          }),
+        ]),
+      );
+      expect(delivered[0]).toContain(`answerTo=${ownerTrigger}`);
+      const ticket = await lifecycle.core.router.ticket("k1", context);
+      expect(ticket.status).toBe("running");
+      expect(ticket.reports.slice(-2)).toMatchObject([
+        { state: "progress", summary: "Still implementing" },
+        { state: "answer", answerTo: ownerTrigger },
+      ]);
+      expect(await lifecycle.inspect()).toMatchObject({ status: "running" });
+      const answerBatches = lifecycle.routerBatches.filter((batch) =>
+        batch.includes('state=\\"answer\\"'),
+      );
+      expect(answerBatches).toHaveLength(1);
+      expect(answerBatches[0]).toContain('answerTo=\\"t2\\"');
+    } finally {
+      initialStep.release();
+      continuingStep.release();
+      lifecycle.busy.release();
+      await lifecycle.core.close();
+    }
+  },
+);
+
+it.each<JsonObject>([
+  { state: "answer" },
+  { state: "answer", answerTo: "t999" },
+  { state: "progress", answerTo: "t1" },
+])(
+  "rejects an uncorrelated or misclassified owner answer (%j)",
+  async (report) => {
+    let turn = 0;
+    let result = "";
+    const lifecycle = await fixture({
+      worker: async (request) => {
+        if (++turn === 1) {
+          return call("report", {
+            ...report,
+            text: "Not an authorized answer",
+          });
+        }
+        result = JSON.stringify(request.messages.at(-1));
+        return call("hold", {});
+      },
+    });
+    try {
+      await lifecycle.launch();
+      await vi.waitFor(() => expect(lifecycle.entered).toHaveBeenCalledOnce());
+      expect(result).toContain('"isError":true');
+      expect(
+        (await lifecycle.core.router.ticket("k1", context)).reports,
+      ).toEqual([]);
+      await settle(lifecycle.core);
+      expect(lifecycle.routerBatches).toEqual([]);
+    } finally {
+      lifecycle.busy.release();
+      await lifecycle.core.close();
+    }
+  },
+);

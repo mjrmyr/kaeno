@@ -505,9 +505,10 @@ export function createWorkCommands(
   const report = defineTool({
     name: REPORT,
     description:
-      "Report on your ticket to Kaeno's router, which tells the owner. state=progress is a nonblocking update: keep working. state=waiting asks the owner a question and state=blocked names an obstacle you cannot remove: both end your turn, and the answer arrives as a message. state=dropped means the request needs nothing and ends the ticket; then give a one-line final answer. state=quiet means a system event that woke you needs no action: nobody is told and the ticket stays open; then give a one-line final answer.",
+      "Report on your ticket to Kaeno's router, which tells the owner. state=progress is an internal nonblocking update. state=answer with answerTo=the forwarded owner message ID delivers an answer to the owner without ending your work. state=waiting asks the owner a question and state=blocked names an obstacle you cannot remove: both end your turn, and the answer arrives as a message. state=dropped means the request needs nothing and ends the ticket; then give a one-line final answer. state=quiet means a system event that woke you needs no action: nobody is told and the ticket stays open; then give a one-line final answer.",
     parameters: Type.Object({
       state: Type.Union([
+        Type.Literal("answer"),
         Type.Literal("progress"),
         Type.Literal("waiting"),
         Type.Literal("blocked"),
@@ -515,10 +516,34 @@ export function createWorkCommands(
         Type.Literal("quiet"),
       ]),
       text: Type.String({ minLength: 1, maxLength: 16000 }),
+      answerTo: Type.Optional(
+        Type.String({
+          description: "Forwarded owner message ID, required for state=answer",
+        }),
+      ),
     }),
     replay: "safe",
-    execute: ({ state, text }, api, context) => {
+    execute: ({ state, text, answerTo }, api, context) => {
+      if (state !== "answer" && answerTo !== undefined) {
+        throw new Error("Only an answer report may specify answerTo");
+      }
       switch (state) {
+        case "answer":
+          return api.commit(async (tx) => {
+            const { workId, parent } = await liveCaller(api, tx);
+            if (parent.kind !== "ticket") {
+              throw new Error("Only a ticket's root can answer the owner");
+            }
+            await reports.report(tx, {
+              ticket: parent.ticket,
+              workId,
+              key: `${workId}:answer:${api.taskId}`,
+              state: "answer",
+              answerTo,
+              text,
+            });
+            return reply("Answer sent to the owner. Keep working.");
+          }, context);
         case "progress":
           return sendProgress(api, text, context);
         case "dropped":
